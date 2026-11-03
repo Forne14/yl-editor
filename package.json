@@ -1,0 +1,35 @@
+{
+  "name": "@yl/editor",
+  "version": "0.1.0",
+  "description": "In-place editing core: a draft/publish ContentStore seam, schema registry, path ops and editable() addressing. Store-agnostic; apps bring their own store.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/Forne14/yl-editor.git" },
+  "type": "module",
+  "files": ["src", "migrations"],
+  "exports": {
+    ".": "./src/index.ts",
+    "./sqlite": "./src/sqlite-store.ts",
+    "./contract": "./src/contract.ts"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "verify": "npm run check && npm test"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=13"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": { "optional": true }
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.19.2",
+    "better-sqlite3": "^13.0.3",
+    "typescript": "~6.0.0",
+    "vitest": "^5.0.4"
+  }
+}
