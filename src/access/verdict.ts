@@ -1,4 +1,4 @@
-import type { AccessVerdict } from "./types.ts";
+import type { AccessVerdict } from "../types.ts";
 
 const ALLOWED: AccessVerdict = Object.freeze({ allowed: true });
 

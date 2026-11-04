@@ -1,5 +1,5 @@
 import { type Atom, holds, parseAtom } from "./atoms.ts";
-import type { Access, AccessVerdict, DocumentRef, MaybePromise } from "./types.ts";
+import type { Access, AccessVerdict, DocumentRef, MaybePromise } from "../types.ts";
 import { allow, deny, reasons } from "./verdict.ts";
 
 /** Which atom gates editing and publishing each document type. */

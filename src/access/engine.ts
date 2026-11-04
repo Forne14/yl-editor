@@ -1,7 +1,7 @@
 import { type Atom, familyWildcard, holds, tryParseAtom } from "./atoms.ts";
 import { type Catalogue, type RoleDefinition, roleAtomProblem, validateCatalogue } from "./catalogue.ts";
 import { RoleError } from "./errors.ts";
-import type { AccessVerdict } from "./types.ts";
+import type { AccessVerdict } from "../types.ts";
 import { allow, deny, reasons } from "./verdict.ts";
 
 /** A role named by its catalogue id, or a custom role's definition as the host stores it. */
