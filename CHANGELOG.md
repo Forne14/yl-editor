@@ -31,7 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A keyed segment that matches no item throws `PathError`, and a path part containing a malformed `[_key=` is now rejected.
 - Chrome: non-text widgets start from the stored value, fetched once per document per session with `GET document` and replaced by each write's result and each opening of the publish sheet. Publish, discard and the new lifecycle actions run on the document's write chain.
 - Chrome: leaving a popover widget untouched writes nothing, even when the stored value is missing.
-- Chrome: `data-edit-value` is now used only when the stored value is missing: the path is not in the document, or the fetch failed. In 0.3.0 it applied until a write returned the document, so it could win over the stored value.
+- Chrome: for non-text widgets, `data-edit-value` is now used only when the stored value is missing: the path is not in the document, or the fetch failed. In 0.3.0 it applied until a write returned the document, so it could win over the stored value. `text` and `richtext` still open without a fetch and use it until the document's payload is known.
+- Chrome: leaving the default text widget with its text unchanged writes nothing, even when the starting value differs from the rendered text. In 0.3.0 that sent a write.
+- `ContentClient`, `EditorApi` and `DocumentState` gain required members. This affects only hosts that hand-implement or mock them.
+- Chrome: non-text widgets need the `GET document` route, unless the field carries `data-edit-value`, which they fall back to when the fetch fails.
 
 ### Removed
 

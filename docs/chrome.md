@@ -39,7 +39,7 @@ const field = editable(editor ? `pages/${page.slug}` : undefined);
 Any other server-rendered stack works the same way: emit the attributes from `editable()` for editors only, and
 include a bundled module that imports the stylesheet and calls `mountEditor`. Nothing else is required in the
 markup. Non-text widgets start from the stored value, whatever the page renders (see Behaviour). A field may also
-carry `data-edit-value` (JSON), which is used only when the stored value is missing.
+carry `data-edit-value` (JSON), which is used only when the stored value is missing or not yet known.
 
 ### `editable(docKey)(path, type, attrs?)`
 
@@ -78,8 +78,11 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - The first time a non-text field opens, the chrome fetches its document with `GET document` and reads the value at
   the field's path, so a toggle rendered as "Live" or a date shown as "14 Nov" still opens on the stored value. There
   is one fetch per document per session; every write returns the document, which replaces the cached copy, and so does
-  opening the Publish sheet. A stored `null` counts as a stored value. `text` and `richtext` edit in place and open at
-  once, starting from the element's text until a payload is known.
+  opening the Publish sheet. A stored `null` counts as a stored value.
+- `text` and `richtext` open at once, without a fetch. Their widget starts from the stored value if the document's
+  payload is already known, else the field's `data-edit-value` (parsed the same way as below), else the element's text.
+  So a host's rich text widget can receive markup the element's text would lose. The default text widget edits the
+  element in place whatever the starting value, and leaving it with its text unchanged writes nothing.
 - When the path is missing from the document, or the fetch fails, a non-text widget starts from the field's
   `data-edit-value`, parsed as JSON or taken as written when it is not valid JSON. The element's rendered text is never
   read. If the fetch failed, a toast says the field started from the page's value; with no `data-edit-value` the widget

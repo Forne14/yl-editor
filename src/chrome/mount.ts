@@ -35,15 +35,6 @@ function errorMessage(error: unknown, strings: Strings): string {
   return strings.networkError;
 }
 
-/**
- * The starting value of an in-place text edit: the payload's when we have it, else the text being edited (the
- * element is the editor, so its text is what the editor starts from). Every other type reads the fetched payload.
- */
-function textValue(record: FieldRecord, payload: unknown): unknown {
-  const fromPayload = payload === undefined ? undefined : valueAtPath(payload, record.info.path);
-  return fromPayload !== undefined ? fromPayload : (record.element.textContent ?? "").trim();
-}
-
 /** A field's `data-edit-value`: parsed as JSON, or the attribute as written when it is not JSON. */
 function editValueAttribute(record: FieldRecord): unknown {
   const attribute = record.element.dataset.editValue;
@@ -53,6 +44,18 @@ function editValueAttribute(record: FieldRecord): unknown {
   } catch {
     return attribute;
   }
+}
+
+/**
+ * The starting value of an in-place text edit: the payload's when we have it, else `data-edit-value`, else the text
+ * being edited (the element is the editor, so its text is what the editor starts from). Every other type reads the
+ * fetched payload.
+ */
+function textValue(record: FieldRecord, payload: unknown): unknown {
+  const fromPayload = payload === undefined ? undefined : valueAtPath(payload, record.info.path);
+  if (fromPayload !== undefined) return fromPayload;
+  const fromAttribute = editValueAttribute(record);
+  return fromAttribute !== undefined ? fromAttribute : (record.element.textContent ?? "").trim();
 }
 
 const SHORT_LIMIT = 48;

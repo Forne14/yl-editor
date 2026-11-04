@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
 import { Session } from "./session.ts";
-import type { EditorHandle, WireDocument } from "./types.ts";
+import type { EditorHandle, WidgetContext, WireDocument } from "./types.ts";
 
 interface RecordedCall {
   method: string;
@@ -665,6 +665,117 @@ test("a data-edit-value that is not JSON is used as written", async () => {
   field("pages/home:note").click();
   await settle();
   expect(popoverControl<HTMLInputElement>("input").value).toBe("{not json");
+});
+
+function richWidget() {
+  const seen: { value: unknown; commit: (next: unknown) => Promise<void> }[] = [];
+  const widget = {
+    mount(ctx: WidgetContext) {
+      seen.push({ value: ctx.value, commit: ctx.commit });
+      return { destroy: () => undefined };
+    },
+  };
+  return { seen, widget };
+}
+
+const markup = '<p class="lead">Hello <em>there</em></p>';
+
+test("a host richtext widget starts from data-edit-value with its markup intact, at once", async () => {
+  const { seen, widget } = richWidget();
+  field("pages/home:lede").dataset.editValue = JSON.stringify(markup);
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  // No settle: the widget opened without waiting for a fetch.
+  expect(seen[0]?.value).toBe(markup);
+  await settle();
+  expect(documentFetches()).toHaveLength(0);
+});
+
+test("a richtext data-edit-value that is not JSON is used as written", async () => {
+  const { seen, widget } = richWidget();
+  field("pages/home:lede").dataset.editValue = markup;
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  expect(seen[0]?.value).toBe(markup);
+});
+
+test("a host richtext widget committing its starting value from data-edit-value writes nothing", async () => {
+  const { seen, widget } = richWidget();
+  field("pages/home:lede").dataset.editValue = JSON.stringify(markup);
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  await seen[0]?.commit(markup);
+  await settle();
+  expect(fieldWrites()).toEqual([]);
+});
+
+test("once known, the stored value beats data-edit-value for text and richtext", async () => {
+  const { seen, widget } = richWidget();
+  addToggle("On");
+  field("pages/home:lede").dataset.editValue = JSON.stringify(markup);
+  field("pages/home:title").dataset.editValue = JSON.stringify("Attribute title");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: true, lede: "<p>Stored</p>", title: "Hello" }) },
+  });
+  handle = mountEditor({ widgets: { richtext: widget, text: widget } });
+  await handle.ready;
+  // Opening a non-text field of the document is what fetches its payload.
+  field("pages/home:live").click();
+  await settle();
+  press(checkbox(), "Escape");
+  field("pages/home:lede").click();
+  expect(seen[0]?.value).toBe("<p>Stored</p>");
+  field("pages/home:title").click();
+  expect(seen[1]?.value).toBe("Hello");
+});
+
+test("data-edit-value falls back to the element's text only when it is absent", async () => {
+  const { seen, widget } = richWidget();
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  expect(seen[0]?.value).toBe("Lede");
+});
+
+test.each(["blur", "Enter"])(
+  "the text widget left untouched by %s writes nothing when data-edit-value differs from the text",
+  async (exit) => {
+    const title = field("pages/home:title");
+    title.dataset.editValue = JSON.stringify("Stored title, shown differently");
+    await mount();
+    title.click();
+    if (exit === "blur") title.dispatchEvent(new FocusEvent("blur"));
+    else press(title, "Enter");
+    await settle();
+    expect(title.classList.contains("cms-field--editing")).toBe(false);
+    expect(fieldWrites()).toEqual([]);
+  },
+);
+
+test("the text widget left untouched writes nothing when the stored value differs from the text", async () => {
+  addToggle("On");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: true, title: "Stored title" }) },
+  });
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  press(checkbox(), "Escape");
+  const title = field("pages/home:title");
+  title.click();
+  title.dispatchEvent(new FocusEvent("blur"));
+  await settle();
+  expect(fieldWrites()).toEqual([]);
+});
+
+test("an edited text field with data-edit-value still saves", async () => {
+  field("pages/home:title").dataset.editValue = JSON.stringify("Attribute title");
+  await mount();
+  await editText("pages/home:title", "Edited");
+  expect(fieldWrites()[0]?.body).toMatchObject({ path: "title", value: "Edited" });
 });
 
 const untouchedCases: [string, string, string, string[]?][] = [
