@@ -90,7 +90,10 @@ export function runContentStoreContract(
     test("the registry carries the contract's note type", () => {
       expect(registry.entry("note")?.collection).toBe("notes");
       expect(registry.byCollection("notes")?.type).toBe("note");
-      expect(registry.entries().map((entry) => entry.type)).toContain("note");
+    });
+
+    test.skipIf(!registry.entries)("the registry's optional entries() lists the note type", () => {
+      expect(registry.entries?.().map((entry) => entry.type)).toContain("note");
     });
 
     describe("create and get", () => {

@@ -17,7 +17,8 @@ publishes it, with drafts and revisions underneath.
 | `@yl/editor/chrome`            | `mountEditor()`, the framework-free in-page editing island                                                                |
 | `@yl/editor/chrome/chrome.css` | The chrome's stylesheet                                                                                                   |
 
-The core depends on zod and TypeScript only. Frameworks, databases and rich-text widgets stay the host's concern.
+The core depends on zod and TypeScript only. Frameworks, databases, media storage and rich-text widgets stay the
+host's concern: there is no media seam, and a `media` field needs a widget the host registers.
 
 ## How the pieces fit
 
