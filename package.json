@@ -52,7 +52,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
-    "prepare": "npm run build",
+    "release": "node scripts/release.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",

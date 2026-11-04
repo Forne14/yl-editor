@@ -23,8 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Build output on `prepare`: `src/` compiles to `dist/` (JavaScript, declarations and source maps), so the package
-  installs as a git dependency. Node does not strip types inside `node_modules`.
+- Build output on release tags: `src/` compiles to `dist/` (JavaScript, declarations and source maps), committed on
+  the tag only, so the package installs as a git dependency with no install scripts. Node does not strip types inside
+  `node_modules`. Pin a tag, never a branch.
+- `npm run release -- vX.Y.Z`: verifies, builds and tags a release commit carrying `dist/`.
 - `@yl/editor/contract`: the `ContentStore` lifecycle suite and its registry, for running against a host's own store.
   `vitest` is an optional peer, needed only here.
 - `@yl/editor/access`: permission atoms, a catalogue, a role engine and `documentAccess()`, which adapts atoms to the
