@@ -38,7 +38,7 @@ All bodies are JSON. `{base}` is the configured base.
 | Method | Path                        | Body                                     | Success                                        |
 | ------ | --------------------------- | ---------------------------------------- | ---------------------------------------------- |
 | GET    | `{base}/documents?keys=a,b` | none                                     | `200 { documents: { [key]: summary } }`        |
-| GET    | `{base}/document?key=k`     | none                                     | `200 { document }`                             |
+| GET    | `{base}/document?key=k`     | none                                     | `200 { document, publishedPayload }`           |
 | GET    | `{base}/revisions?key=k`    | none                                     | `200 { revisions: [revision] }`                |
 | POST   | `{base}/field`              | `{ key, path, value, expectedVersion? }` | `200 { document }`                             |
 | POST   | `{base}/array`              | `{ key, path, op, expectedVersion? }`    | `200 { document }`                             |
@@ -56,7 +56,12 @@ All bodies are JSON. `{base}` is the configured base.
 - `document` is the `StoredDocument` as JSON:
   `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version, scheduledAt }`.
 - `document` reads one document with the same view as `documents` (draft, retired included), whole, payload and all.
-  An unknown key is `404 not_found`.
+  An unknown key is `404 not_found`. `publishedPayload` beside it is the payload published now, or `null` when the
+  document has none (never published, or unpublished). A retired document keeps its published payload, so it reports
+  that payload, even though public reads hide it.
+- A payload that fails the current schema does not fail `document` when it is the published one: it comes back as
+  stored in `publishedPayload`, and also as `document` (with `isDraft: false`) when there is no draft. A draft that
+  fails its schema is still `422 validation`.
 - A `documents` summary is `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit, publish } }`.
   Unknown keys are left out. Keys are deduped, and more than 100 distinct keys is a `400 bad_request`. Reads use the draft view and include retired documents, because the editor needs to see
   what it is editing.
@@ -77,8 +82,8 @@ All bodies are JSON. `{base}` is the configured base.
 The zod schemas for every body and query (`FieldRequestSchema`, `ArrayRequestSchema`, `KeyRequestSchema`,
 `PublishRequestSchema`, `UnpublishRequestSchema`, `RestoreRevisionRequestSchema`, `PublishDueRequestSchema`,
 `RenameRequestSchema`, `CreateRequestSchema`, `DocumentsQuerySchema`, `DocumentQuerySchema`, `RevisionsQuerySchema`)
-and the `WireDocument`, `DocumentSummary`, `WireRevision`, `WireArrayOp`, `PublishDueResponse` and `ErrorEnvelope`
-types are exported, so a client of your own can share them.
+and the `WireDocument`, `DocumentSummary`, `DocumentResponse`, `WireRevision`, `WireArrayOp`, `PublishDueResponse` and
+`ErrorEnvelope` types are exported, so a client of your own can share them.
 
 Inside the package the contract is split in two. `wire-types.ts` holds the types, the header constants, the
 code-to-status map and the `isErrorEnvelope` guard, and imports nothing. `wire.ts` holds the zod schemas and re-exports
@@ -98,7 +103,8 @@ and a compile-time check in `wire.ts` fails the build if they drift apart.
 | `publish-due`                                         | `publishDue.authorize` | None: it acts on whatever is due                                |
 
 The stored row is read with `{ draft: true, includeRetired: true }`, so its `type` comes from the database rather than
-from the request. A key that does not exist is `404` before any verdict is asked for. `create` looks its type up in the
+from the request. (`document` alone falls back to the published view when a stale published payload fails that read;
+the verdict is still asked first.) A key that does not exist is `404` before any verdict is asked for. `create` looks its type up in the
 registry and answers `422 validation` "Unknown document type" when it is not there.
 
 `documents` lists a document the actor cannot edit, with `access.edit: false`, so an editing interface can show it
@@ -245,6 +251,7 @@ try {
 | ----------------------------------------------- | ------------------------------ |
 | `documents(keys)`                               | `Record<key, DocumentSummary>` |
 | `document(key)`                                 | `WireDocument`                 |
+| `documentForPublish(key)`                       | `DocumentResponse`             |
 | `field(key, path, value, expectedVersion?)`     | `WireDocument`                 |
 | `array(key, path, op, expectedVersion?)`        | `WireDocument`                 |
 | `publish(key, { at? }?)`                        | `WireDocument`                 |
@@ -259,7 +266,8 @@ try {
 The client sends `X-Requested-With: yl-editor` and `credentials: "same-origin"` on every request. Any non-2xx response
 throws a `ContentRequestError` with `status`, `code`, `message`, and `issues` or `current` when the server sent them; a
 response that is not an error envelope (a proxy's 502 page, say) throws with code `internal`. `documents([])` returns
-`{}` without a request.
+`{}` without a request. `documentForPublish(key)` makes the same request as `document(key)` and also returns
+`publishedPayload`, for showing what a publish would change.
 
 Options are `base` (an absolute URL works, for use outside a browser) and `fetch`, which lets you add headers, run it
 in tests, or point it straight at the handlers:

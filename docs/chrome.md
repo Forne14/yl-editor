@@ -76,8 +76,8 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   colour, and its badge and accessible description give the reason. Clicking it shows the reason as a toast.
 - The first time a non-text field opens, the chrome fetches its document with `GET document` and reads the value at
   the field's path, so a toggle rendered as "Live" or a date shown as "14 Nov" still opens on the stored value. There
-  is one fetch per document per session; every write returns the document, which replaces the cached copy. If the
-  fetch fails the widget does not open and a toast says why. `text` and `richtext` edit in place and open at once,
+  is one fetch per document per session; every write returns the document, which replaces the cached copy, and so does
+  opening the Publish sheet. If the fetch fails the widget does not open and a toast says why. `text` and `richtext` edit in place and open at once,
   starting from the element's text until a payload is known.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select, toggle,
   date and number commit on change; Esc cancels and restores. A popover edit still open when another field is opened,
@@ -94,9 +94,11 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document that was
   never published deletes it, so its fields stop being editable until the page is reloaded.
 - The Publish sheet shows what will change for each document: path and short before and after, from `diffPayloads`.
-  A document with nothing live says "First publish". The draft comes from `GET document`. The HTTP API does not return
-  the published payload next to a draft, so the "before" side is the latest revision that recorded the live payload
-  (`GET revisions`); when the history holds none, the sheet says it cannot compare.
+  A document with nothing live says "First publish". Each opening makes one fresh `GET document` per listed document,
+  after that document's pending writes finish, and compares the `publishedPayload` it returns with its draft, so
+  another editor's change shows. The response replaces the session's cached copy of the document but not its `version`:
+  a later write from this session still conflicts with a change the page has not repainted. If the fetch fails, the
+  sheet says the changes could not be loaded for that document, and Publish stays available.
 - The Publish sheet has an optional "Publish at" input (`datetime-local`, in the browser's time zone). When set, the
   button reads Schedule and sends `at` as an ISO string with offset; nothing goes live until the host runs
   `publish-due`. The document stays in the change count, and the bar shows "<key> scheduled for <time>" with
@@ -106,9 +108,10 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   fetched or written, because the `documents` summary does not carry it, so a schedule set in an earlier session shows
   only after the document has been opened in a non-text widget or the Publish sheet.
 - Revisions opens a drawer with the history of one document on the page: action, actor and time.
-  - With `access.edit`, each row has **Restore**, which copies that revision into the draft after the document's
-    pending writes finish, repaints the page's fields and says so in a toast. It replaces the current draft with no
-    confirm step, and draft edits are not revisions. The published version is untouched until Publish.
+  - With `access.edit`, each row has **Restore** with a confirm step, because it replaces the current draft and draft
+    edits are not revisions. The prompt says so; Cancel writes nothing. Confirm copies that revision into the draft
+    after the document's pending writes finish, repaints the page's fields and says so in a toast. The published
+    version is untouched until Publish. `api.restoreRevision` asks nothing: a panel that calls it does its own asking.
   - With `access.publish`, on a published document, the drawer has **Unpublish** with a confirm step. The content
     stays as a draft.
 - After a non-text field saves, the chrome replaces the element's text only when it holds no child elements, and
@@ -118,9 +121,9 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 ### Strings
 
 Every label is a key of `defaultStrings` in `src/chrome/strings.ts`, overridable through `strings`. The lifecycle
-actions added these: `restore`, `restoreRevisionLabel`, `restored`, `unpublish`, `unpublishConfirm`, `unpublished`,
-`schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`, `firstPublish`,
-`noDifferences`, `diffUnavailable`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`.
+actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `restored`, `unpublish`, `unpublishConfirm`,
+`unpublished`, `schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`,
+`firstPublish`, `noDifferences`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`.
 
 ## Wire contract
 
@@ -132,7 +135,7 @@ header `X-Requested-With: yl-editor`.
 | `GET  {base}/documents?keys=k1,k2`                              | `200 { documents: { [key]: summary } }`                                |
 | `POST {base}/field` `{ key, path, value, expectedVersion? }`    | `200 { document }`                                                     |
 | `POST {base}/array` `{ key, path, op, expectedVersion? }`       | `200 { document }`                                                     |
-| `GET  {base}/document?key=`                                     | `200 { document }`                                                     |
+| `GET  {base}/document?key=`                                     | `200 { document, publishedPayload }`                                   |
 | `POST {base}/publish` `{ key, at? }`                            | `200 { document }`                                                     |
 | `POST {base}/unpublish` `{ key }`                               | `200 { document }`                                                     |
 | `POST {base}/restore-revision` `{ key, revisionId }`            | `200 { document }`                                                     |

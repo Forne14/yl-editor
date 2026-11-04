@@ -4,7 +4,7 @@
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
-import type { DocumentState, DocumentSummary, WireDocument } from "./types.ts";
+import type { DocumentResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
 
@@ -40,7 +40,7 @@ export class Session {
   readonly documents = new Map<string, MutableDocument>();
   private readonly slots = new Map<string, SaveSlot>();
   private readonly chains = new Map<string, Promise<void>>();
-  /** One `GET document` per key per session; replaced by every write's returned document. */
+  /** One `GET document` per key per session, plus `documentForPublish`; replaced by every write's returned document. */
   private readonly fetched = new Map<string, Promise<WireDocument>>();
   private readonly storageKey: string;
 
@@ -113,6 +113,32 @@ export class Session {
     );
     this.fetched.set(key, request);
     return request;
+  }
+
+  /**
+   * A fresh read for the publish sheet, past the cache and after the document's queued writes. It refreshes the cached
+   * document, unless a write landed while it was in flight. A failure leaves the cache as it was.
+   */
+  async documentForPublish(key: string): Promise<DocumentResponse> {
+    await this.pending(key);
+    const seen = this.fetched.get(key);
+    const response = await this.client.documentForPublish(key);
+    const { document, publishedPayload } = response;
+    const current = this.fetched.get(key);
+    if (current !== seen) {
+      // A write landed while this was in flight; its document is newer than ours.
+      return { document: (await current?.catch(() => undefined)) ?? document, publishedPayload };
+    }
+    this.fetched.set(key, Promise.resolve(document));
+    const state = this.documents.get(key);
+    if (state) {
+      // Keep our version, as `document` does: another editor's change must still conflict with our next write.
+      state.isDraft = document.isDraft;
+      state.payload = document.payload;
+      state.publishedAt = document.publishedAt;
+      state.scheduledAt = document.scheduledAt;
+    }
+    return response;
   }
 
   /**

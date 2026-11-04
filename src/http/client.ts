@@ -38,6 +38,8 @@ export interface ContentClient {
   documents(keys: string[]): Promise<Record<string, DocumentSummary>>;
   /** One document, draft view, retired included. */
   document(key: string): Promise<WireDocument>;
+  /** The same read with the payload published now beside it (null when none), for comparing before a publish. */
+  documentForPublish(key: string): Promise<DocumentResponse>;
   field(key: string, path: string, value: unknown, expectedVersion?: number): Promise<WireDocument>;
   array(key: string, path: string, op: WireArrayOp, expectedVersion?: number): Promise<WireDocument>;
   /** Publishes now, or with `at` (an ISO datetime) schedules the draft for `publishDue`. */
@@ -86,6 +88,8 @@ export function createContentClient(options: ContentClientOptions = {}): Content
   const post = async (route: string, body: unknown) =>
     (await send<{ document: WireDocument }>("POST", route, body)).document;
 
+  const read = (key: string) => send<DocumentResponse>("GET", `document?${new URLSearchParams({ key })}`);
+
   return {
     documents: async (keys) => {
       if (keys.length === 0) return {};
@@ -94,7 +98,8 @@ export function createContentClient(options: ContentClientOptions = {}): Content
     },
     field: (key, path, value, expectedVersion) => post("field", { key, path, value, expectedVersion }),
     array: (key, path, op, expectedVersion) => post("array", { key, path, op, expectedVersion }),
-    document: async (key) => (await send<DocumentResponse>("GET", `document?${new URLSearchParams({ key })}`)).document,
+    document: async (key) => (await read(key)).document,
+    documentForPublish: read,
     publish: (key, publishOptions) =>
       post("publish", publishOptions?.at !== undefined ? { key, at: publishOptions.at } : { key }),
     unpublish: (key) => post("unpublish", { key }),

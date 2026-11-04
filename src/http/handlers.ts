@@ -188,6 +188,22 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
     return result.data;
   };
 
+  /**
+   * The row `GET document` shows. With no draft the draft view is the published payload, which the store validates
+   * strictly for editor reads, so a stale one would fail the read; that case takes the lenient published view, which
+   * is the same document. A draft that fails its schema still throws: it is the draft being reported on.
+   */
+  const readable = async (key: string): Promise<StoredDocument> => {
+    try {
+      return await existing(key);
+    } catch (error) {
+      if (!(error instanceof ContentValidationError)) throw error;
+      const published = await store.get(key, { draft: false, includeRetired: true });
+      if (!published || published.draftUpdatedAt !== null) throw error;
+      return published;
+    }
+  };
+
   /** A lifecycle write gated by `check` on the stored row. */
   const keyedWrite =
     (
@@ -242,8 +258,11 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       method: "GET",
       run: async (context) => {
         const { key } = parseQuery(context.url, DocumentQuerySchema);
-        const document = await gate(context, key, "canEdit");
-        return { body: { document } };
+        const document = await readable(key);
+        deny(await access.canEdit(context.locals, { type: document.type, key: document.key }));
+        // `includeRetired`: retiring hides a document from visitors but keeps its published payload.
+        const published = await store.get(key, { draft: false, includeRetired: true });
+        return { body: { document, publishedPayload: published?.payload ?? null } };
       },
     },
     revisions: {

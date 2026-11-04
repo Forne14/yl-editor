@@ -13,7 +13,6 @@ import type {
   Widget,
   WidgetContext,
   WidgetHandle,
-  WireRevision,
 } from "./types.ts";
 import { Sheet, Toast } from "./ui.ts";
 import { createDefaultWidgets, missingWidget } from "./widgets.ts";
@@ -43,18 +42,6 @@ function errorMessage(error: unknown, strings: Strings): string {
 function textValue(record: FieldRecord, payload: unknown): unknown {
   const fromPayload = payload === undefined ? undefined : valueAtPath(payload, record.info.path);
   return fromPayload !== undefined ? fromPayload : (record.element.textContent ?? "").trim();
-}
-
-/** The payload that is live now, from the revision history; `undefined` when the history does not say. */
-function livePayload(revisions: readonly WireRevision[]): { payload: unknown } | undefined {
-  // Every revision but these two holds the live payload of its time; restore_revision holds the restored draft and
-  // unpublish the payload it took down.
-  for (let index = revisions.length - 1; index >= 0; index -= 1) {
-    const revision = revisions[index];
-    if (revision && revision.action !== "restore_revision" && revision.action !== "unpublish")
-      return { payload: revision.payload };
-  }
-  return undefined;
 }
 
 const SHORT_LIMIT = 48;
@@ -348,16 +335,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   });
   disposer.listen(window, "scroll", () => badge.hide(), { passive: true });
 
-  /** `null` is a first publish; `undefined` means the history does not say what is live. */
-  async function changesOf(key: string): Promise<DiffEntry[] | null | undefined> {
-    await session.pending(key);
-    const draft = await session.document(key);
+  /** `null` is a first publish. Fetched afresh each time, so another editor's change shows. */
+  async function changesOf(key: string): Promise<DiffEntry[] | null> {
+    const { document, publishedPayload } = await session.documentForPublish(key);
     updateBar();
-    if (draft.publishedAt === null) return null;
-    if (!draft.isDraft) return [];
-    // The draft view carries no published payload, so it comes from the latest revision that recorded it.
-    const live = livePayload(await client.revisions(key));
-    return live ? diffPayloads(live.payload, draft.payload) : undefined;
+    return publishedPayload === null ? null : diffPayloads(publishedPayload, document.payload);
   }
 
   function changeLine(entry: DiffEntry): HTMLElement {
@@ -382,7 +364,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       (changes) => {
         if (!isOpen()) return;
         if (changes === null) note(strings.firstPublish);
-        else if (changes === undefined) note(strings.diffUnavailable);
         else if (changes.length === 0) note(strings.noDifferences);
         else target.replaceChildren(element("ul", { class: "cms-list" }, changes.map(changeLine)));
       },
@@ -489,6 +470,35 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         const list = element("ol", { class: "cms-list cms-revisions", "aria-live": "polite" });
         const documentActions = element("div", { class: "cms-sheet__actions" });
         let request = 0;
+        /** Swaps the drawer's actions for a prompt; nothing is written until Confirm. */
+        const askFirst = (prompt: string, act: () => Promise<void>, refocus: () => void) => {
+          const confirm: HTMLButtonElement = button(
+            strings.confirm,
+            async () => {
+              confirm.disabled = true;
+              cancel.disabled = true;
+              try {
+                await act();
+              } catch {
+                // Reported through the toast by the api call.
+              }
+              renderActions();
+              void load();
+              picker.focus();
+            },
+            "danger",
+          );
+          const cancel: HTMLButtonElement = button(
+            strings.cancel,
+            () => {
+              renderActions();
+              refocus();
+            },
+            "ghost",
+          );
+          documentActions.replaceChildren(element("p", {}, [prompt]), cancel, confirm);
+          cancel.focus();
+        };
         const renderActions = () => {
           const key = picker.value;
           const state = session.documents.get(key);
@@ -496,37 +506,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           if (!state?.access.publish || state.publishedAt === null) return;
           const unpublish: HTMLButtonElement = button(
             strings.unpublish,
-            () => {
-              const confirm: HTMLButtonElement = button(
-                strings.confirm,
-                async () => {
-                  confirm.disabled = true;
-                  try {
-                    await api.unpublish(key);
-                  } catch {
-                    // Reported through the toast by api.unpublish.
-                  }
-                  renderActions();
-                  void load();
-                  picker.focus();
-                },
-                "danger",
-              );
-              const cancel = button(
-                strings.cancel,
-                () => {
-                  renderActions();
-                  documentActions.querySelector("button")?.focus();
-                },
-                "ghost",
-              );
-              documentActions.replaceChildren(
-                element("p", {}, [format(strings.unpublishConfirm, { key })]),
-                cancel,
-                confirm,
-              );
-              cancel.focus();
-            },
+            () =>
+              askFirst(
+                format(strings.unpublishConfirm, { key }),
+                () => api.unpublish(key),
+                () => documentActions.querySelector("button")?.focus(),
+              ),
             "danger",
           );
           documentActions.append(unpublish);
@@ -544,16 +529,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
               const restore: HTMLButtonElement | null = canRestore
                 ? button(
                     strings.restore,
-                    async () => {
-                      restore?.setAttribute("disabled", "");
-                      try {
-                        await api.restoreRevision(key, revision.id);
-                        void load();
-                      } catch {
-                        // Reported through the toast by api.restoreRevision.
-                        restore?.removeAttribute("disabled");
-                      }
-                    },
+                    () =>
+                      askFirst(
+                        format(strings.restoreConfirm, {
+                          action: revision.action,
+                          time: formatTime(revision.createdAt),
+                          key,
+                        }),
+                        () => api.restoreRevision(key, revision.id),
+                        () => restore?.focus(),
+                      ),
                     "ghost",
                     { "aria-label": format(strings.restoreRevisionLabel, { id: revision.id }) },
                   )
