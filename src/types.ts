@@ -61,11 +61,13 @@ export interface StoredDocument {
   retiredAt: string | null;
   /** Starts at 1 on create; increments on every draft write, publish, discard, retire, restore and rename. */
   version: number;
+  /** ISO time the draft is scheduled to publish at, or null. Cleared by publish, discardDraft and unpublish. */
+  scheduledAt: string | null;
 }
 
 export const RevisionSchema = z.object({
   id: z.number().int(),
-  action: z.enum(["publish", "retire", "restore", "rename"]),
+  action: z.enum(["publish", "retire", "restore", "rename", "restore_revision", "unpublish"]),
   slug: z.string(),
   payload: z.unknown(),
   createdAt: z.string(),
@@ -85,7 +87,23 @@ export interface ContentStore {
   list(type: string, opts?: ReadOptions): Promise<StoredDocument[]>;
   writeField(key: string, path: string, value: unknown, context?: WriteContext): Promise<StoredDocument>;
   arrayOp(key: string, path: string, op: ArrayOp, context?: WriteContext): Promise<StoredDocument>;
-  publish(key: string, context?: WriteContext): Promise<StoredDocument>;
+  /**
+   * Promotes the draft. With `at` (ISO string) nothing is published yet: the time is stored, the version bumps, no
+   * revision is written and the draft document is returned. `publishDue` does the promotion later.
+   */
+  publish(key: string, context?: WriteContext & { at?: string }): Promise<StoredDocument>;
+  /** Publishes every document whose `scheduledAt` is at or before `now` (default: the store clock). */
+  publishDue(now?: string, context?: WriteContext): Promise<StoredDocument[]>;
+  /**
+   * Published to draft-only, without retiring. Throws DocumentStateError when never published. Keeps an existing
+   * draft, otherwise the published payload becomes the draft.
+   */
+  unpublish(key: string, context?: WriteContext): Promise<StoredDocument>;
+  /**
+   * Copies a revision's payload into the draft (never the published payload). A revisionId that does not exist, or
+   * belongs to another document, throws DocumentNotFoundError for `key`.
+   */
+  restoreRevision(key: string, revisionId: number, context?: WriteContext): Promise<StoredDocument>;
   discardDraft(key: string, context?: WriteContext): Promise<StoredDocument | null>;
   retire(key: string, context?: WriteContext): Promise<StoredDocument>;
   restore(key: string, context?: WriteContext): Promise<StoredDocument>;
