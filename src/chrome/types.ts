@@ -1,45 +1,9 @@
 import type { EditFieldType } from "../editable.ts";
+import type { DocumentSummary, ErrorCode, WireDocument, WireRevision } from "../http/wire.ts";
 import type { Strings } from "./strings.ts";
 
-export type { EditFieldType };
-
-/** What `GET {base}/documents` returns per key. */
-export interface DocumentSummary {
-  key: string;
-  type: string;
-  version: number;
-  isDraft: boolean;
-  draftUpdatedAt: string | null;
-  publishedAt: string | null;
-  access: { edit: boolean; publish: boolean };
-}
-
-/** A document as the write endpoints return it. */
-export interface WireDocument {
-  id: number;
-  key: string;
-  type: string;
-  slug: string;
-  payload: unknown;
-  isDraft: boolean;
-  publishedAt: string | null;
-  draftUpdatedAt: string | null;
-  previousSlugs: string[];
-  retiredAt: string | null;
-  version: number;
-}
-
-export interface WireRevision {
-  id: number;
-  action: string;
-  slug: string;
-  payload: unknown;
-  actor: string | null;
-  createdAt: string;
-}
-
-export type ErrorCode =
-  "forbidden" | "not_found" | "conflict" | "validation" | "path" | "state" | "slug" | "bad_request";
+// The wire types live with the HTTP contract in src/http; the chrome re-exports them for host widgets and panels.
+export type { DocumentSummary, EditFieldType, ErrorCode, WireDocument, WireRevision };
 
 /** The chrome's view of one document: the summary, plus the latest payload once a write has returned one. */
 export interface DocumentState {

@@ -161,7 +161,9 @@ test("scans fields and groups them by document key", () => {
 test("loads the page's documents once on mount, by the wire contract", async () => {
   await mount();
   expect(calls).toHaveLength(1);
-  expect(calls[0]?.route).toBe("GET /api/content/documents?keys=pages%2Fhome,artists%2Ffinn,locked%2Fdoc");
+  expect(calls[0]?.route.startsWith("GET /api/content/documents?")).toBe(true);
+  const query = new URLSearchParams(calls[0]?.route.split("?")[1]);
+  expect(query.get("keys")).toBe("pages/home,artists/finn,locked/doc");
   expect(calls[0]?.init.credentials).toBe("same-origin");
   expect((calls[0]?.init.headers as Record<string, string>)["X-Requested-With"]).toBe("yl-editor");
   expect(handle?.api.documents().get("pages/home")?.version).toBe(3);
