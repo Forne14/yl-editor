@@ -31,11 +31,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A keyed segment that matches no item throws `PathError`, and a path part containing a malformed `[_key=` is now rejected.
 - Chrome: non-text widgets start from the stored value, fetched once per document per session with `GET document` and replaced by each write's result and each opening of the publish sheet. Publish, discard and the new lifecycle actions run on the document's write chain.
 - Chrome: leaving a popover widget untouched writes nothing, even when the stored value is missing.
+- Chrome: for non-text widgets, `data-edit-value` is now used only when the stored value is missing: the path is not in the document, or the fetch failed. In 0.3.0 it applied until a write returned the document, so it could win over the stored value. `text` and `richtext` still open without a fetch and use it until the document's payload is known.
+- Chrome: leaving the default text widget with its text unchanged writes nothing, even when the starting value differs from the rendered text. In 0.3.0 that sent a write.
+- `ContentClient`, `EditorApi` and `DocumentState` gain required members. This affects only hosts that hand-implement or mock them.
+- Chrome: non-text widgets need the `GET document` route, unless the field carries `data-edit-value`, which they fall back to when the fetch fails.
 
 ### Removed
 
-- **Breaking:** `MediaStore`, `MediaVariantSchema` and `MediaVariant` are no longer exported. They had no implementation and no consumer; media storage stays the host's concern (#3).
-- **Breaking:** the chrome no longer reads a non-text field's value from its rendered text or from `data-edit-value`.
+- Chrome: a non-text field's value is no longer read from its rendered text.
+
+### Fixed
+
+- `GET documents` no longer fails the whole request with `422` when one document has a stale published payload and no draft, which stopped the chrome loading. That document is summarised from the published view, as `GET document` already did; its access verdicts are still asked. A draft that fails its schema still fails the request.
 
 ## [0.3.0] - 2026-11-04
 

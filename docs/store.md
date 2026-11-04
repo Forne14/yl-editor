@@ -42,6 +42,10 @@ are keyed `collection/slug`. Slugs are lower-case letters and digits joined by s
 `SlugError`. A registry implements `entry(type)` and `byCollection(collection)`; `entries()` is optional and unused
 by the library, kept for back-office listing.
 
+The package also exports a `MediaStore` interface (`upload`, `resolve`) and `MediaVariantSchema`, the shape of what
+`resolve` returns. It ships no implementation: the host implements `MediaStore` over its own storage. Nothing in the
+store, the HTTP handlers or the chrome calls it, so a `media` field also needs a widget the host registers.
+
 Every write is validated against the type's schema before it is stored (`ContentValidationError`), and every read is
 validated again, so a payload that drifts from its schema fails loudly with the document's key rather than rendering
 half a page. Paths into a payload refuse `__proto__`, `prototype`, `constructor` and negative or non-integer indices

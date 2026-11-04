@@ -121,6 +121,18 @@ export interface Access {
   canPublish(locals: unknown, doc: DocumentRef): MaybePromise<AccessVerdict>;
 }
 
+export const MediaVariantSchema = z.object({
+  width: z.number().int().positive(),
+  format: z.enum(["avif", "webp", "png", "mp4"]),
+  url: z.string(),
+});
+export type MediaVariant = z.infer<typeof MediaVariantSchema>;
+
+export interface MediaStore {
+  upload(file: Uint8Array, meta: { role: string; filename: string; alt: string }): Promise<{ id: string }>;
+  resolve(id: string): Promise<MediaVariant[] | null>;
+}
+
 export type OnPublish = (doc: StoredDocument) => Promise<void> | void;
 
 export class ContentValidationError extends Error {

@@ -65,6 +65,9 @@ All bodies are JSON. `{base}` is the configured base.
 - A `documents` summary is `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit, publish } }`.
   Unknown keys are left out. Keys are deduped, and more than 100 distinct keys is a `400 bad_request`. Reads use the draft view and include retired documents, because the editor needs to see
   what it is editing.
+- A published payload that fails the current schema with no draft does not fail `documents`: it is summarised from the
+  published view, with `isDraft: false`, and its verdicts are asked as usual. A draft that fails its schema fails the
+  whole request with `422 validation`.
 - A revision is `{ id, action, slug, payload, actor, createdAt }`.
 - `discard` returns `null` when the document had never been published, so discarding its draft removed it.
 - `publish` with `at` (an ISO 8601 datetime with `Z` or an offset, such as `2030-01-01T09:00:00+02:00`) does not publish:
@@ -103,8 +106,8 @@ and a compile-time check in `wire.ts` fails the build if they drift apart.
 | `publish-due`                                         | `publishDue.authorize` | None: it acts on whatever is due                                |
 
 The stored row is read with `{ draft: true, includeRetired: true }`, so its `type` comes from the database rather than
-from the request. (`document` alone falls back to the published view when a stale published payload fails that read;
-the verdict is still asked first.) A key that does not exist is `404` before any verdict is asked for. `create` looks its type up in the
+from the request. (`document` and `documents` fall back to the published view when a stale published payload fails that
+read; the verdicts are still asked.) A key that does not exist is `404` before any verdict is asked for. `create` looks its type up in the
 registry and answers `422 validation` "Unknown document type" when it is not there.
 
 `documents` lists a document the actor cannot edit, with `access.edit: false`, so an editing interface can show it

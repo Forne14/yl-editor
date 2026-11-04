@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
 import { Session } from "./session.ts";
-import type { EditorHandle, WireDocument } from "./types.ts";
+import type { EditorHandle, WidgetContext, WireDocument } from "./types.ts";
 
 interface RecordedCall {
   method: string;
@@ -548,6 +548,277 @@ test("a failed document fetch keeps the widget closed, says why, and the next op
   field("pages/home:live").click();
   await settle();
   expect(checkbox().checked).toBe(true);
+});
+
+function addEditValueField(path: string, type: string, editValue?: string, options?: string[]): HTMLElement {
+  const added = document.createElement("span");
+  added.dataset.editField = `pages/home:${path}`;
+  added.dataset.editType = type;
+  added.textContent = "rendered";
+  if (editValue !== undefined) added.dataset.editValue = editValue;
+  if (options) added.dataset.editOptions = JSON.stringify(options);
+  document.getElementById("page")?.append(added);
+  return added;
+}
+
+const serverError = () => ({ status: 500, json: { error: { code: "internal", message: "Boom" } } });
+const fieldWrites = () => calls.filter((call) => call.route === "POST /api/content/field");
+
+function popoverControl<Control extends HTMLElement>(selector: string): Control {
+  const control = document.querySelector<Control>(`.cms-popover ${selector}`);
+  if (!control) throw new Error(`no control ${selector}`);
+  return control;
+}
+
+test("the stored value beats data-edit-value", async () => {
+  addEditValueField("live", "toggle", "true");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: false }) },
+  });
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  expect(checkbox().checked).toBe(false);
+});
+
+test("a stored null is a stored value: data-edit-value does not replace it", async () => {
+  addEditValueField("spaces", "number", "12");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { spaces: null }) },
+  });
+  await mount();
+  field("pages/home:spaces").click();
+  await settle();
+  expect(popoverControl<HTMLInputElement>("input").value).toBe("");
+});
+
+test("data-edit-value is used when the path is missing from the stored document", async () => {
+  addEditValueField("live", "toggle", "true");
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  expect(checkbox().checked).toBe(true);
+  expect(document.querySelector<HTMLElement>(".cms-toast")?.hidden).toBe(true);
+});
+
+test("with the path missing and no data-edit-value the rendered text is still not read", async () => {
+  addToggle("On");
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  expect(checkbox().checked).toBe(false);
+});
+
+test("data-edit-value is used when the fetch fails, says so, and the next open retries for the stored value", async () => {
+  addEditValueField("live", "toggle", "true");
+  handlers["GET /api/content/document"] = [
+    serverError,
+    () => ({ json: { document: wireDocument("pages/home", 3, { live: false }) } }),
+  ];
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  expect(checkbox().checked).toBe(true);
+  expect(visibleToast().textContent).toContain("starts from the page’s value: Boom");
+  press(checkbox(), "Escape");
+  field("pages/home:live").click();
+  await settle();
+  expect(documentFetches()).toHaveLength(2);
+  expect(checkbox().checked).toBe(false);
+});
+
+test("an edit started from data-edit-value after a failed fetch still sends the known version", async () => {
+  addEditValueField("live", "toggle", "true");
+  handlers["GET /api/content/document"] = serverError;
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  const box = checkbox();
+  box.checked = false;
+  box.dispatchEvent(new Event("change"));
+  await settle();
+  expect(fieldWrites()[0]?.body).toMatchObject({ path: "live", value: false, expectedVersion: 3 });
+});
+
+test("a fetch failing after another field was opened neither opens the widget nor shows a toast", async () => {
+  addEditValueField("live", "toggle", "true");
+  handlers["GET /api/content/document"] = serverError;
+  await mount();
+  field("pages/home:live").click();
+  field("pages/home:title").click();
+  await settle();
+  expect(document.querySelector(".cms-popover")).toBeNull();
+  expect(document.querySelector<HTMLElement>(".cms-toast")?.hidden).toBe(true);
+});
+
+test("a data-edit-value that is not JSON is used as written", async () => {
+  addEditValueField("style", "select", "plain", ["plain", "bold"]);
+  addEditValueField("note", "url", "{not json");
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
+  await mount();
+  field("pages/home:style").click();
+  await settle();
+  expect(popoverControl<HTMLSelectElement>("select").value).toBe("plain");
+  press(popoverControl("select"), "Escape");
+  field("pages/home:note").click();
+  await settle();
+  expect(popoverControl<HTMLInputElement>("input").value).toBe("{not json");
+});
+
+function richWidget() {
+  const seen: { value: unknown; commit: (next: unknown) => Promise<void> }[] = [];
+  const widget = {
+    mount(ctx: WidgetContext) {
+      seen.push({ value: ctx.value, commit: ctx.commit });
+      return { destroy: () => undefined };
+    },
+  };
+  return { seen, widget };
+}
+
+const markup = '<p class="lead">Hello <em>there</em></p>';
+
+test("a host richtext widget starts from data-edit-value with its markup intact, at once", async () => {
+  const { seen, widget } = richWidget();
+  field("pages/home:lede").dataset.editValue = JSON.stringify(markup);
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  // No settle: the widget opened without waiting for a fetch.
+  expect(seen[0]?.value).toBe(markup);
+  await settle();
+  expect(documentFetches()).toHaveLength(0);
+});
+
+test("a richtext data-edit-value that is not JSON is used as written", async () => {
+  const { seen, widget } = richWidget();
+  field("pages/home:lede").dataset.editValue = markup;
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  expect(seen[0]?.value).toBe(markup);
+});
+
+test("a host richtext widget committing its starting value from data-edit-value writes nothing", async () => {
+  const { seen, widget } = richWidget();
+  field("pages/home:lede").dataset.editValue = JSON.stringify(markup);
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  await seen[0]?.commit(markup);
+  await settle();
+  expect(fieldWrites()).toEqual([]);
+});
+
+test("once known, the stored value beats data-edit-value for text and richtext", async () => {
+  const { seen, widget } = richWidget();
+  addToggle("On");
+  field("pages/home:lede").dataset.editValue = JSON.stringify(markup);
+  field("pages/home:title").dataset.editValue = JSON.stringify("Attribute title");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: true, lede: "<p>Stored</p>", title: "Hello" }) },
+  });
+  handle = mountEditor({ widgets: { richtext: widget, text: widget } });
+  await handle.ready;
+  // Opening a non-text field of the document is what fetches its payload.
+  field("pages/home:live").click();
+  await settle();
+  press(checkbox(), "Escape");
+  field("pages/home:lede").click();
+  expect(seen[0]?.value).toBe("<p>Stored</p>");
+  field("pages/home:title").click();
+  expect(seen[1]?.value).toBe("Hello");
+});
+
+test("data-edit-value falls back to the element's text only when it is absent", async () => {
+  const { seen, widget } = richWidget();
+  handle = mountEditor({ widgets: { richtext: widget } });
+  await handle.ready;
+  field("pages/home:lede").click();
+  expect(seen[0]?.value).toBe("Lede");
+});
+
+test.each(["blur", "Enter"])(
+  "the text widget left untouched by %s writes nothing when data-edit-value differs from the text",
+  async (exit) => {
+    const title = field("pages/home:title");
+    title.dataset.editValue = JSON.stringify("Stored title, shown differently");
+    await mount();
+    title.click();
+    if (exit === "blur") title.dispatchEvent(new FocusEvent("blur"));
+    else press(title, "Enter");
+    await settle();
+    expect(title.classList.contains("cms-field--editing")).toBe(false);
+    expect(fieldWrites()).toEqual([]);
+  },
+);
+
+test("the text widget left untouched writes nothing when the stored value differs from the text", async () => {
+  addToggle("On");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: true, title: "Stored title" }) },
+  });
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  press(checkbox(), "Escape");
+  const title = field("pages/home:title");
+  title.click();
+  title.dispatchEvent(new FocusEvent("blur"));
+  await settle();
+  expect(fieldWrites()).toEqual([]);
+});
+
+test("an edited text field with data-edit-value still saves", async () => {
+  field("pages/home:title").dataset.editValue = JSON.stringify("Attribute title");
+  await mount();
+  await editText("pages/home:title", "Edited");
+  expect(fieldWrites()[0]?.body).toMatchObject({ path: "title", value: "Edited" });
+});
+
+const untouchedCases: [string, string, string, string[]?][] = [
+  ["toggle", "toggle", "true"],
+  ["number", "number", "12"],
+  ["an empty number", "number", ""],
+  ["a number that is not JSON", "number", "abc"],
+  ["url", "url", '"https://example.com"'],
+  ["date", "date", '"2026-11-14"'],
+  ["a date that is not JSON", "date", "14 Nov"],
+  ["select", "select", "plain", ["plain", "bold"]],
+  ["select with an empty value", "select", "", ["plain", "bold"]],
+  ["tags", "tags", '["a","b"]'],
+];
+
+describe.each([
+  ["the path is missing", () => ({ json: { document: wireDocument("pages/home", 3, {}) } })],
+  ["the fetch failed", serverError],
+])("a popover left untouched writes nothing when %s", (_name, documentHandler) => {
+  test.each(untouchedCases)("%s", async (_label, type, editValue, options) => {
+    addEditValueField("thing", type, editValue, options);
+    handlers["GET /api/content/document"] = documentHandler;
+    await mount();
+    field("pages/home:thing").click();
+    await settle();
+    expect(document.querySelector(".cms-popover")).not.toBeNull();
+    // Opening another field commits whatever the open popover holds.
+    field("pages/home:title").click();
+    await settle();
+    expect(document.querySelector(".cms-popover")).toBeNull();
+    expect(fieldWrites()).toEqual([]);
+  });
+
+  test("tags confirmed with Done", async () => {
+    addEditValueField("thing", "tags", '["a","b"]');
+    handlers["GET /api/content/document"] = documentHandler;
+    await mount();
+    field("pages/home:thing").click();
+    await settle();
+    buttonNamed("Done", popoverControl<HTMLElement>(".cms-tags")).click();
+    await settle();
+    expect(fieldWrites()).toEqual([]);
+  });
 });
 
 test("a toggle whose fetch finishes after another field was opened does not open", async () => {

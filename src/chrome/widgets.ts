@@ -105,6 +105,13 @@ function textWidget(note?: string): Widget {
       const originalNodes = [...target.childNodes].map((node) => node.cloneNode(true));
       const originalEditable = target.getAttribute("contenteditable");
       const outcome = once(ctx);
+      // Leaving untouched must write nothing, even when the starting value is not the text the page renders.
+      const untouched = (target.textContent ?? "").trim();
+      const finish = () => {
+        const text = (target.textContent ?? "").trim();
+        if (text === untouched) outcome.cancel();
+        else outcome.commit(text);
+      };
       const notePopover = note ? openPopover(target, note) : undefined;
       notePopover?.root.classList.add("cms-popover--note");
       if (note) ctx.announce(note);
@@ -113,7 +120,7 @@ function textWidget(note?: string): Widget {
       const handleKeydown = (event: KeyboardEvent) => {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
-          outcome.commit((target.textContent ?? "").trim());
+          finish();
         } else if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
@@ -127,7 +134,7 @@ function textWidget(note?: string): Widget {
         insertPlainText(target, text.replace(/\s*\n\s*/g, " "));
       };
       const preventDrop = (event: Event) => event.preventDefault();
-      const handleBlur = () => outcome.commit((target.textContent ?? "").trim());
+      const handleBlur = () => finish();
 
       target.addEventListener("keydown", handleKeydown);
       target.addEventListener("paste", handlePaste);
