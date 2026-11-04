@@ -35,7 +35,7 @@ function errorMessage(error: unknown, strings: Strings): string {
 }
 
 /** The value a field holds now: the server's payload once we have it, else what the page renders. */
-function readValue(record: FieldRecord, payload: unknown): unknown {
+function readValue(record: FieldRecord, payload: unknown, strings: Strings): unknown {
   const fromPayload = payload === undefined ? undefined : valueAtPath(payload, record.info.path);
   if (fromPayload !== undefined) return fromPayload;
   const rendered = record.element.dataset.editValue;
@@ -51,7 +51,8 @@ function readValue(record: FieldRecord, payload: unknown): unknown {
     case "number":
       return text === "" || !Number.isFinite(Number(text)) ? null : Number(text);
     case "toggle":
-      return false;
+      // Nothing carries the value until a write has returned the document, so read what the page shows.
+      return [strings.yes.toLowerCase(), "on", "true", "yes"].includes(text.toLowerCase());
     case "tags":
       return text === "" ? [] : text.split(",").map((part) => part.trim());
     default:
@@ -172,9 +173,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             : format(strings.changes, { fields: fieldCount });
   }
 
-  function closeActive(returnFocus: boolean): void {
+  function closeActive(returnFocus: boolean, commit = false): void {
     const current = active;
     if (!current) return;
+    if (commit && current.handle?.commit) {
+      // The widget's commit closes it through the context (and skips the save when nothing changed).
+      current.handle.commit();
+      if (active !== current) return;
+    }
     current.closed = true;
     active = null;
     current.handle?.destroy();
@@ -187,10 +193,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       toast.show(record.reason ?? strings.notEditable, "info");
       return;
     }
-    closeActive(false);
+    closeActive(false, true);
     const { info } = record;
     const widget = widgets[info.type] ?? missingWidget(strings, info.type);
-    const initial = readValue(record, session.documents.get(info.key)?.payload);
+    const initial = readValue(record, session.documents.get(info.key)?.payload, strings);
     const opened: ActiveWidget = { record, handle: undefined, closed: false };
     const context: WidgetContext = {
       element: record.element,
@@ -228,7 +234,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       for (const record of fields) attachRecord(record);
       enterButton.blur();
     } else {
-      closeActive(false);
+      closeActive(false, true);
       sheet.close(false);
       badge.hide();
       for (const record of fields) record.detach?.();
@@ -286,7 +292,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   // Bulk publish and discard act on touched documents the user may publish, listed before anything happens.
   function openBulk(kind: "publish" | "discard", opener: HTMLElement): void {
     const touched = touchedDocuments();
-    const eligible = touched.filter((state) => state.access.publish);
+    const eligible = touched.filter((state) => (kind === "publish" ? state.access.publish : state.access.edit));
     const title = kind === "publish" ? strings.publishTitle : strings.discardTitle;
     sheet.open(
       title,
@@ -309,7 +315,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         );
         const others = touched.length - eligible.length;
         if (others > 0) {
-          body.append(element("p", { class: "cms-muted" }, [format(strings.othersNeedPublisher, { count: others })]));
+          body.append(
+            element("p", { class: "cms-muted" }, [
+              format(kind === "publish" ? strings.othersNeedPublisher : strings.othersNeedEditor, { count: others }),
+            ]),
+          );
         }
         const confirm = button(
           kind === "publish" ? strings.publish : strings.discard,
@@ -417,18 +427,35 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   async function settle(kind: "publish" | "discard", key: string): Promise<void> {
     try {
+      await session.pending(key);
       const document = kind === "publish" ? await client.publish(key) : await client.discard(key);
       session.settle(key, document);
       if (kind === "discard") {
         for (const record of fields) {
           if (record.info.key !== key) continue;
-          if (document) render(record, valueAtPath(document.payload, record.info.path));
-          showState(record, "idle");
+          if (document) {
+            render(record, valueAtPath(document.payload, record.info.path));
+            showState(record, "idle");
+          } else {
+            // Never published: the store deleted it, so there is nothing left to edit.
+            if (active?.record === record) closeActive(false);
+            record.detach?.();
+            record.editable = false;
+            record.reason = strings.unknownDocument;
+          }
         }
+        if (!document) session.documents.delete(key);
       }
       updateBar();
-      const message = format(kind === "publish" ? strings.published : strings.discarded, { key });
-      toast.show(document || kind === "publish" ? message : `${message}. ${strings.reloadToSee}`, "saved");
+      toast.show(
+        format(
+          kind === "publish" ? strings.published : document ? strings.discarded : strings.discardedNeverPublished,
+          {
+            key,
+          },
+        ),
+        "saved",
+      );
     } catch (error) {
       toast.show(
         format(strings.actionFailed, {
@@ -447,7 +474,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     publish: (key) => settle("publish", key),
     discard: (key) => settle("discard", key),
     async refresh() {
-      closeActive(false);
+      closeActive(false, true);
       for (const record of fields) record.detach?.();
       fields = scanFields(scanRoot);
       byElement = new Map(fields.map((record) => [record.element, record]));
@@ -486,7 +513,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      closeActive(false);
+      closeActive(false, true);
       sheet.close(false);
       toast.clearTimer();
       for (const record of fields) record.detach?.();
