@@ -258,9 +258,10 @@ export function runContentStoreContract(
         expect(await store.get("notes/second", { draft: true })).toBeNull();
         expect(await store.list("note", { draft: true })).toEqual([]);
         expect((await store.list("note", { includeRetired: true })).map((doc) => doc.key)).toEqual(["notes/first"]);
-        expect(
-          (await store.list("note", { draft: true, includeRetired: true })).map((doc) => doc.key),
-        ).toEqual(["notes/first", "notes/second"]);
+        expect((await store.list("note", { draft: true, includeRetired: true })).map((doc) => doc.key)).toEqual([
+          "notes/first",
+          "notes/second",
+        ]);
         expect((await store.get("notes/second", { draft: true, includeRetired: true }))?.retiredAt).not.toBeNull();
       });
       test("retiring twice is refused", async () => {
@@ -414,7 +415,10 @@ export function runContentStoreContract(
       type Attempt = (context: WriteContext) => Promise<unknown>;
       const attempts: [string, Attempt][] = [
         ["writeField", (context) => store.writeField("notes/first", "title", "Stale", context)],
-        ["arrayOp", (context) => store.arrayOp("notes/first", "tags", { kind: "insert", index: 0, value: "z" }, context)],
+        [
+          "arrayOp",
+          (context) => store.arrayOp("notes/first", "tags", { kind: "insert", index: 0, value: "z" }, context),
+        ],
         ["publish", (context) => store.publish("notes/first", context)],
         ["discardDraft", (context) => store.discardDraft("notes/first", context)],
         ["retire", (context) => store.retire("notes/first", context)],
