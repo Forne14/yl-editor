@@ -1,0 +1,1 @@
+{"version":3,"file":"verdict.d.ts","sourceRoot":"","sources":["../../src/access/verdict.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,aAAa,CAAC;AAIjD,wBAAgB,KAAK,IAAI,aAAa,CAErC;AAED,wBAAgB,IAAI,CAAC,MAAM,EAAE,MAAM,GAAG,aAAa,CAElD;AAED,uGAAuG;AACvG,eAAO,MAAM,OAAO;6BACF,MAAM;iCACF,MAAM;mCACJ,MAAM;8BACX,MAAM;;;;;0CAKM,MAAM;CAC3B,CAAC"}
