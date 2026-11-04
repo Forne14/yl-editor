@@ -379,3 +379,106 @@ test("writes to one document are serialised, so the second carries the first's n
   const writes = calls.filter((call) => call.route === "POST /api/content/field");
   expect(writes.map((call) => call.body?.expectedVersion)).toEqual([3, 4]);
 });
+
+test("bulk discard lists touched documents the user may edit, not only publish", async () => {
+  handlers["POST /api/content/discard"] = (body) => ({ json: { document: wireDocument(String(body?.key), 10) } });
+  await mount();
+  await editText("pages/home:title", "One");
+  await editText("artists/finn:name", "Finnegan");
+  buttonNamed("Discard").click();
+  const sheet = document.querySelector<HTMLElement>(".cms-sheet");
+  const listed = [...(sheet?.querySelectorAll("li[data-key]") ?? [])].map((item) => item.getAttribute("data-key"));
+  expect(listed).toEqual(["pages/home", "artists/finn"]);
+  expect(sheet?.textContent).not.toContain("publish access");
+  buttonNamed("Discard", sheet ?? document).click();
+  await settle();
+  const discards = calls.filter((call) => call.route === "POST /api/content/discard");
+  expect(discards.map((call) => call.body)).toEqual([{ key: "pages/home" }, { key: "artists/finn" }]);
+});
+
+test("publishing waits for an in-flight field write of the same document", async () => {
+  const { api } = await mount();
+  const title = field("pages/home:title");
+  title.click();
+  title.textContent = "Late";
+  press(title, "Enter");
+  await api.publish("pages/home");
+  const routes = calls.map((call) => call.route).filter((route) => route.startsWith("POST"));
+  expect(routes).toEqual(["POST /api/content/field", "POST /api/content/publish"]);
+});
+
+test("a url popover edit is committed when another field is opened", async () => {
+  document
+    .getElementById("page")
+    ?.insertAdjacentHTML("beforeend", `<a data-edit-field="pages/home:link" data-edit-type="url">x</a>`);
+  const { api } = await mount();
+  await api.refresh();
+  field("pages/home:link").click();
+  const input = document.querySelector<HTMLInputElement>(".cms-popover input");
+  if (!input) throw new Error("no input");
+  input.value = "https://example.com";
+  field("pages/home:title").click();
+  await settle();
+  const write = calls.find((call) => call.route === "POST /api/content/field");
+  expect(write?.body).toMatchObject({ path: "link", value: "https://example.com" });
+});
+
+test("a tags popover edit is committed when the editor is destroyed", async () => {
+  document
+    .getElementById("page")
+    ?.insertAdjacentHTML(
+      "beforeend",
+      `<p data-edit-field="pages/home:tags" data-edit-type="tags" data-edit-value='["a"]'>a</p>`,
+    );
+  const editor = await mount();
+  field("pages/home:tags").click();
+  const input = document.querySelector<HTMLInputElement>(".cms-popover input");
+  if (!input) throw new Error("no input");
+  input.value = "b";
+  editor.destroy();
+  await settle();
+  const write = calls.find((call) => call.route === "POST /api/content/field");
+  expect(write?.body).toMatchObject({ path: "tags", value: ["a", "b"] });
+});
+
+test("an 'on' toggle with no payload yet opens checked", async () => {
+  document
+    .getElementById("page")
+    ?.insertAdjacentHTML("beforeend", `<span data-edit-field="pages/home:live" data-edit-type="toggle">On</span>`);
+  await mount();
+  field("pages/home:live").click();
+  const box = document.querySelector<HTMLInputElement>(".cms-popover input[type=checkbox]");
+  expect(box?.checked).toBe(true);
+});
+
+test("discarding a never-published document detaches its fields and says so", async () => {
+  handlers["POST /api/content/discard"] = () => ({ json: { document: null } });
+  const { api } = await mount();
+  await editText("artists/finn:name", "Finnegan");
+  await api.discard("artists/finn");
+  expect(api.documents().has("artists/finn")).toBe(false);
+  const name = field("artists/finn:name");
+  expect(name.classList.contains("cms-field")).toBe(false);
+  expect(visibleToast().textContent).toContain("Discarded artists/finn; it had never been published.");
+  expect(visibleToast().textContent).not.toContain("Reload");
+  name.click();
+  expect(name.hasAttribute("contenteditable")).toBe(false);
+});
+
+test("malformed remembered touched entries are dropped instead of breaking load", async () => {
+  sessionStorage.setItem(
+    "yl-editor:touched:/api/content",
+    JSON.stringify({ "pages/home": 5, "artists/finn": ["name", 3], "locked/doc": ["x"] }),
+  );
+  handlers["GET /api/content/documents"] = () => ({
+    json: {
+      documents: {
+        "pages/home": { ...summary("pages/home", true, true), isDraft: true },
+        "artists/finn": { ...summary("artists/finn", true, false), isDraft: true },
+      },
+    },
+  });
+  const { api } = await mount();
+  expect(api.documents().get("pages/home")?.touchedPaths.size).toBe(0);
+  expect(api.documents().get("artists/finn")?.touchedPaths.size).toBe(0);
+});

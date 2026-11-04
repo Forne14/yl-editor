@@ -185,6 +185,7 @@ function formWidget(
       );
       return {
         focus: () => (parts.focusTarget ?? parts.control).focus(),
+        commit: () => outcome.commit(parts.read()),
         destroy() {
           popover.root.removeEventListener("keydown", handleKeydown);
           popover.close();
