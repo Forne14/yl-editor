@@ -603,6 +603,61 @@ describe("document publishedPayload", () => {
   });
 });
 
+describe("documents with a payload failing its schema", () => {
+  /** Fails `note`'s schema: `title` must be non-empty. */
+  const stale = JSON.stringify({ title: "", tags: [] as string[] });
+  const corrupt = (key: string, column: "published_payload" | "draft_payload") =>
+    db.prepare(`UPDATE documents SET ${column} = ? WHERE key = ?`).run(stale, key);
+
+  beforeEach(async () => {
+    // The store reports a stale payload this way; the route must not depend on it.
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.create("note", "second", note);
+  });
+
+  test.each([false, true])(
+    "a stale published payload with no draft is summarised, beside the healthy documents (retired: %s)",
+    async (retired) => {
+      if (retired) await store.retire("notes/first");
+      corrupt("notes/first", "published_payload");
+      const { status, body } = await call(get("documents?keys=notes/first,notes/second,notes/none"));
+      expect(status).toBe(200);
+      expect(Object.keys(body.documents).sort()).toEqual(["notes/first", "notes/second"]);
+      expect(body.documents["notes/first"]).toEqual({
+        key: "notes/first",
+        type: "note",
+        version: expect.any(Number),
+        isDraft: false,
+        draftUpdatedAt: null,
+        publishedAt: expect.any(String),
+        access: { edit: true, publish: true },
+      });
+      expect(body.documents["notes/second"]).toMatchObject({ isDraft: true });
+    },
+  );
+
+  test("verdicts are still asked for each document, the stale one included", async () => {
+    corrupt("notes/first", "published_payload");
+    fake.verdicts.edit = (ref) => (ref.key === "notes/first" ? { allowed: false, reason: "Not yours" } : allowed);
+    const { status, body } = await call(get("documents?keys=notes/first,notes/second"));
+    expect(status).toBe(200);
+    expect(body.documents["notes/first"].access).toEqual({ edit: false, publish: true });
+    expect(body.documents["notes/second"].access).toEqual({ edit: true, publish: true });
+    for (const key of ["notes/first", "notes/second"])
+      for (const check of ["canEdit", "canPublish"])
+        expect(fake.calls).toContainEqual({ check, locals: session, ref: { type: "note", key } });
+  });
+
+  test("a draft failing its schema still fails the whole request with 422", async () => {
+    await store.writeField("notes/first", "title", "Draft");
+    corrupt("notes/first", "draft_payload");
+    const { status, body } = await call(get("documents?keys=notes/first,notes/second"));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+  });
+});
+
 describe("publish with at", () => {
   test("schedules the draft instead of publishing, and fires a publish change", async () => {
     await store.create("note", "first", note);

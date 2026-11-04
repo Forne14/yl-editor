@@ -44,6 +44,17 @@ function textValue(record: FieldRecord, payload: unknown): unknown {
   return fromPayload !== undefined ? fromPayload : (record.element.textContent ?? "").trim();
 }
 
+/** A field's `data-edit-value`: parsed as JSON, or the attribute as written when it is not JSON. */
+function editValueAttribute(record: FieldRecord): unknown {
+  const attribute = record.element.dataset.editValue;
+  if (attribute === undefined) return undefined;
+  try {
+    return JSON.parse(attribute) as unknown;
+  } catch {
+    return attribute;
+  }
+}
+
 const SHORT_LIMIT = 48;
 
 function short(value: unknown): string {
@@ -231,15 +242,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (TEXT_TYPES.has(info.type) || !registered) {
       initial = textValue(record, session.documents.get(info.key)?.payload);
     } else {
-      // Popover widgets start from the stored value, never from what the page happens to render.
+      // Popover widgets start from the stored value, never from the page's text. `data-edit-value` stands in only
+      // when there is no stored value to read: the path is missing, or the fetch failed (which the next open retries).
+      let stored: unknown;
+      let failure: { error: unknown } | undefined;
       try {
-        initial = valueAtPath((await session.document(info.key)).payload, info.path);
+        stored = valueAtPath((await session.document(info.key)).payload, info.path);
       } catch (error) {
-        if (ticket === openTicket && !destroyed)
-          toast.show(format(strings.loadFieldFailed, { message: errorMessage(error, strings) }), "error");
-        return;
+        failure = { error };
       }
       if (ticket !== openTicket || destroyed || !editing) return;
+      initial = stored === undefined ? editValueAttribute(record) : stored;
+      if (failure) {
+        const message = errorMessage(failure.error, strings);
+        if (initial === undefined) {
+          toast.show(format(strings.loadFieldFailed, { message }), "error");
+          return;
+        }
+        toast.show(format(strings.loadFieldFallback, { message }), "info");
+      }
       updateBar();
     }
     const opened: ActiveWidget = { record, handle: undefined, closed: false };

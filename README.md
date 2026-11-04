@@ -18,7 +18,8 @@ publishes it, with drafts and revisions underneath.
 | `@yl/editor/chrome/chrome.css` | The chrome's stylesheet                                                                                                   |
 
 The core depends on zod and TypeScript only. Frameworks, databases, media storage and rich-text widgets stay the
-host's concern: there is no media seam, and a `media` field needs a widget the host registers.
+host's concern: the package ships the `MediaStore` interface and `MediaVariantSchema` but no implementation, so the
+host implements the store. The chrome has no default `media` widget, so a `media` field needs one the host registers.
 
 ## How the pieces fit
 

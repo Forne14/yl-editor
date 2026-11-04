@@ -52,6 +52,7 @@ export const defaultStrings = {
   yes: "On",
   no: "Off",
   loadFieldFailed: "Couldn’t load this field: {message}",
+  loadFieldFallback: "Couldn’t load this field, so it starts from the page’s value: {message}",
   restore: "Restore",
   restoreRevisionLabel: "Restore revision {id} into the draft",
   restoreConfirm: "Restore the {action} revision from {time}? The current draft of {key} will be replaced.",

@@ -189,13 +189,14 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
   };
 
   /**
-   * The row `GET document` shows. With no draft the draft view is the published payload, which the store validates
-   * strictly for editor reads, so a stale one would fail the read; that case takes the lenient published view, which
-   * is the same document. A draft that fails its schema still throws: it is the draft being reported on.
+   * The row `GET document` and `GET documents` show; null when absent. With no draft the draft view is the published
+   * payload, which the store validates strictly for editor reads, so a stale one would fail the read; that case takes
+   * the lenient published view, which is the same document. A draft that fails its schema still throws: it is the
+   * draft being reported on.
    */
-  const readable = async (key: string): Promise<StoredDocument> => {
+  const readable = async (key: string): Promise<StoredDocument | null> => {
     try {
-      return await existing(key);
+      return await store.get(key, { draft: true, includeRetired: true });
     } catch (error) {
       if (!(error instanceof ContentValidationError)) throw error;
       const published = await store.get(key, { draft: false, includeRetired: true });
@@ -229,7 +230,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         const documents: Record<string, DocumentSummary> = {};
         const summaries = await Promise.all(
           unique.map(async (key): Promise<[string, DocumentSummary] | null> => {
-            const document = await store.get(key, { draft: true, includeRetired: true });
+            const document = await readable(key);
             if (!document) return null;
             const ref = { type: document.type, key: document.key };
             const [edit, publish] = await Promise.all([
@@ -259,6 +260,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       run: async (context) => {
         const { key } = parseQuery(context.url, DocumentQuerySchema);
         const document = await readable(key);
+        if (!document) throw new HttpError("not_found", `No document ${key}`);
         deny(await access.canEdit(context.locals, { type: document.type, key: document.key }));
         // `includeRetired`: retiring hides a document from visitors but keeps its published payload.
         const published = await store.get(key, { draft: false, includeRetired: true });
