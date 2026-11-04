@@ -111,10 +111,10 @@ contract call, as `src/sqlite-store.test.ts` does here.
 
 The SQLite schema lives in `migrations/`, applied in name order:
 
-| File                          | What it does                                                               |
-| ----------------------------- | -------------------------------------------------------------------------- |
-| `0001_documents.sql`          | The `documents` and `revisions` tables, with JSON checks and indexes.      |
-| `0002_version_and_actor.sql`  | Adds `documents.version` (default 0) and `revisions.actor` (nullable).     |
+| File                         | What it does                                                           |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `0001_documents.sql`         | The `documents` and `revisions` tables, with JSON checks and indexes.  |
+| `0002_version_and_actor.sql` | Adds `documents.version` (default 0) and `revisions.actor` (nullable). |
 
 Rows written before `0002` read as version 0; their first mutation takes them to 1.
 

@@ -173,9 +173,11 @@ export function createSqliteContentStore(
 
   const writeDraft = (row: Row, payload: unknown): void => {
     const valid = validate(row.key, row.type, payload);
-    db.prepare(
-      "UPDATE documents SET draft_payload = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?",
-    ).run(JSON.stringify(valid), now(), row.id);
+    db.prepare("UPDATE documents SET draft_payload = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?").run(
+      JSON.stringify(valid),
+      now(),
+      row.id,
+    );
   };
 
   return {
