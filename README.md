@@ -1,4 +1,4 @@
-# @yl/editor
+# yl/editor
 
 The core of in-place editing for server-rendered sites: an editor clicks the text on the live page, changes it, and
 publishes it, with drafts and revisions underneath.
