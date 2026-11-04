@@ -1,11 +1,9 @@
 import { z } from "zod";
-import { ArrayOpSchema, type StoredDocument } from "../types.ts";
+import { ArrayOpSchema, type ArrayOp, type StoredDocument } from "../types.ts";
+import { ERROR_STATUS, type ErrorCode, type WireArrayOp, type WireDocument } from "./wire-types.ts";
 
-/** The header every request must carry. A browser cannot send it cross-origin without passing a CORS preflight. */
-export const REQUESTED_WITH_HEADER = "X-Requested-With";
-export const REQUESTED_WITH_VALUE = "yl-editor";
-
-export const DEFAULT_BASE = "/api/content";
+/** Every wire type and constant, so server code can import the whole contract from one module. */
+export * from "./wire-types.ts";
 
 const key = z.string().min(1);
 const expectedVersion = z.number().int().nonnegative().optional();
@@ -32,69 +30,6 @@ export const DocumentsQuerySchema = z.object({ keys: z.string() });
 /** Query of `GET revisions`. */
 export const RevisionsQuerySchema = z.object({ key });
 
-/** A `StoredDocument` as it travels as JSON. */
-export type WireDocument = StoredDocument;
-
-export interface DocumentSummary {
-  key: string;
-  type: string;
-  version: number;
-  isDraft: boolean;
-  draftUpdatedAt: string | null;
-  publishedAt: string | null;
-  access: { edit: boolean; publish: boolean };
-}
-
-export interface DocumentsResponse {
-  documents: Record<string, DocumentSummary>;
-}
-
-export interface DocumentResponse {
-  document: WireDocument;
-}
-
-export interface DiscardResponse {
-  document: WireDocument | null;
-}
-
-export interface WireRevision {
-  id: number;
-  action: "publish" | "retire" | "restore" | "rename";
-  slug: string;
-  payload: unknown;
-  actor: string | null;
-  createdAt: string;
-}
-
-export interface RevisionsResponse {
-  revisions: WireRevision[];
-}
-
-export type ErrorCode =
-  "forbidden" | "not_found" | "conflict" | "validation" | "path" | "state" | "slug" | "bad_request" | "internal";
-
-export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
-  forbidden: 403,
-  not_found: 404,
-  conflict: 409,
-  validation: 422,
-  path: 400,
-  state: 409,
-  slug: 400,
-  bad_request: 400,
-  internal: 500,
-};
-
-export interface ErrorEnvelope {
-  error: {
-    code: ErrorCode;
-    message: string;
-    issues?: unknown;
-    /** On `conflict`: the document as it is now (draft view), so the client can offer "take theirs". */
-    current?: WireDocument;
-  };
-}
-
 const errorCodes = Object.keys(ERROR_STATUS) as [ErrorCode, ...ErrorCode[]];
 
 export const ErrorEnvelopeSchema = z.object({
@@ -105,3 +40,8 @@ export const ErrorEnvelopeSchema = z.object({
     current: z.custom<WireDocument>((value) => typeof value === "object" && value !== null).optional(),
   }),
 });
+
+/** Compile-time guard: the dependency-free wire types must stay identical to the core types they mirror. */
+type Same<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
+const wireMatchesCore: [Same<WireDocument, StoredDocument>, Same<WireArrayOp, ArrayOp>] = [true, true];
+void wireMatchesCore;

@@ -1,15 +1,15 @@
-import type { ArrayOp } from "../types.ts";
 import {
   DEFAULT_BASE,
-  ErrorEnvelopeSchema,
+  isErrorEnvelope,
   REQUESTED_WITH_HEADER,
   REQUESTED_WITH_VALUE,
   type DocumentsResponse,
   type DocumentSummary,
   type ErrorCode,
+  type WireArrayOp,
   type WireDocument,
   type WireRevision,
-} from "./wire.ts";
+} from "./wire-types.ts";
 
 /** A non-2xx response from the content handlers, decoded from its error envelope. */
 export class ContentRequestError extends Error {
@@ -35,7 +35,7 @@ export interface ContentClientOptions {
 export interface ContentClient {
   documents(keys: string[]): Promise<Record<string, DocumentSummary>>;
   field(key: string, path: string, value: unknown, expectedVersion?: number): Promise<WireDocument>;
-  array(key: string, path: string, op: ArrayOp, expectedVersion?: number): Promise<WireDocument>;
+  array(key: string, path: string, op: WireArrayOp, expectedVersion?: number): Promise<WireDocument>;
   publish(key: string): Promise<WireDocument>;
   discard(key: string): Promise<WireDocument | null>;
   retire(key: string): Promise<WireDocument>;
@@ -47,10 +47,9 @@ export interface ContentClient {
 
 async function decodeError(response: Response): Promise<ContentRequestError> {
   const body: unknown = await response.json().catch(() => undefined);
-  const envelope = ErrorEnvelopeSchema.safeParse(body);
-  if (!envelope.success)
+  if (!isErrorEnvelope(body))
     return new ContentRequestError(response.status, "internal", `Request failed with status ${response.status}`);
-  const { code, message, issues, current } = envelope.data.error;
+  const { code, message, issues, current } = body.error;
   return new ContentRequestError(response.status, code, message, issues, current);
 }
 

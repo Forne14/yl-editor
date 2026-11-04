@@ -58,8 +58,14 @@ All bodies are JSON. `{base}` is the configured base.
 - Pass `expectedVersion` on `field` and `array` to get optimistic concurrency: a stale version is a `conflict`.
 
 The zod schemas for every body (`FieldRequestSchema`, `ArrayRequestSchema`, `KeyRequestSchema`,
-`RenameRequestSchema`, `CreateRequestSchema`) and the `WireDocument`, `DocumentSummary`, `WireRevision` and
-`ErrorEnvelope` types are exported, so a client of your own can share them.
+`RenameRequestSchema`, `CreateRequestSchema`) and the `WireDocument`, `DocumentSummary`, `WireRevision`,
+`WireArrayOp` and `ErrorEnvelope` types are exported, so a client of your own can share them.
+
+Inside the package the contract is split in two. `wire-types.ts` holds the types, the header constants, the
+code-to-status map and the `isErrorEnvelope` guard, and imports nothing. `wire.ts` holds the zod schemas and re-exports
+everything from `wire-types.ts`. The client imports only `wire-types.ts`, so a browser bundle that uses it carries
+neither zod nor the core; a test checks this. `WireDocument` and `WireArrayOp` mirror `StoredDocument` and `ArrayOp`,
+and a compile-time check in `wire.ts` fails the build if they drift apart.
 
 ## Gating
 
