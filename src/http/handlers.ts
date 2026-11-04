@@ -92,6 +92,9 @@ interface Route {
   run: (context: RequestContext) => Promise<RouteResult>;
 }
 
+/** Most keys one `documents` request may name, after deduping. */
+const MAX_DOCUMENT_KEYS = 100;
+
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -180,25 +183,33 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       run: async (context) => {
         const { keys } = parseQuery(context.url, DocumentsQuerySchema);
         const unique = [...new Set(keys.split(",").map((part) => part.trim()))].filter((part) => part.length > 0);
+        if (unique.length > MAX_DOCUMENT_KEYS)
+          throw new HttpError("bad_request", `Too many keys: at most ${MAX_DOCUMENT_KEYS} per request`);
         const documents: Record<string, DocumentSummary> = {};
-        for (const key of unique) {
-          const document = await store.get(key, { draft: true, includeRetired: true });
-          if (!document) continue;
-          const ref = { type: document.type, key: document.key };
-          const [edit, publish] = await Promise.all([
-            access.canEdit(context.locals, ref),
-            access.canPublish(context.locals, ref),
-          ]);
-          documents[key] = {
-            key: document.key,
-            type: document.type,
-            version: document.version,
-            isDraft: document.isDraft,
-            draftUpdatedAt: document.draftUpdatedAt,
-            publishedAt: document.publishedAt,
-            access: { edit: edit.allowed, publish: publish.allowed },
-          };
-        }
+        const summaries = await Promise.all(
+          unique.map(async (key): Promise<[string, DocumentSummary] | null> => {
+            const document = await store.get(key, { draft: true, includeRetired: true });
+            if (!document) return null;
+            const ref = { type: document.type, key: document.key };
+            const [edit, publish] = await Promise.all([
+              access.canEdit(context.locals, ref),
+              access.canPublish(context.locals, ref),
+            ]);
+            return [
+              key,
+              {
+                key: document.key,
+                type: document.type,
+                version: document.version,
+                isDraft: document.isDraft,
+                draftUpdatedAt: document.draftUpdatedAt,
+                publishedAt: document.publishedAt,
+                access: { edit: edit.allowed, publish: publish.allowed },
+              },
+            ];
+          }),
+        );
+        for (const entry of summaries) if (entry) documents[entry[0]] = entry[1];
         return { body: { documents } };
       },
     },
@@ -208,18 +219,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         const { key } = parseQuery(context.url, RevisionsQuerySchema);
         await gate(context, key, "canEdit");
         const revisions = await store.revisions(key);
-        return {
-          body: {
-            revisions: revisions.map(({ id, action, slug, payload, actor, createdAt }) => ({
-              id,
-              action,
-              slug,
-              payload,
-              actor,
-              createdAt,
-            })),
-          },
-        };
+        return { body: { revisions } };
       },
     },
     field: {
@@ -294,6 +294,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
     return errorResponse("internal", "Internal error");
   };
 
+  /** Fire-and-forget: never rejects, so callers may leave it unawaited. */
   const notify = async (event: ChangeEvent) => {
     if (!options.onChange) return;
     try {
@@ -328,8 +329,9 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         }),
       };
       const result = await route.run(context);
-      if (result.change) await notify({ ...result.change, ...(actor !== undefined ? { actor } : {}) });
-      return json(result.status ?? 200, result.body);
+      const response = json(result.status ?? 200, result.body);
+      if (result.change) void notify({ ...result.change, ...(actor !== undefined ? { actor } : {}) });
+      return response;
     } catch (error) {
       return toResponse(error);
     }

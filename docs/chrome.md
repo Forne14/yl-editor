@@ -38,7 +38,8 @@ const field = editable(editor ? `pages/${page.slug}` : undefined);
 
 Any other server-rendered stack works the same way: emit the attributes from `editable()` for editors only, and
 include a bundled module that imports the stylesheet and calls `mountEditor`. Nothing else is required in the
-markup. A field may also carry `data-edit-value` (JSON) when the rendered text is not the stored value, for example a
+markup. A toggle with no `data-edit-value` is read from its text (`On`, `true`, `yes`) until a write has returned the
+document. A field may also carry `data-edit-value` (JSON) when the rendered text is not the stored value, for example a
 date shown as "14 Nov"; without it the chrome reads the element's text until the server returns the payload.
 
 ### `editable(docKey)(path, type, attrs?)`
@@ -76,7 +77,8 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - Every field gets the highlight. A field whose document lacks `access.edit` is still outlined, in the muted
   colour, and its badge and accessible description give the reason. Clicking it shows the reason as a toast.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select, toggle,
-  date and number commit on change; Esc cancels and restores. Focus returns to the field when the widget closes.
+  date and number commit on change; Esc cancels and restores. A popover edit still open when another field is opened,
+  the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Focus returns to the field when the widget closes.
 - Commits go through a save queue. Each field moves idle → saving → saved, or → failed with a Retry button in the
   toast. Writes to one document are serialised, each sends `expectedVersion`, and the returned `version` is
   stored for the next write. Values committed while a save is in flight coalesce: only the latest is sent.
@@ -84,8 +86,10 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   **Take theirs (reload field)** repaints the field from the server's copy.
 - The bar shows the actor label, the number of fields and documents changed this session (kept in session storage,
   so a reload does not forget), and Revisions, Done, Discard and Publish. Publish and Discard list the touched
-  documents the editor may publish (`access.publish`) before acting, then call the endpoint once per document.
-  Touched documents they may not publish are counted, not acted on.
+  documents the editor may act on before acting: `access.publish` for Publish, `access.edit` for Discard (the server
+  gates discard by edit access). The endpoint is called once per document, after that document's pending field
+  writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document that was
+  never published deletes it, so its fields stop being editable until the page is reloaded.
 - Revisions opens a drawer with the history of one document on the page: action, actor and time. Restoring is not
   offered yet.
 - After a non-text field saves, the chrome replaces the element's text only when it holds no child elements, and
