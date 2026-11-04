@@ -26,7 +26,8 @@ export function parseAtom(atom: Atom): ParsedAtom {
   if (tail.length === 1 && tail[0] === ALL) return { family, rest: null, wildcard: "family" };
   for (const segment of tail) {
     if (segment === ALL) throw new AtomError(atom, "a wildcard is either the whole atom or directly after the family");
-    if (!SEGMENT.test(segment)) throw new AtomError(atom, `segment ${JSON.stringify(segment)} must be lower_snake_case`);
+    if (!SEGMENT.test(segment))
+      throw new AtomError(atom, `segment ${JSON.stringify(segment)} must be lower_snake_case`);
   }
   return { family, rest: tail.join("."), wildcard: null };
 }

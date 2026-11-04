@@ -1,4 +1,4 @@
-export type { Access, AccessVerdict, DocumentRef, MaybePromise } from "./types.ts";
+export type { Access, AccessVerdict, DocumentRef, MaybePromise } from "../types.ts";
 export { ALL, type Atom, type ParsedAtom, parseAtom, holds } from "./atoms.ts";
 export { AtomError, CatalogueError, RoleError } from "./errors.ts";
 export {

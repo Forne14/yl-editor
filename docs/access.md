@@ -21,7 +21,8 @@ Families and verbs are `lower_snake_case`, and a verb may have further segments.
 scope. The engine treats `posts.write.own` as just another atom, and your call site does the ownership check:
 
 ```ts
-const mayEdit = engine.can(atoms, "posts.write.any") || (engine.can(atoms, "posts.write.own") && post.authorId === user.id);
+const mayEdit =
+  engine.can(atoms, "posts.write.any") || (engine.can(atoms, "posts.write.own") && post.authorId === user.id);
 ```
 
 Atoms are opaque apart from wildcards. Holding `posts.write.any` does not imply `posts.write.own`. If you want both,
@@ -79,13 +80,13 @@ enough to keep the owner apart.
 
 Nobody can hand out a permission they do not hold. With `actor` as the actor's resolved atom set:
 
-| Question                                    | Allowed when                                                                     |
-| ------------------------------------------- | -------------------------------------------------------------------------------- |
-| `canAssignRole(actor, role)`                | every atom of the role is covered by `actor`                                      |
-| `canAuthorRole(actor, atoms)`               | every atom is well formed, known (or a wildcard over a known family), not reserved and covered |
-| `canEditRole(actor, role, next)`            | the role is custom, and `actor` covers the old atoms **and** can author the new ones |
-| `canDeleteRole(actor, role)`                | the role is custom, and `actor` covers its atoms                                 |
-| `canManagePerson(actor, target)`            | the target is not the owner, is not the actor, and the target's atoms are covered |
+| Question                         | Allowed when                                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `canAssignRole(actor, role)`     | every atom of the role is covered by `actor`                                                   |
+| `canAuthorRole(actor, atoms)`    | every atom is well formed, known (or a wildcard over a known family), not reserved and covered |
+| `canEditRole(actor, role, next)` | the role is custom, and `actor` covers the old atoms **and** can author the new ones           |
+| `canDeleteRole(actor, role)`     | the role is custom, and `actor` covers its atoms                                               |
+| `canManagePerson(actor, target)` | the target is not the owner, is not the actor, and the target's atoms are covered              |
 
 "Covered" is `covers(actor, atoms)`: every atom resolves from `actor` as described under wildcards. Creating a custom
 role that holds `radio.*` therefore needs `radio.*` or `*`. Editing a role needs the old atoms as well as the new ones
@@ -111,17 +112,17 @@ type AccessVerdict = { allowed: true } | { allowed: false; reason: string };
 
 Reasons are short, stable strings that a UI can show as they are and code can match on:
 
-| Reason                                 | Meaning                                     |
-| -------------------------------------- | ------------------------------------------- |
-| `missing pages.publish`                | the first atom the actor lacks              |
-| `unknown atom posts.delete`            | not in the catalogue                        |
-| `malformed atom posts`                 | outside the grammar                         |
-| `owner.transfer is reserved for the owner` | a reserved atom in an authored role     |
-| `built-in roles are read-only`         | edit or delete of a built-in role           |
-| `cannot change your own role`          | the target is the actor                     |
-| `the owner cannot be changed`          | the target is the owner                     |
-| `not signed in`                        | `documentAccess` had no atoms               |
-| `no permission mapped for type product` | `documentAccess` has no mapping for the type |
+| Reason                                     | Meaning                                      |
+| ------------------------------------------ | -------------------------------------------- |
+| `missing pages.publish`                    | the first atom the actor lacks               |
+| `unknown atom posts.delete`                | not in the catalogue                         |
+| `malformed atom posts`                     | outside the grammar                          |
+| `owner.transfer is reserved for the owner` | a reserved atom in an authored role          |
+| `built-in roles are read-only`             | edit or delete of a built-in role            |
+| `cannot change your own role`              | the target is the actor                      |
+| `the owner cannot be changed`              | the target is the owner                      |
+| `not signed in`                            | `documentAccess` had no atoms                |
+| `no permission mapped for type product`    | `documentAccess` has no mapping for the type |
 
 ## Documents: `documentAccess`
 

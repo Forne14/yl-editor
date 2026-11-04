@@ -39,15 +39,21 @@ describe("documentAccess", () => {
     expect(await access.canEdit({ roleId: "radio_desk" }, show)).toEqual({ allowed: true });
   });
   test("the reason names the missing atom", async () => {
-    expect(await access.canPublish({ roleId: "contributor" }, page)).toEqual({ allowed: false, reason: "missing pages.publish" });
-    expect(await access.canEdit({ roleId: "editor" }, show)).toEqual({ allowed: false, reason: "missing radio.manage" });
+    expect(await access.canPublish({ roleId: "contributor" }, page)).toEqual({
+      allowed: false,
+      reason: "missing pages.publish",
+    });
+    expect(await access.canEdit({ roleId: "editor" }, show)).toEqual({
+      allowed: false,
+      reason: "missing radio.manage",
+    });
   });
   test("an async atom source works", async () => {
     const asyncAccess = documentAccess({ atomsOf: async () => new Set(["pages.*"]), map });
     expect(await asyncAccess.canPublish({}, page)).toEqual({ allowed: true });
   });
   test("a malformed mapped atom throws at construction", () =>
-    expect(() => documentAccess({ atomsOf: () => null, map: { page: { edit: "pages", publish: "pages.publish" } } })).toThrow(
-      AtomError,
-    ));
+    expect(() =>
+      documentAccess({ atomsOf: () => null, map: { page: { edit: "pages", publish: "pages.publish" } } }),
+    ).toThrow(AtomError));
 });

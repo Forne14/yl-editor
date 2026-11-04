@@ -36,9 +36,7 @@ export const CatalogueSchema: z.ZodType<Catalogue> = z.object({
   atoms: z.array(z.object({ atom: text, label: text, family: text })),
   ownerReserved: z.array(text),
   ownerRoleId: text,
-  roles: z.array(
-    z.object({ id: text, label: text, line: z.string(), atoms: z.array(text), builtin: z.boolean() }),
-  ),
+  roles: z.array(z.object({ id: text, label: text, line: z.string(), atoms: z.array(text), builtin: z.boolean() })),
 });
 
 function duplicates(values: readonly string[]): string[] {
@@ -57,7 +55,9 @@ function duplicates(values: readonly string[]): string[] {
 export function validateCatalogue(input: unknown): Catalogue {
   const parsed = CatalogueSchema.safeParse(input);
   if (!parsed.success) {
-    throw new CatalogueError(parsed.error.issues.map((issue) => `${issue.path.join(".") || "catalogue"}: ${issue.message}`));
+    throw new CatalogueError(
+      parsed.error.issues.map((issue) => `${issue.path.join(".") || "catalogue"}: ${issue.message}`),
+    );
   }
   const catalogue = parsed.data;
   const problems: string[] = [];
@@ -114,7 +114,11 @@ export function validateCatalogue(input: unknown): Catalogue {
 }
 
 /** Why `atom` cannot appear in a role, or null when it can. */
-export function roleAtomProblem(atom: Atom, knownAtoms: ReadonlySet<Atom>, families: ReadonlySet<string>): string | null {
+export function roleAtomProblem(
+  atom: Atom,
+  knownAtoms: ReadonlySet<Atom>,
+  families: ReadonlySet<string>,
+): string | null {
   const parsed = tryParseAtom(atom);
   if (parsed === null) return `malformed atom ${atom}`;
   if (parsed.wildcard === "all") return null;

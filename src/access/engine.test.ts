@@ -31,7 +31,9 @@ describe("atomsOfRole", () => {
   test("a custom role holding * is admin-shaped, never owner-shaped", () =>
     expect(engine.atomsOfRole(customRole("everything", [ALL]))).toEqual(admin));
   test("a custom role naming a reserved atom has it stripped", () =>
-    expect(engine.atomsOfRole(customRole("sneaky", ["owner.transfer", "posts.publish"]))).toEqual(new Set(["posts.publish"])));
+    expect(engine.atomsOfRole(customRole("sneaky", ["owner.transfer", "posts.publish"]))).toEqual(
+      new Set(["posts.publish"]),
+    ));
   test("a custom role naming owner.* gains nothing", () =>
     expect(engine.atomsOfRole(customRole("sneaky", ["owner.*"]))).toEqual(new Set()));
   test("stale and malformed atoms in a stored custom role are dropped", () =>
@@ -162,17 +164,24 @@ describe("canManagePerson", () => {
     isSelf: flags.isSelf ?? false,
   });
   test("the owner cannot be changed, even by the owner", () => {
-    expect(engine.canManagePerson(admin, person("owner", { isOwner: true }))).toEqual(denied("the owner cannot be changed"));
+    expect(engine.canManagePerson(admin, person("owner", { isOwner: true }))).toEqual(
+      denied("the owner cannot be changed"),
+    );
     expect(engine.canManagePerson(owner, person("owner", { isOwner: true, isSelf: true }))).toEqual(
       denied("the owner cannot be changed"),
     );
   });
   test("nobody changes themselves", () => {
-    expect(engine.canManagePerson(admin, person("admin", { isSelf: true }))).toEqual(denied("cannot change your own role"));
-    expect(engine.canManagePerson(editor, person("editor", { isSelf: true }))).toEqual(denied("cannot change your own role"));
+    expect(engine.canManagePerson(admin, person("admin", { isSelf: true }))).toEqual(
+      denied("cannot change your own role"),
+    );
+    expect(engine.canManagePerson(editor, person("editor", { isSelf: true }))).toEqual(
+      denied("cannot change your own role"),
+    );
   });
   test("admins are peers of each other", () => expect(engine.canManagePerson(admin, person("admin"))).toEqual(allowed));
-  test("an editor cannot manage an admin", () => expect(engine.canManagePerson(editor, person("admin")).allowed).toBe(false));
+  test("an editor cannot manage an admin", () =>
+    expect(engine.canManagePerson(editor, person("admin")).allowed).toBe(false));
   test("an editor cannot manage a dj (lacks radio.password.own)", () =>
     expect(engine.canManagePerson(editor, person("dj"))).toEqual(denied("missing radio.password.own")));
   test("the owner can manage an admin", () => expect(engine.canManagePerson(owner, person("admin"))).toEqual(allowed));

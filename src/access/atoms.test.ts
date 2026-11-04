@@ -9,10 +9,20 @@ describe("parseAtom", () => {
     expect(parseAtom(ALL)).toEqual({ family: "*", rest: null, wildcard: "all" });
   });
 
-  test.each(["", "posts", "posts.", ".publish", "posts..publish", "Posts.publish", "posts.write.*", "*.publish", "posts.*.own", "posts publish", "1posts.read", "**"])(
-    "rejects %j",
-    (malformed) => expect(() => parseAtom(malformed)).toThrow(AtomError),
-  );
+  test.each([
+    "",
+    "posts",
+    "posts.",
+    ".publish",
+    "posts..publish",
+    "Posts.publish",
+    "posts.write.*",
+    "*.publish",
+    "posts.*.own",
+    "posts publish",
+    "1posts.read",
+    "**",
+  ])("rejects %j", (malformed) => expect(() => parseAtom(malformed)).toThrow(AtomError));
 });
 
 describe("holds: resolution order exact, then family.*, then *", () => {
