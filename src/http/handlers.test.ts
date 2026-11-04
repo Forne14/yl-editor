@@ -1,3 +1,4 @@
+import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { contractRegistry } from "../contract.ts";
 import { createSqliteContentStore } from "../sqlite-store.ts";
@@ -39,6 +40,7 @@ const get = (pathAndQuery: string, headers: Record<string, string> = baseHeaders
 
 const note = { title: "A", tags: [] as string[] };
 
+let db: Database.Database;
 let store: ContentStore;
 let fake: ReturnType<typeof fakeAccess>;
 let events: ChangeEvent[];
@@ -47,7 +49,8 @@ let handlers: ContentHandlers;
 const session = { user: "ada" };
 
 beforeEach(() => {
-  store = createSqliteContentStore(makeTestDb(), contractRegistry);
+  db = makeTestDb();
+  store = createSqliteContentStore(db, contractRegistry);
   fake = fakeAccess();
   events = [];
   handlers = createContentHandlers({
@@ -487,6 +490,116 @@ describe("document", () => {
     const malformed = await call(get("document"));
     expect([malformed.status, malformed.body.error.code]).toEqual([400, "bad_request"]);
     expect((await call(post("document", {}))).status).toBe(405);
+  });
+});
+
+describe("document publishedPayload", () => {
+  const read = async () => {
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(200);
+    return body;
+  };
+  /** Fails `note`'s schema: `title` must be non-empty. */
+  const stale = { title: "", tags: [] as string[] };
+  const corrupt = (column: "published_payload" | "draft_payload") =>
+    db.prepare(`UPDATE documents SET ${column} = ? WHERE key = 'notes/first'`).run(JSON.stringify(stale));
+
+  beforeEach(() => {
+    // The store reports a stale payload this way; the route must not depend on it.
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  test("published with a draft: the draft is the document and the live payload sits beside it", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    const body = await read();
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(note);
+  });
+
+  test("published with no draft: both sides are the live payload", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const body = await read();
+    expect(body.document).toMatchObject({ isDraft: false, payload: note });
+    expect(body.publishedPayload).toEqual(note);
+  });
+
+  test("never published: null", async () => {
+    await store.create("note", "first", note);
+    const body = await read();
+    expect(body.document).toMatchObject({ isDraft: true, publishedAt: null, payload: note });
+    expect(body.publishedPayload).toBeNull();
+  });
+
+  test("unpublished: null, and the content stays as the draft", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.unpublish("notes/first");
+    const body = await read();
+    expect(body.document).toMatchObject({ isDraft: true, publishedAt: null, payload: note });
+    expect(body.publishedPayload).toBeNull();
+  });
+
+  test("retired: the published payload it still holds, with or without a draft", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.retire("notes/first");
+    expect((await read()).publishedPayload).toEqual(note);
+    await store.writeField("notes/first", "title", "Draft");
+    const body = await read();
+    expect(body.document).toMatchObject({ retiredAt: expect.any(String), payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(note);
+  });
+
+  test("retired and never published: null", async () => {
+    await store.create("note", "first", note);
+    await store.retire("notes/first");
+    expect((await read()).publishedPayload).toBeNull();
+  });
+
+  test("a published payload failing the schema is served beside a valid draft", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    corrupt("published_payload");
+    const body = await read();
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(stale);
+  });
+
+  test.each([false, true])(
+    "a published payload failing the schema with no draft does not fail the route (retired: %s)",
+    async (retired) => {
+      await store.create("note", "first", note);
+      await store.publish("notes/first");
+      if (retired) await store.retire("notes/first");
+      corrupt("published_payload");
+      const body = await read();
+      expect(body.document).toMatchObject({ isDraft: false, payload: stale, publishedAt: expect.any(String) });
+      expect(body.publishedPayload).toEqual(stale);
+    },
+  );
+
+  test("a draft failing the schema is still reported, not hidden behind the published view", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    corrupt("draft_payload");
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+  });
+
+  test("the verdict gates every path, and is asked about the stored row once", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    corrupt("published_payload");
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(403);
+    expect(body).toEqual({ error: { code: "forbidden", message: "Not yours" } });
+    expect(fake.calls).toEqual([{ check: "canEdit", locals: session, ref: { type: "note", key: "notes/first" } }]);
   });
 });
 

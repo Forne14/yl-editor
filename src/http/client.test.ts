@@ -137,6 +137,27 @@ describe("content client lifecycle verbs", () => {
     await expect(client.document("notes/first")).rejects.toMatchObject({ status: 403, message: "Not yours" });
   });
 
+  test("documentForPublish hits the document route and returns the draft beside the published payload", async () => {
+    await client.create("note", "first", note);
+    expect(await client.documentForPublish("notes/first")).toMatchObject({
+      document: { key: "notes/first", payload: note },
+      publishedPayload: null,
+    });
+    await client.publish("notes/first");
+    await client.field("notes/first", "title", "B");
+    const read = await client.documentForPublish("notes/first");
+    expect(seenRequests.at(-1)).toMatchObject({
+      method: "GET",
+      url: "http://host/api/content/document?key=notes%2Ffirst",
+    });
+    expect(read.document.payload).toEqual({ title: "B", tags: [] });
+    expect(read.publishedPayload).toEqual(note);
+    expect(await client.document("notes/first")).toEqual(read.document);
+    await expect(client.documentForPublish("notes/none")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    editVerdict = { allowed: false, reason: "Not yours" };
+    await expect(client.documentForPublish("notes/first")).rejects.toMatchObject({ status: 403, message: "Not yours" });
+  });
+
   test("publish with at schedules; without at the body stays { key }", async () => {
     await client.create("note", "first", note);
     const scheduled = await client.publish("notes/first", { at: "2030-01-01T00:00:00Z" });
