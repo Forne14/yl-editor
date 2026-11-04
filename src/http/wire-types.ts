@@ -49,6 +49,11 @@ export interface DocumentResponse {
   document: WireDocument;
 }
 
+/** Response of `publish-due`: every document it published, in the order they were due. */
+export interface PublishDueResponse {
+  documents: WireDocument[];
+}
+
 export interface DiscardResponse {
   document: WireDocument | null;
 }
