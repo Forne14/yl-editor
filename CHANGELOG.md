@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-04
+
+### Fixed
+
+- Bulk Discard lists touched documents by `access.edit`, matching the server's gate, with its own "needs edit access"
+  copy.
+- Publish and Discard wait for the document's in-flight field writes, so a confirmed publish cannot race (and 409)
+  the last edit.
+- A popover edit (url, tags, and the other form widgets) is committed instead of dropped when another field is
+  opened, the page is refreshed, or the editor is exited or destroyed.
+- A toggle opens with its current value rather than always unchecked.
+- Discarding a never-published document detaches its fields and says "it had never been published" instead of
+  asking for a reload.
+- Malformed touched-document data in session storage is ignored instead of breaking every refresh.
+- GET documents caps `?keys=` at 100 and reads the misses in parallel.
+- `onChange` notification no longer delays the write response.
+- The revisions route returns `Revision` rows directly.
+
 ## [0.2.0] - 2026-11-04
 
 ### Breaking
@@ -45,6 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - First release: `ContentStore` seam, `SchemaRegistry`, path operations, `editable()` addressing, `Access` seam and the
   SQLite store.
 
-[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Forne14/yl-editor/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Forne14/yl-editor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Forne14/yl-editor/releases/tag/v0.1.0

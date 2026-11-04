@@ -44,6 +44,8 @@ export interface WidgetContext {
 export interface WidgetHandle {
   destroy(): void;
   focus?(): void;
+  /** Commit whatever the widget holds now, as if the user had finished. Called before the chrome tears it down. */
+  commit?(): void;
 }
 
 export interface Widget {

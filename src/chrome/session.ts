@@ -138,6 +138,11 @@ export class Session {
     state.payload = document.payload;
   }
 
+  /** Resolves once every write queued so far for the document has finished. */
+  pending(key: string): Promise<void> {
+    return this.chains.get(key) ?? Promise.resolve();
+  }
+
   private enqueue(key: string, task: () => Promise<void>): Promise<void> {
     const previous = this.chains.get(key) ?? Promise.resolve();
     const next = previous.then(task);
@@ -194,7 +199,12 @@ export class Session {
     try {
       const raw = globalThis.sessionStorage?.getItem(this.storageKey);
       const parsed: unknown = raw ? JSON.parse(raw) : {};
-      return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, string[]>) : {};
+      if (parsed === null || typeof parsed !== "object") return {};
+      const valid: Record<string, string[]> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (Array.isArray(value) && value.every((path) => typeof path === "string")) valid[key] = value as string[];
+      }
+      return valid;
     } catch {
       return {};
     }
