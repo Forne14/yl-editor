@@ -48,6 +48,7 @@ Peer dependencies: `zod` (required), `better-sqlite3` (only for `@yl/editor/sqli
 - [`docs/access.md`](docs/access.md): permission atoms, roles and the `Access` seam
 - [`docs/http.md`](docs/http.md): the edit endpoints and their wire format
 - [`docs/chrome.md`](docs/chrome.md): mounting the editing chrome
+- [`docs/diff.md`](docs/diff.md): `diffPayloads`, a structural draft-vs-published diff
 
 ## Commands
 

@@ -29,10 +29,41 @@ export const contractRegistry: SchemaRegistry = {
   entries: () => [noteEntry],
 };
 
+/** Builds a store over the same storage as the one under test, with a different registry. */
+export type ReopenStore = (
+  registry: SchemaRegistry,
+  hooks: { onReadIssue: (key: string, issues: z.core.$ZodIssue[]) => void },
+) => Promise<ContentStore> | ContentStore;
+
 export interface ContentStoreContractOptions {
   /** The registry the store under test was built with. Defaults to `contractRegistry`. */
   registry?: SchemaRegistry;
+  /**
+   * Reopens the store under test's storage with another registry and an `onReadIssue` hook. Enables the schema
+   * evolution tests; without it they are skipped.
+   */
+  reopen?: ReopenStore;
 }
+
+const registryOf = (entry: RegistryEntry): SchemaRegistry => ({
+  entry: (type) => (type === entry.type ? entry : undefined),
+  byCollection: (collection) => (collection === entry.collection ? entry : undefined),
+  entries: () => [entry],
+});
+
+/** `note` at version 2: requires a `subtitle`, which `migrate` adds to version 1 payloads. */
+const noteV2: RegistryEntry = {
+  ...noteEntry,
+  version: 2,
+  schema: z.strictObject({ title: z.string().min(1), tags: z.array(z.string()), subtitle: z.string() }),
+  migrate: (from, payload) => (from < 2 ? { ...(payload as object), subtitle: "" } : payload),
+};
+
+/** `note` still at version 1 but with a tighter schema: stored version 1 payloads fail it. */
+const noteTightened: RegistryEntry = {
+  ...noteEntry,
+  schema: z.strictObject({ title: z.string().min(1), tags: z.array(z.string()).min(1) }),
+};
 
 /**
  * Registers the full ContentStore lifecycle as vitest `describe`/`test` blocks. `makeStore` runs before every test
@@ -411,6 +442,199 @@ export function runContentStoreContract(
       });
     });
 
+    describe("restoreRevision", () => {
+      test("copies the revision payload into the draft and never touches the published payload", async () => {
+        await createPublished("first", { title: "One", tags: [] });
+        await store.writeField("notes/first", "title", "Two");
+        await store.publish("notes/first");
+        const [first] = await store.revisions("notes/first");
+        const before = await store.get("notes/first");
+        const restored = await store.restoreRevision("notes/first", first!.id, { actor: "ada" });
+        expect(restored.isDraft).toBe(true);
+        expect(restored.payload).toEqual({ title: "One", tags: [] });
+        expect(restored.version).toBe((before?.version ?? 0) + 1);
+        expect((await store.get("notes/first"))?.payload).toEqual({ title: "Two", tags: [] });
+        expect((await store.get("notes/first", { draft: true }))?.payload).toEqual({ title: "One", tags: [] });
+      });
+      test("records a restore_revision revision carrying the restored payload and actor", async () => {
+        await createPublished("first", { title: "One", tags: [] });
+        const [first] = await store.revisions("notes/first");
+        await store.writeField("notes/first", "title", "Draft");
+        await store.restoreRevision("notes/first", first!.id, { actor: "ada" });
+        const last = (await store.revisions("notes/first")).at(-1);
+        expect(last).toMatchObject({ action: "restore_revision", actor: "ada", payload: { title: "One", tags: [] } });
+      });
+      test("an unknown revision id throws DocumentNotFoundError and changes nothing", async () => {
+        await createPublished();
+        const before = await store.get("notes/first", { draft: true });
+        await expect(store.restoreRevision("notes/first", 987654)).rejects.toThrow(DocumentNotFoundError);
+        expect(await store.get("notes/first", { draft: true })).toEqual(before);
+        expect(await store.revisions("notes/first")).toHaveLength(1);
+      });
+      test("a revision of another document throws DocumentNotFoundError", async () => {
+        await createPublished("first");
+        await createPublished("second", { title: "B", tags: [] });
+        const [other] = await store.revisions("notes/second");
+        await expect(store.restoreRevision("notes/first", other!.id)).rejects.toThrow(DocumentNotFoundError);
+      });
+      test("an unknown document throws DocumentNotFoundError", async () => {
+        await expect(store.restoreRevision("notes/nope", 1)).rejects.toThrow(DocumentNotFoundError);
+      });
+    });
+
+    describe("unpublish", () => {
+      test("with no draft, the published payload becomes the draft and reads see nothing public", async () => {
+        await createPublished("first", { title: "Live", tags: [] });
+        const doc = await store.unpublish("notes/first");
+        expect(doc.isDraft).toBe(true);
+        expect(doc.publishedAt).toBeNull();
+        expect(doc.payload).toEqual({ title: "Live", tags: [] });
+        expect(doc.retiredAt).toBeNull();
+        expect(doc.version).toBe(3);
+        expect(await store.get("notes/first")).toBeNull();
+        expect((await store.get("notes/first", { draft: true }))?.payload).toEqual({ title: "Live", tags: [] });
+      });
+      test("with a draft, the draft is kept and the published payload is dropped", async () => {
+        await createPublished("first", { title: "Live", tags: [] });
+        await store.writeField("notes/first", "title", "Wip");
+        const doc = await store.unpublish("notes/first");
+        expect(doc.payload).toEqual({ title: "Wip", tags: [] });
+        expect(await store.get("notes/first")).toBeNull();
+      });
+      test("records an unpublish revision with the previously published payload", async () => {
+        await createPublished("first", { title: "Live", tags: [] });
+        await store.writeField("notes/first", "title", "Wip");
+        await store.unpublish("notes/first", { actor: "ada" });
+        const last = (await store.revisions("notes/first")).at(-1);
+        expect(last).toMatchObject({ action: "unpublish", actor: "ada", payload: { title: "Live", tags: [] } });
+      });
+      test("a never-published document throws DocumentStateError", async () => {
+        await store.create("note", "first", { title: "A", tags: [] });
+        await expect(store.unpublish("notes/first")).rejects.toThrow(DocumentStateError);
+        await expect(store.unpublish("notes/nope")).rejects.toThrow(DocumentNotFoundError);
+      });
+      test("can be published again", async () => {
+        await createPublished("first", { title: "Live", tags: [] });
+        await store.unpublish("notes/first");
+        expect((await store.publish("notes/first")).payload).toEqual({ title: "Live", tags: [] });
+      });
+    });
+
+    describe("scheduled publish", () => {
+      const future = "2999-01-01T00:00:00.000Z";
+      const past = "2000-01-01T00:00:00.000Z";
+      test("publish with at stores the schedule, bumps the version and publishes nothing", async () => {
+        const created = await store.create("note", "first", { title: "A", tags: [] });
+        const scheduled = await store.publish("notes/first", { at: future });
+        expect(scheduled.scheduledAt).toBe(future);
+        expect(scheduled.version).toBe(created.version + 1);
+        expect(scheduled.publishedAt).toBeNull();
+        expect(await store.get("notes/first")).toBeNull();
+        expect(await store.revisions("notes/first")).toEqual([]);
+      });
+      test("publish with at and no draft throws DocumentStateError", async () => {
+        await createPublished();
+        await expect(store.publish("notes/first", { at: future })).rejects.toThrow(DocumentStateError);
+      });
+      test("publishDue promotes documents at or before now and returns them", async () => {
+        await store.create("note", "due", { title: "Due", tags: [] });
+        await store.create("note", "later", { title: "Later", tags: [] });
+        await store.create("note", "plain", { title: "Plain", tags: [] });
+        await store.publish("notes/due", { at: past });
+        await store.publish("notes/later", { at: future });
+        const published = await store.publishDue(undefined, { actor: "cron" });
+        expect(published.map((doc) => doc.key)).toEqual(["notes/due"]);
+        expect(published[0]?.scheduledAt).toBeNull();
+        expect((await store.get("notes/due"))?.payload).toEqual({ title: "Due", tags: [] });
+        expect(await store.get("notes/later")).toBeNull();
+        expect(await store.get("notes/plain")).toBeNull();
+        expect((await store.get("notes/later", { draft: true }))?.scheduledAt).toBe(future);
+        expect(await store.revisions("notes/due")).toMatchObject([{ action: "publish", actor: "cron" }]);
+        expect(await store.revisions("notes/later")).toEqual([]);
+      });
+      test("publishDue takes an explicit now", async () => {
+        await store.create("note", "first", { title: "A", tags: [] });
+        await store.publish("notes/first", { at: "2030-06-01T00:00:00.000Z" });
+        expect(await store.publishDue("2030-05-31T23:59:59.999Z")).toEqual([]);
+        expect(await store.publishDue("2030-06-01T00:00:00.000Z")).toHaveLength(1);
+        expect(await store.publishDue("2031-01-01T00:00:00.000Z")).toEqual([]);
+      });
+      test("discardDraft and unpublish clear the schedule", async () => {
+        await createPublished("first");
+        await store.writeField("notes/first", "title", "B");
+        await store.publish("notes/first", { at: past });
+        const discarded = await store.discardDraft("notes/first");
+        expect(discarded?.scheduledAt).toBeNull();
+        expect(await store.publishDue()).toEqual([]);
+
+        await store.writeField("notes/first", "title", "C");
+        await store.publish("notes/first", { at: past });
+        const unpublished = await store.unpublish("notes/first");
+        expect(unpublished.scheduledAt).toBeNull();
+        expect(await store.publishDue()).toEqual([]);
+        expect(await store.get("notes/first")).toBeNull();
+      });
+      test("a plain publish clears the schedule", async () => {
+        await store.create("note", "first", { title: "A", tags: [] });
+        await store.publish("notes/first", { at: future });
+        expect((await store.publish("notes/first")).scheduledAt).toBeNull();
+      });
+    });
+
+    describe.skipIf(!options.reopen)("schema evolution", () => {
+      const reopen: ReopenStore = (reg, hooks) => (options.reopen as ReopenStore)(reg, hooks);
+      const noop = () => undefined;
+
+      test("migrate runs on read when the stored version is behind", async () => {
+        await createPublished();
+        const next = await reopen(registryOf(noteV2), { onReadIssue: noop });
+        expect((await next.get("notes/first"))?.payload).toEqual({ title: "A", tags: [], subtitle: "" });
+        await expect(next.get("notes/first", { draft: true })).resolves.toMatchObject({
+          payload: { title: "A", tags: [], subtitle: "" },
+        });
+      });
+
+      test("the migrated payload is persisted on the next draft write", async () => {
+        await createPublished();
+        const calls: number[] = [];
+        const counting: RegistryEntry = {
+          ...noteV2,
+          migrate: (from, payload) => {
+            calls.push(from);
+            return noteV2.migrate?.(from, payload);
+          },
+        };
+        const next = await reopen(registryOf(counting), { onReadIssue: noop });
+        await next.get("notes/first");
+        await next.get("notes/first");
+        expect(calls).toEqual([1, 1]);
+        await next.writeField("notes/first", "title", "B");
+        calls.length = 0;
+        expect((await next.get("notes/first", { draft: true }))?.payload).toEqual({
+          title: "B",
+          tags: [],
+          subtitle: "",
+        });
+        expect((await next.get("notes/first"))?.payload).toEqual({ title: "A", tags: [], subtitle: "" });
+        expect(calls).toEqual([]);
+      });
+
+      test("a public read of a payload that fails the current schema serves it and reports the issue", async () => {
+        await createPublished();
+        const reported: string[] = [];
+        const next = await reopen(registryOf(noteTightened), { onReadIssue: (key) => reported.push(key) });
+        expect((await next.get("notes/first"))?.payload).toEqual({ title: "A", tags: [] });
+        expect(reported).toEqual(["notes/first"]);
+        expect((await next.list("note")).map((doc) => doc.key)).toEqual(["notes/first"]);
+      });
+
+      test("an editor read of a payload that fails the current schema throws", async () => {
+        await createPublished();
+        const next = await reopen(registryOf(noteTightened), { onReadIssue: noop });
+        await expect(next.get("notes/first", { draft: true })).rejects.toThrow(ContentValidationError);
+      });
+    });
+
     describe("conflicts", () => {
       type Attempt = (context: WriteContext) => Promise<unknown>;
       const attempts: [string, Attempt][] = [
@@ -420,6 +644,13 @@ export function runContentStoreContract(
           (context) => store.arrayOp("notes/first", "tags", { kind: "insert", index: 0, value: "z" }, context),
         ],
         ["publish", (context) => store.publish("notes/first", context)],
+        ["publish with at", (context) => store.publish("notes/first", { ...context, at: "2999-01-01T00:00:00.000Z" })],
+        ["unpublish", (context) => store.unpublish("notes/first", context)],
+        [
+          "restoreRevision",
+          async (context) =>
+            store.restoreRevision("notes/first", (await store.revisions("notes/first"))[0]!.id, context),
+        ],
         ["discardDraft", (context) => store.discardDraft("notes/first", context)],
         ["retire", (context) => store.retire("notes/first", context)],
         ["rename", (context) => store.rename("notes/first", "moved", context)],

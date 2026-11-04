@@ -31,6 +31,8 @@ interface Row {
   previous_slugs: string;
   retired_at: string | null;
   version: number;
+  payload_version: number;
+  scheduled_at: string | null;
 }
 
 interface RevisionRow {
@@ -63,6 +65,25 @@ function parseColumn<T>(key: string, column: string, raw: string, schema: z.ZodT
   return result.data;
 }
 
+/** Keys already reported by the default `onReadIssue`, so a bad row warns once per process rather than per request. */
+const warnedKeys = new Set<string>();
+
+function warnOnce(key: string, issues: z.core.$ZodIssue[]): void {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  console.warn(
+    `[yl-editor] ${key} no longer matches its schema and is served as stored: ${issues.map((issue) => issue.message).join("; ")}`,
+  );
+}
+
+export interface SqliteContentStoreOptions {
+  /**
+   * Called when a public read (`draft: false`) finds a payload that fails the current schema. The stored payload is
+   * served anyway. Defaults to a `console.warn` once per key per process.
+   */
+  onReadIssue?: (key: string, issues: z.core.$ZodIssue[]) => void;
+}
+
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
@@ -73,7 +94,9 @@ export function createSqliteContentStore(
   db: Database.Database,
   registry: SchemaRegistry,
   clock: () => Date = () => new Date(),
+  options: SqliteContentStoreOptions = {},
 ): ContentStore {
+  const onReadIssue = options.onReadIssue ?? warnOnce;
   const now = () => clock().toISOString();
 
   const entryFor = (type: string, key: string = type) => {
@@ -89,6 +112,15 @@ export function createSqliteContentStore(
     return result.data;
   };
 
+  const currentVersion = (type: string, key: string): number => entryFor(type, key).version ?? 1;
+
+  /** Brings a stored payload up to the entry's version; a no-op when current or when the entry has no `migrate`. */
+  const migrated = (row: Row, payload: unknown): unknown => {
+    const entry = entryFor(row.type, row.key);
+    if (row.payload_version >= (entry.version ?? 1) || !entry.migrate) return payload;
+    return entry.migrate(row.payload_version, payload);
+  };
+
   const rowByKey = (key: string): Row | undefined =>
     db.prepare<[string], Row>("SELECT * FROM documents WHERE key = ?").get(key);
 
@@ -101,27 +133,34 @@ export function createSqliteContentStore(
   const toDoc = (row: Row, draft: boolean): StoredDocument | null => {
     const raw = draft ? (row.draft_payload ?? row.published_payload) : row.published_payload;
     if (raw === null) return null;
+    const isDraftPayload = draft && row.draft_payload !== null;
+    const stored = migrated(
+      row,
+      parseColumn(row.key, isDraftPayload ? "draft_payload" : "published_payload", raw, z.unknown()),
+    );
+    let payload: unknown;
+    if (draft) payload = validate(row.key, row.type, stored);
+    else {
+      const result = entryFor(row.type, row.key).schema.safeParse(stored);
+      if (result.success) payload = result.data;
+      else {
+        onReadIssue(row.key, result.error.issues);
+        payload = stored;
+      }
+    }
     return {
       id: row.id,
       key: row.key,
       type: row.type,
       slug: row.slug,
-      payload: validate(
-        row.key,
-        row.type,
-        parseColumn(
-          row.key,
-          draft && row.draft_payload !== null ? "draft_payload" : "published_payload",
-          raw,
-          z.unknown(),
-        ),
-      ),
+      payload,
       isDraft: draft && row.draft_payload !== null,
       publishedAt: row.published_at,
       draftUpdatedAt: row.draft_updated_at,
       previousSlugs: parseColumn(row.key, "previous_slugs", row.previous_slugs, SLUG_LIST),
       retiredAt: row.retired_at,
       version: row.version,
+      scheduledAt: row.scheduled_at,
     };
   };
 
@@ -140,11 +179,14 @@ export function createSqliteContentStore(
 
   const currentPayload = (row: Row): unknown => {
     const hasDraft = row.draft_payload !== null;
-    return parseColumn(
-      row.key,
-      hasDraft ? "draft_payload" : "published_payload",
-      (row.draft_payload ?? row.published_payload) as string,
-      z.unknown(),
+    return migrated(
+      row,
+      parseColumn(
+        row.key,
+        hasDraft ? "draft_payload" : "published_payload",
+        (row.draft_payload ?? row.published_payload) as string,
+        z.unknown(),
+      ),
     );
   };
 
@@ -154,6 +196,26 @@ export function createSqliteContentStore(
         "INSERT INTO revisions (document_id, action, slug, payload, created_at, actor) VALUES (?, ?, ?, ?, ?, ?)",
       )
       .run(row.id, action, row.slug, payload, now(), context.actor ?? null);
+
+  /** Validates the draft and moves it to published, clearing any schedule; writes the `publish` revision. */
+  const promote = (row: Row, context: WriteContext): StoredDocument => {
+    if (row.draft_payload === null) throw new DocumentStateError(`Document ${row.key} has no draft to publish`);
+    const valid = JSON.stringify(
+      validate(row.key, row.type, migrated(row, parseColumn(row.key, "draft_payload", row.draft_payload, z.unknown()))),
+    );
+    db.prepare(
+      "UPDATE documents SET published_payload = ?, draft_payload = NULL, draft_updated_at = NULL, payload_version = ?, published_at = ?, scheduled_at = NULL, version = version + 1 WHERE id = ?",
+    ).run(valid, currentVersion(row.type, row.key), now(), row.id);
+    addRevision(row, "publish", valid, context);
+    return mustDoc(row.key, false);
+  };
+
+  const normalizeAt = (at: string): string => {
+    const time = Date.parse(at);
+    if (Number.isNaN(time))
+      throw new DocumentStateError(`Invalid schedule time ${JSON.stringify(at)}: use an ISO string`);
+    return new Date(time).toISOString();
+  };
 
   const requireSlug = (slug: string) => {
     if (!SLUG.test(slug)) throw new SlugError(slug);
@@ -171,13 +233,19 @@ export function createSqliteContentStore(
       return work(row);
     })();
 
+  /**
+   * Persists a draft under the entry's current version. One `payload_version` covers both columns, so a stale
+   * published payload is migrated in the same statement; otherwise it would be misread as current.
+   */
   const writeDraft = (row: Row, payload: unknown): void => {
     const valid = validate(row.key, row.type, payload);
-    db.prepare("UPDATE documents SET draft_payload = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?").run(
-      JSON.stringify(valid),
-      now(),
-      row.id,
-    );
+    const published =
+      row.published_payload === null
+        ? null
+        : JSON.stringify(migrated(row, parseColumn(row.key, "published_payload", row.published_payload, z.unknown())));
+    db.prepare(
+      "UPDATE documents SET draft_payload = ?, published_payload = ?, payload_version = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?",
+    ).run(JSON.stringify(valid), published, currentVersion(row.type, row.key), now(), row.id);
   };
 
   return {
@@ -190,8 +258,8 @@ export function createSqliteContentStore(
         const valid = validate(key, type, payload);
         const createdAt = now();
         db.prepare(
-          "INSERT INTO documents (key, type, slug, draft_payload, draft_updated_at, created_at, version) VALUES (?, ?, ?, ?, ?, ?, 1)",
-        ).run(key, type, slug, JSON.stringify(valid), createdAt, createdAt);
+          "INSERT INTO documents (key, type, slug, draft_payload, draft_updated_at, created_at, version, payload_version) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+        ).run(key, type, slug, JSON.stringify(valid), createdAt, createdAt, entryFor(type).version ?? 1);
         return mustDoc(key);
       })();
     },
@@ -229,14 +297,54 @@ export function createSqliteContentStore(
     },
 
     async publish(key, context = {}) {
+      const at = context.at === undefined ? undefined : normalizeAt(context.at);
       return mutate(key, context, (row) => {
         if (row.draft_payload === null) throw new DocumentStateError(`Document ${key} has no draft to publish`);
-        validate(key, row.type, parseColumn(key, "draft_payload", row.draft_payload, z.unknown()));
+        if (at !== undefined) {
+          validate(key, row.type, migrated(row, parseColumn(key, "draft_payload", row.draft_payload, z.unknown())));
+          db.prepare("UPDATE documents SET scheduled_at = ?, version = version + 1 WHERE id = ?").run(at, row.id);
+          return mustDoc(key);
+        }
+        return promote(row, context);
+      });
+    },
+
+    async publishDue(at, context = {}) {
+      const cutoff = at === undefined ? now() : normalizeAt(at);
+      return db.transaction(() => {
+        const due = db
+          .prepare<[string], Row>(
+            "SELECT * FROM documents WHERE scheduled_at IS NOT NULL AND scheduled_at <= ? AND retired_at IS NULL AND draft_payload IS NOT NULL ORDER BY scheduled_at, id",
+          )
+          .all(cutoff);
+        return due.map((row) => promote(row, { actor: context.actor }));
+      })();
+    },
+
+    async unpublish(key, context = {}) {
+      return mutate(key, context, (row) => {
+        if (row.published_payload === null) throw new DocumentStateError(`Document ${key} is not published`);
+        const draft = row.draft_payload ?? row.published_payload;
         db.prepare(
-          "UPDATE documents SET published_payload = draft_payload, draft_payload = NULL, draft_updated_at = NULL, published_at = ?, version = version + 1 WHERE id = ?",
-        ).run(now(), row.id);
-        addRevision(row, "publish", row.draft_payload, context);
-        return mustDoc(key, false);
+          "UPDATE documents SET draft_payload = ?, draft_updated_at = ?, published_payload = NULL, published_at = NULL, scheduled_at = NULL, version = version + 1 WHERE id = ?",
+        ).run(draft, row.draft_payload === null ? now() : row.draft_updated_at, row.id);
+        addRevision(row, "unpublish", row.published_payload, context);
+        return mustDoc(key);
+      });
+    },
+
+    async restoreRevision(key, revisionId, context = {}) {
+      return mutate(key, context, (row) => {
+        const revision = db
+          .prepare<[number, number], { payload: string }>(
+            "SELECT payload FROM revisions WHERE id = ? AND document_id = ?",
+          )
+          .get(revisionId, row.id);
+        if (!revision) throw new DocumentNotFoundError(key);
+        const payload = parseColumn(key, "revisions.payload", revision.payload, z.unknown());
+        writeDraft(row, payload);
+        addRevision(row, "restore_revision", JSON.stringify(payload), context);
+        return mustDoc(key);
       });
     },
 
@@ -247,7 +355,7 @@ export function createSqliteContentStore(
           return null;
         }
         db.prepare(
-          "UPDATE documents SET draft_payload = NULL, draft_updated_at = NULL, version = version + 1 WHERE id = ?",
+          "UPDATE documents SET draft_payload = NULL, draft_updated_at = NULL, scheduled_at = NULL, version = version + 1 WHERE id = ?",
         ).run(row.id);
         return mustDoc(key, false);
       });

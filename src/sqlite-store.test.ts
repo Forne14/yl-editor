@@ -1,11 +1,20 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { contractRegistry, runContentStoreContract } from "./contract.ts";
 import { createSqliteContentStore } from "./sqlite-store.ts";
 import { makeTestDb } from "./test-support.ts";
-import { ContentValidationError, PathError, type ContentStore } from "./types.ts";
+import {
+  ContentValidationError,
+  PathError,
+  type ContentStore,
+  type RegistryEntry,
+  type SchemaRegistry,
+} from "./types.ts";
 
-runContentStoreContract("sqlite", () => createSqliteContentStore(makeTestDb(), contractRegistry));
+let contractDb: Database.Database;
+runContentStoreContract("sqlite", () => createSqliteContentStore((contractDb = makeTestDb()), contractRegistry), {
+  reopen: (registry, hooks) => createSqliteContentStore(contractDb, registry, undefined, hooks),
+});
 
 let db: Database.Database;
 let store: ContentStore;
@@ -34,6 +43,47 @@ describe("migrations", () => {
   });
 });
 
+describe("migration 0004", () => {
+  test("documents gain scheduled_at and the revisions CHECK accepts the new actions", () => {
+    const columns = db.prepare<[], { name: string }>("PRAGMA table_info(documents)").all();
+    expect(columns.map((column) => column.name)).toContain("scheduled_at");
+    db.prepare(
+      "INSERT INTO documents (key, type, slug, draft_payload, created_at) VALUES ('notes/x', 'note', 'x', '{}', 'now')",
+    ).run();
+    const insert = db.prepare(
+      "INSERT INTO revisions (document_id, action, slug, payload, created_at) VALUES (1, ?, 'x', '{}', 'now')",
+    );
+    expect(() => insert.run("unpublish")).not.toThrow();
+    expect(() => insert.run("restore_revision")).not.toThrow();
+    expect(() => insert.run("bogus")).toThrow(/CHECK/);
+  });
+  test("the revisions index survives the rebuild", () => {
+    const indexes = db.prepare<[], { name: string }>("PRAGMA index_list(revisions)").all();
+    expect(indexes.map((index) => index.name)).toContain("revisions_document_idx");
+  });
+});
+
+describe("lifecycle timestamps", () => {
+  test("publish with at does not stamp publishedAt; publishDue stamps it from the clock", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first", { at: "2026-10-14T12:30:00Z" });
+    expect(db.prepare("SELECT scheduled_at FROM documents").pluck().get()).toBe("2026-10-14T12:30:00.000Z");
+    const [doc] = await store.publishDue("2026-10-14T12:30:00.000Z");
+    expect(doc?.publishedAt).toBe("2026-10-14T12:00:01.000Z");
+  });
+  test("publishDue defaults to the store clock", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first", { at: "2026-10-14T12:00:30.000Z" });
+    expect(await store.publishDue()).toEqual([]);
+    store = createSqliteContentStore(db, contractRegistry, () => new Date("2026-10-14T12:01:00Z"));
+    expect(await store.publishDue()).toHaveLength(1);
+  });
+  test("an unparseable at is refused", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await expect(store.publish("notes/first", { at: "soon" })).rejects.toThrow(/ISO/);
+  });
+});
+
 describe("timestamps come from the injected clock", () => {
   test("publish stamps publishedAt and the revision from the clock", async () => {
     await store.create("note", "first", { title: "A", tags: [] });
@@ -51,8 +101,67 @@ describe("reads validate (Review Focus 1)", () => {
       JSON.stringify({ title: 1 }),
       "notes/first",
     );
-    await expect(store.get("notes/first")).rejects.toThrow(/notes\/first/);
-    await expect(store.list("note")).rejects.toThrow(ContentValidationError);
+    await expect(store.get("notes/first", { draft: true })).rejects.toThrow(/notes\/first/);
+    await expect(store.list("note", { draft: true })).rejects.toThrow(ContentValidationError);
+  });
+  test("a public read serves the stored payload and reports through onReadIssue", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first");
+    db.prepare("UPDATE documents SET published_payload = ? WHERE key = ?").run(
+      JSON.stringify({ title: 1 }),
+      "notes/first",
+    );
+    const reported: string[] = [];
+    const lenient = createSqliteContentStore(db, contractRegistry, clock, { onReadIssue: (key) => reported.push(key) });
+    expect((await lenient.get("notes/first"))?.payload).toEqual({ title: 1 });
+    expect(reported).toEqual(["notes/first"]);
+  });
+  test("the default onReadIssue warns once per key", async () => {
+    await store.create("note", "warned", { title: "A", tags: [] });
+    await store.publish("notes/warned");
+    db.prepare("UPDATE documents SET published_payload = ? WHERE key = ?").run(
+      JSON.stringify({ title: 1 }),
+      "notes/warned",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await store.get("notes/warned");
+    await store.get("notes/warned");
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
+
+describe("payload_version", () => {
+  const versionOf = (key: string) =>
+    db.prepare<[string], { payload_version: number }>("SELECT payload_version FROM documents WHERE key = ?").get(key)
+      ?.payload_version;
+  const v3: RegistryEntry = { ...(contractRegistry.entry("note") as RegistryEntry), version: 3 };
+  const v3Registry: SchemaRegistry = {
+    entry: () => v3,
+    byCollection: () => v3,
+    entries: () => [v3],
+  };
+
+  test("rows default to 1 and writes stamp the entry's version", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    expect(versionOf("notes/first")).toBe(1);
+    const next = createSqliteContentStore(db, v3Registry, clock);
+    await next.writeField("notes/first", "title", "B");
+    expect(versionOf("notes/first")).toBe(3);
+    await next.create("note", "second", { title: "S", tags: [] });
+    expect(versionOf("notes/second")).toBe(3);
+  });
+  test("publish stamps the entry's version", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await createSqliteContentStore(db, v3Registry, clock).publish("notes/first");
+    expect(versionOf("notes/first")).toBe(3);
+  });
+  test("reads never write back", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first");
+    const before = db.prepare("SELECT * FROM documents WHERE key = 'notes/first'").get();
+    await createSqliteContentStore(db, v3Registry, clock).get("notes/first");
+    expect(db.prepare("SELECT * FROM documents WHERE key = 'notes/first'").get()).toEqual(before);
   });
 });
 

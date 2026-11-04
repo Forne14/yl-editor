@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Schema evolution: `RegistryEntry` takes `version` (default 1) and `migrate(fromVersion, payload)`. Migration
+  `0003_payload_version.sql` adds `documents.payload_version`; apply it before upgrading a SQLite store.
+- `createSqliteContentStore` takes an `onReadIssue(key, issues)` option.
+- Store verbs: `restoreRevision(key, revisionId)` copies a revision into the draft (never the published payload);
+  `unpublish(key)` returns a published document to draft-only; scheduled publish via `publish(key, { at })` and
+  `publishDue(now?)`. Custom `ContentStore` implementations must add them.
+- `StoredDocument` and `WireDocument` gain `scheduledAt`; revision actions gain `restore_revision` and `unpublish`.
+- Migration `0004_lifecycle.sql` adds `documents.scheduled_at` and rebuilds `revisions` to widen its action CHECK;
+  apply it before upgrading a SQLite store.
+
+### Changed
+
+- Public reads (`draft: false`) no longer throw when a stored payload fails the current schema: they serve it and call
+  `onReadIssue` (default: `console.warn` once per key). Editor reads and writes still throw `ContentValidationError`.
+- `discardDraft` clears `scheduled_at`.
+
 ## [0.2.1] - 2026-11-04
 
 ### Fixed
