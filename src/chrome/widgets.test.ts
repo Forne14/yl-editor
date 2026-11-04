@@ -63,6 +63,22 @@ test("toggle commits the checked state on change", () => {
   expect(commit).toHaveBeenCalledWith(true);
 });
 
+test("leaving an untouched popover cancels even when the stored value is missing", () => {
+  const { ctx, commit, cancel } = context("toggle", undefined);
+  const widget = defaultWidgets.toggle.mount(ctx);
+  widget.commit?.();
+  expect(commit).not.toHaveBeenCalled();
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+test("leaving a changed popover commits", () => {
+  const { ctx, commit } = context("url", "https://a.test");
+  const widget = defaultWidgets.url.mount(ctx);
+  popoverControl<HTMLInputElement>("input").value = "https://b.test";
+  widget.commit?.();
+  expect(commit).toHaveBeenCalledWith("https://b.test");
+});
+
 test("tags split on commas into chips and commit the list", () => {
   const { ctx, commit } = context("tags", ["soul"]);
   defaultWidgets.tags.mount(ctx);

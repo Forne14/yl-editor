@@ -412,9 +412,11 @@ test("a url popover edit is committed when another field is opened", async () =>
   document
     .getElementById("page")
     ?.insertAdjacentHTML("beforeend", `<a data-edit-field="pages/home:link" data-edit-type="url">x</a>`);
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
   const { api } = await mount();
   await api.refresh();
   field("pages/home:link").click();
+  await settle();
   const input = document.querySelector<HTMLInputElement>(".cms-popover input");
   if (!input) throw new Error("no input");
   input.value = "https://example.com";
@@ -427,12 +429,13 @@ test("a url popover edit is committed when another field is opened", async () =>
 test("a tags popover edit is committed when the editor is destroyed", async () => {
   document
     .getElementById("page")
-    ?.insertAdjacentHTML(
-      "beforeend",
-      `<p data-edit-field="pages/home:tags" data-edit-type="tags" data-edit-value='["a"]'>a</p>`,
-    );
+    ?.insertAdjacentHTML("beforeend", `<p data-edit-field="pages/home:tags" data-edit-type="tags">rendered</p>`);
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { tags: ["a"] }) },
+  });
   const editor = await mount();
   field("pages/home:tags").click();
+  await settle();
   const input = document.querySelector<HTMLInputElement>(".cms-popover input");
   if (!input) throw new Error("no input");
   input.value = "b";
@@ -442,14 +445,381 @@ test("a tags popover edit is committed when the editor is destroyed", async () =
   expect(write?.body).toMatchObject({ path: "tags", value: ["a", "b"] });
 });
 
-test("an 'on' toggle with no payload yet opens checked", async () => {
+function addToggle(rendered: string): void {
   document
     .getElementById("page")
-    ?.insertAdjacentHTML("beforeend", `<span data-edit-field="pages/home:live" data-edit-type="toggle">On</span>`);
+    ?.insertAdjacentHTML(
+      "beforeend",
+      `<span data-edit-field="pages/home:live" data-edit-type="toggle">${rendered}</span>`,
+    );
+}
+
+function checkbox(): HTMLInputElement {
+  const box = document.querySelector<HTMLInputElement>(".cms-popover input[type=checkbox]");
+  if (!box) throw new Error("no checkbox");
+  return box;
+}
+
+const documentFetches = () => calls.filter((call) => call.route.startsWith("GET /api/content/document?"));
+
+test("a toggle opens on the fetched document's value, not on the text the page renders", async () => {
+  addToggle("On");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: false }) },
+  });
+  await mount();
+  expect(documentFetches()).toHaveLength(0);
+  field("pages/home:live").click();
+  await settle();
+  expect(documentFetches()[0]?.route).toBe("GET /api/content/document?key=pages%2Fhome");
+  expect(checkbox().checked).toBe(false);
+});
+
+test("the opposite way round too: a toggle rendered Off opens checked when the document says true", async () => {
+  addToggle("Off");
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, { live: true }) } });
   await mount();
   field("pages/home:live").click();
-  const box = document.querySelector<HTMLInputElement>(".cms-popover input[type=checkbox]");
-  expect(box?.checked).toBe(true);
+  await settle();
+  expect(checkbox().checked).toBe(true);
+});
+
+test("a keyed path reads the item by its _key, wherever the array has moved it", async () => {
+  document
+    .getElementById("page")
+    ?.insertAdjacentHTML(
+      "beforeend",
+      `<span data-edit-field="pages/home:items[_key=b].live" data-edit-type="toggle">Off</span>`,
+    );
+  handlers["GET /api/content/document"] = () => ({
+    json: {
+      document: wireDocument("pages/home", 3, {
+        items: [
+          { _key: "a", live: false },
+          { _key: "b", live: true },
+        ],
+      }),
+    },
+  });
+  await mount();
+  field("pages/home:items[_key=b].live").click();
+  await settle();
+  expect(checkbox().checked).toBe(true);
+});
+
+test("one document fetch per key per session, and a write's result replaces the cached copy", async () => {
+  addToggle("x");
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { live: false }) },
+  });
+  handlers["POST /api/content/field"] = (body) => ({
+    json: { document: wireDocument("pages/home", 4, { live: body?.value }) },
+  });
+  await mount();
+  const live = field("pages/home:live");
+  live.click();
+  await settle();
+  press(checkbox(), "Escape");
+  live.click();
+  await settle();
+  expect(documentFetches()).toHaveLength(1);
+  const box = checkbox();
+  box.checked = true;
+  box.dispatchEvent(new Event("change"));
+  await settle();
+  live.click();
+  await settle();
+  expect(checkbox().checked).toBe(true);
+  expect(documentFetches()).toHaveLength(1);
+});
+
+test("a failed document fetch keeps the widget closed, says why, and the next open retries", async () => {
+  addToggle("On");
+  handlers["GET /api/content/document"] = [
+    () => ({ status: 403, json: { error: { code: "forbidden", message: "Nope" } } }),
+    () => ({ json: { document: wireDocument("pages/home", 3, { live: true }) } }),
+  ];
+  await mount();
+  field("pages/home:live").click();
+  await settle();
+  expect(document.querySelector(".cms-popover")).toBeNull();
+  expect(visibleToast().textContent).toContain("Couldn’t load this field: Nope");
+  field("pages/home:live").click();
+  await settle();
+  expect(checkbox().checked).toBe(true);
+});
+
+test("a toggle whose fetch finishes after another field was opened does not open", async () => {
+  addToggle("On");
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, { live: true }) } });
+  await mount();
+  field("pages/home:live").click();
+  field("pages/home:title").click();
+  await settle();
+  expect(document.querySelector(".cms-popover")).toBeNull();
+  expect(field("pages/home:title").getAttribute("contenteditable")).not.toBeNull();
+});
+
+function revision(id: number, action: string, payload: unknown) {
+  return { id, action, slug: "home", payload, actor: "Maya", createdAt: "2026-01-01T00:00:00.000Z" };
+}
+
+async function openRevisions(): Promise<HTMLElement> {
+  buttonNamed("Revisions").click();
+  await settle();
+  const sheet = document.querySelector<HTMLElement>(".cms-sheet");
+  if (!sheet) throw new Error("no sheet");
+  return sheet;
+}
+
+function pick(sheet: HTMLElement, key: string): void {
+  const picker = sheet.querySelector("select");
+  if (!picker) throw new Error("no picker");
+  picker.value = key;
+  picker.dispatchEvent(new Event("change"));
+}
+
+test("Restore shows on each revision only with edit access", async () => {
+  handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [revision(1, "publish", {})] } });
+  await mount();
+  const sheet = await openRevisions();
+  expect(buttonNamed("Restore", sheet).getAttribute("aria-label")).toBe("Restore revision 1 into the draft");
+  pick(sheet, "locked/doc");
+  await settle();
+  expect(sheet.querySelector("li[data-revision]")).not.toBeNull();
+  expect(() => buttonNamed("Restore", sheet)).toThrow();
+});
+
+test("Restore calls restoreRevision, repaints the fields from the draft and reloads the list", async () => {
+  handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [revision(7, "publish", {})] } });
+  handlers["GET /api/content/document"] = () => ({
+    json: { document: wireDocument("pages/home", 3, { title: "Hello", lede: "Lede" }) },
+  });
+  handlers["POST /api/content/restore-revision"] = (body) => ({
+    json: { document: wireDocument(String(body?.key), 4, { title: "Old title", lede: "Lede" }) },
+  });
+  const { api } = await mount();
+  const changed = vi.fn();
+  field("pages/home:title").addEventListener("cms:change", changed);
+  const sheet = await openRevisions();
+  const listings = calls.filter((call) => call.route.startsWith("GET /api/content/revisions")).length;
+  buttonNamed("Restore", sheet).click();
+  await settle();
+  const write = calls.find((call) => call.route === "POST /api/content/restore-revision");
+  expect(write?.body).toEqual({ key: "pages/home", revisionId: 7 });
+  expect(field("pages/home:title").textContent).toBe("Old title");
+  expect(changed).toHaveBeenCalledOnce();
+  const state = api.documents().get("pages/home");
+  expect(state?.version).toBe(4);
+  expect([...(state?.touchedPaths ?? [])]).toEqual(["title"]);
+  expect(visibleToast().textContent).toContain("Restored a revision of pages/home");
+  expect(calls.filter((call) => call.route.startsWith("GET /api/content/revisions")).length).toBe(listings + 1);
+});
+
+test("Restore waits for an in-flight field write and its next write carries the returned version", async () => {
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
+  handlers["POST /api/content/restore-revision"] = () => ({
+    json: { document: wireDocument("pages/home", 20, { title: "Old" }) },
+  });
+  const { api } = await mount();
+  const title = field("pages/home:title");
+  title.click();
+  title.textContent = "Late";
+  press(title, "Enter");
+  await api.restoreRevision("pages/home", 7);
+  const routes = calls.map((call) => call.route).filter((route) => route.startsWith("POST"));
+  expect(routes).toEqual(["POST /api/content/field", "POST /api/content/restore-revision"]);
+  await editText("pages/home:lede", "After");
+  expect(calls.at(-1)?.body?.expectedVersion).toBe(20);
+});
+
+test("a failed restore shows a toast, leaves the fields alone and does not stall later saves", async () => {
+  handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
+  handlers["POST /api/content/restore-revision"] = () => ({
+    status: 409,
+    json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, {}) } },
+  });
+  const { api } = await mount();
+  await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
+  expect(visibleToast().textContent).toContain("Restore failed for pages/home: Stale");
+  expect(field("pages/home:title").textContent).toBe("Hello");
+  await editText("pages/home:title", "Still saves");
+  expect(calls.at(-1)?.route).toBe("POST /api/content/field");
+});
+
+function published(key: string, version: number, payload: unknown) {
+  return { ...wireDocument(key, version, payload), publishedAt: "2026-01-01T00:00:00.000Z" };
+}
+
+test("the publish sheet lists the changes against the live payload", async () => {
+  handlers["POST /api/content/field"] = () => ({
+    json: { document: published("pages/home", 4, { title: "New", extra: "x", lede: "Same" }) },
+  });
+  handlers["GET /api/content/revisions"] = () => ({
+    json: {
+      revisions: [
+        revision(1, "publish", { title: "Old", lede: "Same", gone: 1 }),
+        revision(2, "restore_revision", { title: "Not live" }),
+      ],
+    },
+  });
+  await mount();
+  await editText("pages/home:title", "New");
+  buttonNamed("Publish").click();
+  await settle();
+  const sheet = document.querySelector<HTMLElement>(".cms-sheet");
+  const lines = [...(sheet?.querySelectorAll(".cms-diff li") ?? [])].map((line) => line.textContent);
+  expect(lines).toEqual(['title "Old" → "New"', 'extra added "x"', "gone removed 1"]);
+  expect(calls.some((call) => call.route === "POST /api/content/publish")).toBe(false);
+  buttonNamed("Publish", sheet ?? document).click();
+  await settle();
+  expect(calls.filter((call) => call.route === "POST /api/content/publish").map((call) => call.body)).toEqual([
+    { key: "pages/home" },
+  ]);
+});
+
+test("the publish sheet says first publish when nothing is live, without reading revisions", async () => {
+  await mount();
+  await editText("pages/home:title", "One");
+  buttonNamed("Publish").click();
+  await settle();
+  expect(document.querySelector(".cms-diff")?.textContent).toBe("First publish: nothing is live yet.");
+  expect(calls.some((call) => call.route.startsWith("GET /api/content/revisions"))).toBe(false);
+});
+
+test("the publish sheet says so when the changes cannot be loaded or compared, and can still publish", async () => {
+  handlers["POST /api/content/field"] = () => ({ json: { document: published("pages/home", 4, { title: "One" }) } });
+  handlers["GET /api/content/revisions"] = [
+    () => ({ json: { revisions: [] } }),
+    () => ({ status: 500, json: { error: { code: "internal", message: "Boom" } } }),
+  ];
+  await mount();
+  await editText("pages/home:title", "One");
+  const publish = buttonNamed("Publish");
+  publish.click();
+  await settle();
+  expect(document.querySelector(".cms-diff")?.textContent).toBe("Couldn’t find the published version to compare.");
+  publish.click();
+  await settle();
+  expect(document.querySelector(".cms-diff")?.textContent).toBe("Couldn’t load the changes: Boom");
+  buttonNamed("Publish", document.querySelector(".cms-sheet") ?? document).click();
+  await settle();
+  expect(calls.some((call) => call.route === "POST /api/content/publish")).toBe(true);
+});
+
+test("Publish at sends at with an offset, shows the schedule, and Publish now publishes without at", async () => {
+  handlers["POST /api/content/publish"] = (body) => ({
+    json: {
+      document: {
+        ...wireDocument("pages/home", 9),
+        isDraft: body?.at !== undefined,
+        scheduledAt: (body?.at as string | undefined) ?? null,
+      },
+    },
+  });
+  const { api } = await mount();
+  await editText("pages/home:title", "One");
+  buttonNamed("Publish").click();
+  await settle();
+  const sheet = document.querySelector<HTMLElement>(".cms-sheet") as HTMLElement;
+  const input = sheet.querySelector<HTMLInputElement>("input[type=datetime-local]") as HTMLInputElement;
+  input.value = "2030-06-01T09:30";
+  input.dispatchEvent(new Event("input"));
+  buttonNamed("Schedule", sheet).click();
+  await settle();
+  const schedule = calls.find((call) => call.route === "POST /api/content/publish");
+  expect(schedule?.body?.at).toMatch(/^2030-06-01T09:30:00[+-]\d{2}:\d{2}$/);
+  expect(new Date(String(schedule?.body?.at)).getTime()).toBe(new Date("2030-06-01T09:30").getTime());
+  const line = document.querySelector<HTMLElement>(".cms-bar__scheduled") as HTMLElement;
+  expect(line.textContent).toContain("pages/home scheduled for");
+  expect(line.textContent).toContain(new Date("2030-06-01T09:30").toLocaleString());
+  expect(visibleToast().textContent).toContain("Scheduled pages/home for");
+  expect(api.documents().get("pages/home")?.touched).toBe(true);
+
+  buttonNamed("Publish now", line).click();
+  await settle();
+  const publishes = calls.filter((call) => call.route === "POST /api/content/publish");
+  expect(publishes[1]?.body).toEqual({ key: "pages/home" });
+  expect(document.querySelector<HTMLElement>(".cms-bar__schedule")?.hidden).toBe(true);
+  expect(api.documents().get("pages/home")?.touched).toBe(false);
+});
+
+test("without Publish at the sheet publishes now and the button still reads Publish", async () => {
+  await mount();
+  await editText("pages/home:title", "One");
+  buttonNamed("Publish").click();
+  await settle();
+  const sheet = document.querySelector<HTMLElement>(".cms-sheet") as HTMLElement;
+  const input = sheet.querySelector<HTMLInputElement>("input[type=datetime-local]") as HTMLInputElement;
+  input.value = "2030-06-01T09:30";
+  input.dispatchEvent(new Event("input"));
+  input.value = "";
+  input.dispatchEvent(new Event("input"));
+  buttonNamed("Publish", sheet).click();
+  await settle();
+  expect(calls.find((call) => call.route === "POST /api/content/publish")?.body).toEqual({ key: "pages/home" });
+});
+
+function summariesWithLive(): void {
+  handlers["GET /api/content/documents"] = () => ({
+    json: {
+      documents: {
+        "pages/home": { ...summary("pages/home", true, true), publishedAt: "2026-01-01T00:00:00.000Z" },
+        "artists/finn": { ...summary("artists/finn", true, false), publishedAt: "2026-01-01T00:00:00.000Z" },
+        "locked/doc": summary("locked/doc", false, false),
+      },
+    },
+  });
+  handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [] } });
+}
+
+test("Unpublish asks first, calls the client and refreshes the state", async () => {
+  summariesWithLive();
+  handlers["POST /api/content/unpublish"] = (body) => ({ json: { document: wireDocument(String(body?.key), 8) } });
+  const { api } = await mount();
+  const sheet = await openRevisions();
+  buttonNamed("Unpublish", sheet).click();
+  expect(sheet.textContent).toContain("Take pages/home off the live site?");
+  expect(calls.some((call) => call.route === "POST /api/content/unpublish")).toBe(false);
+  buttonNamed("Cancel", sheet).click();
+  expect(sheet.textContent).not.toContain("off the live site");
+  expect(calls.some((call) => call.route === "POST /api/content/unpublish")).toBe(false);
+
+  buttonNamed("Unpublish", sheet).click();
+  buttonNamed("Confirm", sheet).click();
+  await settle();
+  expect(calls.filter((call) => call.route === "POST /api/content/unpublish").map((call) => call.body)).toEqual([
+    { key: "pages/home" },
+  ]);
+  const state = api.documents().get("pages/home");
+  expect(state?.publishedAt).toBeNull();
+  expect(state?.isDraft).toBe(true);
+  expect(state?.version).toBe(8);
+  expect(visibleToast().textContent).toContain("Unpublished pages/home");
+  expect(() => buttonNamed("Unpublish", sheet)).toThrow();
+});
+
+test("Unpublish needs publish access and something live", async () => {
+  summariesWithLive();
+  await mount();
+  const sheet = await openRevisions();
+  expect(() => buttonNamed("Unpublish", sheet)).not.toThrow();
+  pick(sheet, "artists/finn");
+  await settle();
+  expect(() => buttonNamed("Unpublish", sheet)).toThrow();
+  pick(sheet, "locked/doc");
+  await settle();
+  expect(() => buttonNamed("Unpublish", sheet)).toThrow();
+});
+
+test("new labels come through strings overrides", async () => {
+  summariesWithLive();
+  handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [revision(1, "publish", {})] } });
+  handle = mountEditor({ strings: { restore: "Bring back", unpublish: "Take down" } });
+  await handle.ready;
+  const sheet = await openRevisions();
+  expect(() => buttonNamed("Bring back", sheet)).not.toThrow();
+  expect(() => buttonNamed("Take down", sheet)).not.toThrow();
 });
 
 test("discarding a never-published document detaches its fields and says so", async () => {
