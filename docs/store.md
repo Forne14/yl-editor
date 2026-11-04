@@ -14,7 +14,10 @@ interface ContentStore {
   list(type, opts?): Promise<StoredDocument[]>;
   writeField(key, path, value, context?): Promise<StoredDocument>;
   arrayOp(key, path, op, context?): Promise<StoredDocument>;
-  publish(key, context?): Promise<StoredDocument>;
+  publish(key, context?: WriteContext & { at?: string }): Promise<StoredDocument>;
+  publishDue(now?, context?): Promise<StoredDocument[]>;
+  unpublish(key, context?): Promise<StoredDocument>;
+  restoreRevision(key, revisionId, context?): Promise<StoredDocument>;
   discardDraft(key, context?): Promise<StoredDocument | null>;
   retire(key, context?): Promise<StoredDocument>;
   restore(key, context?): Promise<StoredDocument>;
@@ -61,13 +64,31 @@ A document has at most two payloads: the published one, which visitors see, and 
 - `rename` moves the key, records the old slug in `previousSlugs` (unique, never the current slug) and writes a
   revision. `findByPreviousSlug` lets a host redirect an old URL; retired documents are not found.
 
-Revisions record publish, retire, restore and rename, each with the payload that was live at the time. Draft edits are
+### Unpublish, restore a revision, schedule
+
+- `unpublish` takes a published document back to draft-only without retiring it. With no draft, the published payload
+  becomes the draft; with a draft, the draft is kept and the published payload is dropped. It records an `unpublish`
+  revision holding the previously published payload. A never-published document throws `DocumentStateError`.
+- `restoreRevision(key, revisionId)` copies that revision's payload into the draft (validated like any draft write) and
+  records a `restore_revision` revision holding the restored payload. It never touches the published payload; publish
+  afterwards to make it live. A revision id that does not exist, or belongs to another document, throws
+  `DocumentNotFoundError` for `key`.
+- `publish(key, { at })` with an ISO string schedules instead of publishing: the draft is validated, `scheduledAt` is
+  stored (normalised to UTC ISO), the version bumps, nothing is published and no revision is written. It returns the
+  draft document. Scheduling needs a draft (`DocumentStateError` otherwise) and an `at` that parses
+  (`DocumentStateError` otherwise). Scheduling again replaces the time.
+- `publishDue(now?, context?)` runs a plain `publish` (one `publish` revision each, `actor` from the context) for every
+  non-retired document whose `scheduledAt` is at or before `now` (default: the store clock), clearing `scheduledAt`,
+  and returns the published documents. It ignores `expectedVersion`. The host calls it from a timer or cron.
+- A plain `publish`, `discardDraft` and `unpublish` clear `scheduledAt`. Draft edits leave it in place.
+
+Revisions record publish, retire, restore, rename, restore_revision and unpublish, each with the payload that was live at the time. Draft edits are
 not revisions.
 
 ## Versions and conflicts
 
 Every document carries a `version`. It starts at 1 on `create` and increments by one on every draft write, publish,
-discard, retire, restore and rename, inside the same transaction as the write. Reads and refused writes leave it
+discard, retire, restore, rename, unpublish, restoreRevision and scheduling, inside the same transaction as the write. Reads and refused writes leave it
 alone.
 
 A caller that passes `expectedVersion` gets optimistic concurrency: when the stored version differs, the store throws
@@ -133,10 +154,14 @@ The SQLite schema lives in `migrations/`, applied in name order:
 | `0001_documents.sql`         | The `documents` and `revisions` tables, with JSON checks and indexes.              |
 | `0002_version_and_actor.sql` | Adds `documents.version` (default 0) and `revisions.actor` (nullable).             |
 | `0003_payload_version.sql`   | Adds `documents.payload_version` (default 1), the registry version of the payload. |
+| `0004_lifecycle.sql`         | Adds `documents.scheduled_at`; rebuilds `revisions` to widen the `action` CHECK.   |
 
 Rows written before `0002` read as version 0; their first mutation takes them to 1.
 
 Existing rows read as payload version 1.
+
+`0004` rebuilds `revisions` (create, copy, drop, rename, recreate the index) because SQLite cannot alter a CHECK;
+revision ids and data are preserved. A host on another database only needs to widen its action constraint.
 
 A host on another database translates these files into its own dialect (for example `TEXT` JSON columns become
 `jsonb`, `json_valid` checks become type constraints) and keeps the same columns and meanings. The contract suite is

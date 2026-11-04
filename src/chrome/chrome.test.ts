@@ -30,6 +30,7 @@ function wireDocument(key: string, version: number, payload: unknown = {}): Wire
     previousSlugs: [],
     retiredAt: null,
     version,
+    scheduledAt: null,
   };
 }
 

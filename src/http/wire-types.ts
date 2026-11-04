@@ -22,6 +22,7 @@ export interface WireDocument {
   previousSlugs: string[];
   retiredAt: string | null;
   version: number;
+  scheduledAt: string | null;
 }
 
 /** An array operation as sent to `array`. Same shape as the core's `ArrayOp`. */
@@ -54,7 +55,7 @@ export interface DiscardResponse {
 
 export interface WireRevision {
   id: number;
-  action: "publish" | "retire" | "restore" | "rename";
+  action: "publish" | "retire" | "restore" | "rename" | "restore_revision" | "unpublish";
   slug: string;
   payload: unknown;
   actor: string | null;

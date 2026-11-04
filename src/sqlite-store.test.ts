@@ -43,6 +43,47 @@ describe("migrations", () => {
   });
 });
 
+describe("migration 0004", () => {
+  test("documents gain scheduled_at and the revisions CHECK accepts the new actions", () => {
+    const columns = db.prepare<[], { name: string }>("PRAGMA table_info(documents)").all();
+    expect(columns.map((column) => column.name)).toContain("scheduled_at");
+    db.prepare(
+      "INSERT INTO documents (key, type, slug, draft_payload, created_at) VALUES ('notes/x', 'note', 'x', '{}', 'now')",
+    ).run();
+    const insert = db.prepare(
+      "INSERT INTO revisions (document_id, action, slug, payload, created_at) VALUES (1, ?, 'x', '{}', 'now')",
+    );
+    expect(() => insert.run("unpublish")).not.toThrow();
+    expect(() => insert.run("restore_revision")).not.toThrow();
+    expect(() => insert.run("bogus")).toThrow(/CHECK/);
+  });
+  test("the revisions index survives the rebuild", () => {
+    const indexes = db.prepare<[], { name: string }>("PRAGMA index_list(revisions)").all();
+    expect(indexes.map((index) => index.name)).toContain("revisions_document_idx");
+  });
+});
+
+describe("lifecycle timestamps", () => {
+  test("publish with at does not stamp publishedAt; publishDue stamps it from the clock", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first", { at: "2026-10-14T12:30:00Z" });
+    expect(db.prepare("SELECT scheduled_at FROM documents").pluck().get()).toBe("2026-10-14T12:30:00.000Z");
+    const [doc] = await store.publishDue("2026-10-14T12:30:00.000Z");
+    expect(doc?.publishedAt).toBe("2026-10-14T12:00:01.000Z");
+  });
+  test("publishDue defaults to the store clock", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first", { at: "2026-10-14T12:00:30.000Z" });
+    expect(await store.publishDue()).toEqual([]);
+    store = createSqliteContentStore(db, contractRegistry, () => new Date("2026-10-14T12:01:00Z"));
+    expect(await store.publishDue()).toHaveLength(1);
+  });
+  test("an unparseable at is refused", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await expect(store.publish("notes/first", { at: "soon" })).rejects.toThrow(/ISO/);
+  });
+});
+
 describe("timestamps come from the injected clock", () => {
   test("publish stamps publishedAt and the revision from the clock", async () => {
     await store.create("note", "first", { title: "A", tags: [] });
