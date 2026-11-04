@@ -7,25 +7,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
+### Breaking
+
+- `Access.canEdit(locals, doc)` and `Access.canPublish(locals, doc)` take the document (`{ type, key }`) and return an
+  `AccessVerdict` instead of a boolean from the request alone.
+- `ContentStore` is async: every method returns a `Promise`.
+- Store writes take an optional `WriteContext`: `actor` is recorded on the revision, and `expectedVersion` makes the
+  write fail with a conflict when the document has moved on.
+- Migration `0002_version_and_actor.sql` adds `documents.version` and `revisions.actor`. Apply it before upgrading a
+  SQLite store.
+- `zod` is a peer dependency (`^4`) instead of a dependency, so the host and the package share one copy.
+- Exports point at compiled `dist/` instead of `src/*.ts`.
+
 ### Added
 
-- Build output: `prepare` compiles `src/` to `dist/` (JavaScript, declarations and source maps) so the package
-  installs as a git dependency; Node does not strip types inside `node_modules`.
-- `@yl/editor/contract`: the `ContentStore` lifecycle suite, exported so a host can run it against its own store.
-- `@yl/editor/access` subpath (planned): helpers for mapping document types to host permissions.
-- `@yl/editor/http` subpath (planned): framework-neutral handlers for the edit endpoints.
-- `@yl/editor/chrome` subpath (planned): the in-page editing chrome and `@yl/editor/chrome/chrome.css`.
+- Build output on `prepare`: `src/` compiles to `dist/` (JavaScript, declarations and source maps), so the package
+  installs as a git dependency. Node does not strip types inside `node_modules`.
+- `@yl/editor/contract`: the `ContentStore` lifecycle suite and its registry, for running against a host's own store.
+  `vitest` is an optional peer, needed only here.
+- `@yl/editor/access`: permission atoms, a catalogue, a role engine and `documentAccess()`, which adapts atoms to the
+  `Access` seam.
+- `@yl/editor/http`: `createContentHandlers()`, framework-neutral `Request` to `Response` handlers for the edit
+  endpoints, and a matching client.
+- `@yl/editor/chrome` and `@yl/editor/chrome/chrome.css`: the in-page editing island, `mountEditor()`.
+- `editable()` takes a third argument of extra attributes for a field.
 - ESLint, Prettier and a CI workflow running `verify` and `build`.
-
-### Changed
-
-- `zod` is now a peer dependency (`^4`) instead of a dependency, so the host and the package share one copy.
-- `vitest` is an optional peer dependency, needed only for `@yl/editor/contract`.
 - Requires Node 24 or later.
-- **Breaking:** `Access` takes the document being edited and returns a verdict, instead of a boolean from the request
-  alone.
-- **Breaking:** `ContentStore` is async; every method returns a `Promise`.
-- **Breaking:** store writes take a `WriteContext`, used to attribute revisions.
 
 ## [0.1.0]
 
@@ -34,5 +43,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - First release: `ContentStore` seam, `SchemaRegistry`, path operations, `editable()` addressing, `Access` seam and the
   SQLite store.
 
-[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Forne14/yl-editor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Forne14/yl-editor/releases/tag/v0.1.0
