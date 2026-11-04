@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { applyArrayOp, getAt, parsePath, setAt } from "./path";
-import { ArrayOpSchema, PathError } from "./types";
+import { applyArrayOp, getAt, parsePath, setAt } from "./path.ts";
+import { ArrayOpSchema, PathError } from "./types.ts";
 
 describe("parsePath", () => {
   test("splits on dots and turns digits into indices", () =>

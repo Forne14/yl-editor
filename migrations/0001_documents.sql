@@ -1,4 +1,4 @@
--- The editor's content model (SKINMENU's documents table, rebuilt for SQLite).
+-- The editor's content model.
 CREATE TABLE documents (
   id INTEGER PRIMARY KEY,
   key TEXT NOT NULL UNIQUE,
