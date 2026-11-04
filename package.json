@@ -1,6 +1,6 @@
 {
   "name": "@yl/editor",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "In-place editing core: a draft/publish ContentStore seam, schema registry, path ops and editable() addressing. Store-agnostic; apps bring their own store.",
   "license": "MIT",
   "repository": {

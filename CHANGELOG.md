@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
 ### Added
 
 - Schema evolution: `RegistryEntry` takes `version` (default 1) and `migrate(fromVersion, payload)`. Migration
@@ -24,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Public reads (`draft: false`) no longer throw when a stored payload fails the current schema: they serve it and call
   `onReadIssue` (default: `console.warn` once per key). Editor reads and writes still throw `ContentValidationError`.
 - `discardDraft` clears `scheduled_at`.
+- Migrations: run 0003 and 0004 before upgrading a SQLite store.
 
 ## [0.2.1] - 2026-11-04
 
@@ -81,7 +84,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - First release: `ContentStore` seam, `SchemaRegistry`, path operations, `editable()` addressing, `Access` seam and the
   SQLite store.
 
-[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Forne14/yl-editor/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Forne14/yl-editor/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Forne14/yl-editor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Forne14/yl-editor/releases/tag/v0.1.0
