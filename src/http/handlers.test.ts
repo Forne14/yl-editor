@@ -115,6 +115,15 @@ describe("routes", () => {
     });
   });
 
+  test("documents rejects more than 100 keys and dedupes before counting", async () => {
+    const many = Array.from({ length: 101 }, (_, index) => `notes/k${index}`).join(",");
+    const over = await call(get(`documents?keys=${many}`));
+    expect(over.status).toBe(400);
+    expect(over.body.error.message).toContain("100");
+    const dupes = Array.from({ length: 150 }, () => "notes/none").join(",");
+    expect((await call(get(`documents?keys=${dupes}`))).status).toBe(200);
+  });
+
   test("documents lists a document the actor cannot edit, greyed", async () => {
     await store.create("note", "first", note);
     fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
@@ -385,6 +394,27 @@ describe("custom base", () => {
 });
 
 describe("onChange", () => {
+  test("a slow onChange does not delay the write response", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const called = vi.fn();
+    const slow = createContentHandlers({
+      store,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => null,
+      onChange: async (event) => {
+        called(event.action);
+        await gate;
+      },
+    });
+    const response = await slow.handle(post("create", { type: "note", slug: "first", payload: note }));
+    expect(response.status).toBe(201);
+    await Promise.resolve();
+    expect(called).toHaveBeenCalledWith("create");
+    release();
+  });
+
   test("fires after each write with the action, key, document and actor", async () => {
     await call(post("create", { type: "note", slug: "first", payload: note }));
     await call(post("field", { key: "notes/first", path: "title", value: "B" }));
