@@ -15,7 +15,14 @@ function context(type: EditFieldType, value: unknown, options?: string[]) {
   const commit = vi.fn(async () => {});
   const cancel = vi.fn();
   const announce = vi.fn();
-  const ctx: WidgetContext = { element: host, field: { key: "k/a", path: "p", type, options }, value, commit, cancel, announce };
+  const ctx: WidgetContext = {
+    element: host,
+    field: { key: "k/a", path: "p", type, options },
+    value,
+    commit,
+    cancel,
+    announce,
+  };
   return { ctx, commit, cancel, announce };
 }
 

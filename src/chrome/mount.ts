@@ -4,7 +4,15 @@ import { Disposer, button, element, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
 import { Session, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
-import type { EditorApi, EditorHandle, EditorOptions, StatusKind, Widget, WidgetContext, WidgetHandle } from "./types.ts";
+import type {
+  EditorApi,
+  EditorHandle,
+  EditorOptions,
+  StatusKind,
+  Widget,
+  WidgetContext,
+  WidgetHandle,
+} from "./types.ts";
 import { Sheet, Toast } from "./ui.ts";
 import { createDefaultWidgets, missingWidget } from "./widgets.ts";
 
@@ -283,9 +291,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       title,
       (body) => {
         if (eligible.length === 0) {
-          body.append(
-            element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]),
-          );
+          body.append(element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]));
           return;
         }
         body.append(
@@ -320,7 +326,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           kind === "publish" ? "primary" : "danger",
         );
         body.append(
-          element("div", { class: "cms-sheet__actions" }, [button(strings.cancel, () => sheet.close(), "ghost"), confirm]),
+          element("div", { class: "cms-sheet__actions" }, [
+            button(strings.cancel, () => sheet.close(), "ghost"),
+            confirm,
+          ]),
         );
       },
       opener,
