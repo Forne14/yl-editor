@@ -36,8 +36,8 @@ Releases are git tags; nothing is published to the npm registry. Pin a tag:
 "@yl/editor": "github:Forne14/yl-editor#v0.2.0"
 ```
 
-A git install runs `prepare`, so npm installs the package's dev dependencies to build `dist/`. Requires Node 24 or
-later.
+Tags carry the built `dist/`; branches do not. Pin a tag, never a branch: installing needs no build step and no
+install scripts. Requires Node 24 or later.
 
 Peer dependencies: `zod` (required), `better-sqlite3` (only for `@yl/editor/sqlite`) and `vitest` (only for
 `@yl/editor/contract`).
@@ -51,27 +51,34 @@ Peer dependencies: `zod` (required), `better-sqlite3` (only for `@yl/editor/sqli
 
 ## Commands
 
-| Command          | What it does                                        |
-| ---------------- | --------------------------------------------------- |
-| `npm install`    | Installs dependencies and builds `dist/`            |
-| `npm run build`  | `tsc` to `dist/`, then copies stylesheets alongside |
-| `npm run lint`   | ESLint and Prettier check                           |
-| `npm run format` | Prettier, writing changes                           |
-| `npm run check`  | `tsc --noEmit`                                      |
-| `npm test`       | Vitest: core, SQLite store, access, http and chrome |
-| `npm run verify` | Lint, check and test; must pass before a tag        |
+| Command                     | What it does                                         |
+| --------------------------- | ---------------------------------------------------- |
+| `npm install`               | Installs dev dependencies                            |
+| `npm run release -- vX.Y.Z` | Verifies, builds and tags a release carrying `dist/` |
+| `npm run build`             | `tsc` to `dist/`, then copies stylesheets alongside  |
+| `npm run lint`              | ESLint and Prettier check                            |
+| `npm run format`            | Prettier, writing changes                            |
+| `npm run check`             | `tsc --noEmit`                                       |
+| `npm test`                  | Vitest: core, SQLite store, access, http and chrome  |
+| `npm run verify`            | Lint, check and test; must pass before a tag         |
 
 ## Releasing
 
-Tag, never publish:
+Tag, never publish. Bump `version` in `package.json`, move the `Unreleased` entries in [`CHANGELOG.md`](CHANGELOG.md)
+under a `## [X.Y.Z]` heading, commit, then:
 
 ```sh
-git tag -a v0.2.0 -m "v0.2.0: ..."
-git push --tags
+npm run release -- vX.Y.Z
+git push origin vX.Y.Z
+git push
 ```
 
-- Keep `version` in `package.json` equal to the latest tag, and move the `Unreleased` entries in
-  [`CHANGELOG.md`](CHANGELOG.md) under the new version.
+`npm run release` refuses unless the tree is clean, the tag matches `package.json`, the tag is new and the changelog
+has the version's section. It runs `verify` and a clean `build`, then makes a release commit that adds `dist/` on top
+of `HEAD` and tags it, without moving the branch: `dist/` stays untracked on branches. `--dry-run` does everything
+except creating the tag. It never pushes.
+
+- Keep `version` in `package.json` equal to the latest tag.
 - A change that breaks a consumer is a major tag (the minor number while below 1.0), and the tag message says so.
 - Consumers upgrade by bumping the tag in their own `package.json`.
 
