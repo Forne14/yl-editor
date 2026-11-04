@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { diffPayloads } from "./diff.ts";
-import { getAt, parsePath } from "./path.ts";
+import { formatPath, getAt, parsePath } from "./path.ts";
 
 describe("diffPayloads", () => {
   it("returns [] for identical input", () => {
@@ -53,7 +53,7 @@ describe("diffPayloads", () => {
   it("emits paths that round-trip through parsePath", () => {
     const after = { items: [{ label: "z" }], hero: { title: "t" } };
     for (const e of diffPayloads({ items: [{ label: "a" }], hero: {} }, after)) {
-      expect(parsePath(e.path).join(".")).toBe(e.path);
+      expect(formatPath(parsePath(e.path))).toBe(e.path);
       if (e.kind !== "removed") expect(getAt(after, parsePath(e.path))).toEqual(e.after);
     }
   });
