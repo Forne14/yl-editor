@@ -171,7 +171,14 @@ function formWidget(
     mount(ctx): WidgetHandle {
       const outcome = once(ctx);
       const parts = build(ctx, outcome);
-      const popover = openPopover(ctx.element, fieldLabel(ctx), () => outcome.commit(parts.read()));
+      // Leaving untouched must write nothing, even when the stored value is missing and the control shows a default.
+      const untouched = JSON.stringify(parts.read());
+      const finish = () => {
+        const value = parts.read();
+        if (JSON.stringify(value) === untouched) outcome.cancel();
+        else outcome.commit(value);
+      };
+      const popover = openPopover(ctx.element, fieldLabel(ctx), finish);
       const handleKeydown = (event: KeyboardEvent) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
@@ -185,7 +192,7 @@ function formWidget(
       );
       return {
         focus: () => (parts.focusTarget ?? parts.control).focus(),
-        commit: () => outcome.commit(parts.read()),
+        commit: finish,
         destroy() {
           popover.root.removeEventListener("keydown", handleKeydown);
           popover.close();

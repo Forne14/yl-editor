@@ -7,6 +7,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- HTTP: `GET document?key=` returns one document (draft view, retired included), gated by `canEdit`; client `document(key)`.
+- HTTP: `POST unpublish` (`canPublish`) and `POST restore-revision` (`canEdit`, draft only); client `unpublish(key)` and `restoreRevision(key, revisionId)`. `onChange` gains the `unpublish` and `restore_revision` actions.
+- HTTP: `POST publish` accepts an optional ISO `at` to schedule the draft; client `publish(key, { at })`.
+- HTTP: `POST publish-due` publishes every scheduled draft that is due and fires one `publish` change per document. It is off unless the host passes `publishDue: { authorize(locals) }`; client `publishDue(now?)`.
+- HTTP: `publish`, `unpublish` and `restore-revision` accept an optional `expectedVersion` and answer `409 conflict` when it is stale.
+- Stable-key path segments `name[_key=<id>]` (e.g. `sections[_key=a].items[_key=b].title`). `getAt`, `setAt` and `applyArrayOp` find the array item by `_key`, so a save still hits the right item after a concurrent reorder (#4).
+- `formatPath(segments)`, the inverse of `parsePath`.
+- `itemPath(base, item, index)` builds the keyed path when the item has a `_key` and falls back to the index path otherwise.
+- docs/paths.md covers the grammar and the `_key` convention. Index paths are unchanged; `diffPayloads` still emits index paths.
+- Chrome: a Restore action on each revision (with `access.edit`) copies it into the draft and repaints the page's fields.
+- Chrome: the publish sheet lists each document's changes from `diffPayloads`, or says it is a first publish.
+- Chrome: an optional "Publish at" input schedules the publish; the bar shows "scheduled for <time>" with Publish now.
+- Chrome: an Unpublish action with a confirm step in the revisions drawer (with `access.publish`).
+- Chrome: `EditorApi` gains `unpublish(key)`, `restoreRevision(key, revisionId)` and `publish(key, { at })`; `DocumentState` gains `publishedAt` and `scheduledAt`; new `defaultStrings` keys (see docs/chrome.md).
+
+### Changed
+
+- **Breaking for code that calls it:** `SchemaRegistry.entries()` is now optional. The library never calls it; it is kept for back-office listing (#7). Custom registries may drop it.
+- The store contract suite checks `entries()` only when the registry implements it.
+- A keyed segment that matches no item throws `PathError`, and a path part containing a malformed `[_key=` is now rejected.
+- Chrome: non-text widgets start from the stored value, fetched once per document per session with `GET document` and replaced by each write's result. Publish, discard and the new lifecycle actions run on the document's write chain.
+- Chrome: leaving a popover widget untouched writes nothing, even when the stored value is missing.
+
+### Removed
+
+- **Breaking:** `MediaStore`, `MediaVariantSchema` and `MediaVariant` are no longer exported. They had no implementation and no consumer; media storage stays the host's concern (#3).
+- **Breaking:** the chrome no longer reads a non-text field's value from its rendered text or from `data-edit-value`.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

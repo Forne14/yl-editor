@@ -38,9 +38,7 @@ const field = editable(editor ? `pages/${page.slug}` : undefined);
 
 Any other server-rendered stack works the same way: emit the attributes from `editable()` for editors only, and
 include a bundled module that imports the stylesheet and calls `mountEditor`. Nothing else is required in the
-markup. A toggle with no `data-edit-value` is read from its text (`On`, `true`, `yes`) until a write has returned the
-document. A field may also carry `data-edit-value` (JSON) when the rendered text is not the stored value, for example a
-date shown as "14 Nov"; without it the chrome reads the element's text until the server returns the payload.
+markup. Non-text widgets start from the stored value, whatever the page renders (see Behaviour).
 
 ### `editable(docKey)(path, type, attrs?)`
 
@@ -76,6 +74,11 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   `GET documents` request for all the keys. It keeps each document's `version` and `access`.
 - Every field gets the highlight. A field whose document lacks `access.edit` is still outlined, in the muted
   colour, and its badge and accessible description give the reason. Clicking it shows the reason as a toast.
+- The first time a non-text field opens, the chrome fetches its document with `GET document` and reads the value at
+  the field's path, so a toggle rendered as "Live" or a date shown as "14 Nov" still opens on the stored value. There
+  is one fetch per document per session; every write returns the document, which replaces the cached copy. If the
+  fetch fails the widget does not open and a toast says why. `text` and `richtext` edit in place and open at once,
+  starting from the element's text until a payload is known.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select, toggle,
   date and number commit on change; Esc cancels and restores. A popover edit still open when another field is opened,
   the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Focus returns to the field when the widget closes.
@@ -90,11 +93,34 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   gates discard by edit access). The endpoint is called once per document, after that document's pending field
   writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document that was
   never published deletes it, so its fields stop being editable until the page is reloaded.
-- Revisions opens a drawer with the history of one document on the page: action, actor and time. Restoring is not
-  offered yet.
+- The Publish sheet shows what will change for each document: path and short before and after, from `diffPayloads`.
+  A document with nothing live says "First publish". The draft comes from `GET document`. The HTTP API does not return
+  the published payload next to a draft, so the "before" side is the latest revision that recorded the live payload
+  (`GET revisions`); when the history holds none, the sheet says it cannot compare.
+- The Publish sheet has an optional "Publish at" input (`datetime-local`, in the browser's time zone). When set, the
+  button reads Schedule and sends `at` as an ISO string with offset; nothing goes live until the host runs
+  `publish-due`. The document stays in the change count, and the bar shows "<key> scheduled for <time>" with
+  **Publish now**, which publishes the draft immediately and clears the schedule.
+- **Cancelling a schedule without publishing is not exposed.** Discard would drop the draft and Publish now makes it
+  live; clearing `scheduledAt` alone is a store-level operation. The bar learns `scheduledAt` when the document is
+  fetched or written, because the `documents` summary does not carry it, so a schedule set in an earlier session shows
+  only after the document has been opened in a non-text widget or the Publish sheet.
+- Revisions opens a drawer with the history of one document on the page: action, actor and time.
+  - With `access.edit`, each row has **Restore**, which copies that revision into the draft after the document's
+    pending writes finish, repaints the page's fields and says so in a toast. It replaces the current draft with no
+    confirm step, and draft edits are not revisions. The published version is untouched until Publish.
+  - With `access.publish`, on a published document, the drawer has **Unpublish** with a confirm step. The content
+    stays as a draft.
 - After a non-text field saves, the chrome replaces the element's text only when it holds no child elements, and
   always dispatches a bubbling `cms:change` event (`detail: { key, path, value }`) so a host can re-render richer
   markup itself.
+
+### Strings
+
+Every label is a key of `defaultStrings` in `src/chrome/strings.ts`, overridable through `strings`. The lifecycle
+actions added these: `restore`, `restoreRevisionLabel`, `restored`, `unpublish`, `unpublishConfirm`, `unpublished`,
+`schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`, `firstPublish`,
+`noDifferences`, `diffUnavailable`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`.
 
 ## Wire contract
 
@@ -106,14 +132,17 @@ header `X-Requested-With: yl-editor`.
 | `GET  {base}/documents?keys=k1,k2`                              | `200 { documents: { [key]: summary } }`                                |
 | `POST {base}/field` `{ key, path, value, expectedVersion? }`    | `200 { document }`                                                     |
 | `POST {base}/array` `{ key, path, op, expectedVersion? }`       | `200 { document }`                                                     |
-| `POST {base}/publish` `{ key }`                                 | `200 { document }`                                                     |
+| `GET  {base}/document?key=`                                     | `200 { document }`                                                     |
+| `POST {base}/publish` `{ key, at? }`                            | `200 { document }`                                                     |
+| `POST {base}/unpublish` `{ key }`                               | `200 { document }`                                                     |
+| `POST {base}/restore-revision` `{ key, revisionId }`            | `200 { document }`                                                     |
 | `POST {base}/discard` `{ key }`                                 | `200 { document: document \| null }`                                   |
 | `POST {base}/retire` `{ key }`, `POST {base}/restore` `{ key }` | `200 { document }`                                                     |
 | `POST {base}/rename` `{ key, slug }`                            | `200 { document }`                                                     |
 | `GET  {base}/revisions?key=`                                    | `200 { revisions: [{ id, action, slug, payload, actor, createdAt }] }` |
 
 - `summary` = `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit: boolean, publish: boolean } }`
-- `document` = `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version }`
+- `document` = `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version, scheduledAt }`
 - `op` = `{ kind: "insert", index, value } | { kind: "move", from, to } | { kind: "remove", index }`
 - Errors are `{ error: { code, message, issues?, current?: document } }`:
 
@@ -215,8 +244,10 @@ interface Panel {
 }
 interface EditorApi {
   documents(): ReadonlyMap<string, DocumentState>;
-  publish(key: string): Promise<void>;
+  publish(key: string, options?: { at?: string }): Promise<void>; // `at` schedules; ISO with Z or an offset
   discard(key: string): Promise<void>;
+  unpublish(key: string): Promise<void>;
+  restoreRevision(key: string, revisionId: number): Promise<void>; // into the draft; repaints the fields
   refresh(): Promise<void>; // rescan the page and reload the documents
   status(message: string, kind?: "info" | "saving" | "saved" | "error"): void;
 }
@@ -270,7 +301,7 @@ Outside the token block the stylesheet has no raw colours, pixel sizes or radii.
 
 Stable class names, all prefixed `cms-`: `cms-root`, `cms-bar`, `cms-bar__state`, `cms-bar__actions`, `cms-enter`,
 `cms-field`, `cms-field--editing`, `cms-field--locked`, `cms-field--saving`, `cms-field--saved`,
-`cms-field--failed`, `cms-badge`, `cms-panel`, `cms-sheet`, `cms-popover`, `cms-toast`, `cms-btn`,
+`cms-field--failed`, `cms-bar__schedule`, `cms-bar__scheduled`, `cms-diff`, `cms-field-label`, `cms-badge`, `cms-panel`, `cms-sheet`, `cms-popover`, `cms-toast`, `cms-btn`,
 `cms-btn--primary`, `cms-btn--danger`, `cms-btn--ghost`, `cms-input`, `cms-chip`, `cms-list`. A field's save state is
 also on `data-cms-state`, and the toast's kind on `data-kind`.
 
