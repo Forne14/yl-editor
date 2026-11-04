@@ -484,6 +484,29 @@ test("the opposite way round too: a toggle rendered Off opens checked when the d
   expect(checkbox().checked).toBe(true);
 });
 
+test("a keyed path reads the item by its _key, wherever the array has moved it", async () => {
+  document
+    .getElementById("page")
+    ?.insertAdjacentHTML(
+      "beforeend",
+      `<span data-edit-field="pages/home:items[_key=b].live" data-edit-type="toggle">Off</span>`,
+    );
+  handlers["GET /api/content/document"] = () => ({
+    json: {
+      document: wireDocument("pages/home", 3, {
+        items: [
+          { _key: "a", live: false },
+          { _key: "b", live: true },
+        ],
+      }),
+    },
+  });
+  await mount();
+  field("pages/home:items[_key=b].live").click();
+  await settle();
+  expect(checkbox().checked).toBe(true);
+});
+
 test("one document fetch per key per session, and a write's result replaces the cached copy", async () => {
   addToggle("x");
   handlers["GET /api/content/document"] = () => ({
