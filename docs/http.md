@@ -26,7 +26,7 @@ const handlers = createContentHandlers({
 | `actor`      | none           | `(locals) => string \| undefined`, passed to the store as `WriteContext.actor`. |
 | `base`       | `/api/content` | Path prefix, matched against the request URL's pathname.                        |
 | `sameOrigin` | `true`         | Refuse requests whose `Origin` or `Sec-Fetch-Site` shows another site.          |
-| `onChange`   | none           | Called after every successful write.                                            |
+| `onChange`   | none           | Called after every successful write, after the response (errors are logged).    |
 
 `handlers.handle(request)` always resolves. `handlers.routes` lists every route as `"METHOD name"`.
 
@@ -51,7 +51,7 @@ All bodies are JSON. `{base}` is the configured base.
 - `document` is the `StoredDocument` as JSON:
   `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version }`.
 - A `documents` summary is `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit, publish } }`.
-  Unknown keys are left out. Reads use the draft view and include retired documents, because the editor needs to see
+  Unknown keys are left out. Keys are deduped, and more than 100 distinct keys is a `400 bad_request`. Reads use the draft view and include retired documents, because the editor needs to see
   what it is editing.
 - A revision is `{ id, action, slug, payload, actor, createdAt }`.
 - `discard` returns `null` when the document had never been published, so discarding its draft removed it.
@@ -138,8 +138,8 @@ After every successful write the handlers call `onChange` with:
 ```
 
 `key` is the key the request named (for `rename`, the old key; `document.key` is the new one). Reads never fire it,
-and neither do refused or failed writes. It is awaited, but an error it throws is logged with `console.error` and the
-write's response is unchanged: the change has already happened, and a broken activity log must not tell the editor it
+and neither do refused or failed writes. It runs after the response is built and is not awaited on the response path; its errors are logged with
+`console.error`, not returned. The write's response is unchanged: the change has already happened, and a broken activity log must not tell the editor it
 failed.
 
 ## Mounting
