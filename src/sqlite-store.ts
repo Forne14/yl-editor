@@ -31,6 +31,7 @@ interface Row {
   previous_slugs: string;
   retired_at: string | null;
   version: number;
+  payload_version: number;
 }
 
 interface RevisionRow {
@@ -63,6 +64,25 @@ function parseColumn<T>(key: string, column: string, raw: string, schema: z.ZodT
   return result.data;
 }
 
+/** Keys already reported by the default `onReadIssue`, so a bad row warns once per process rather than per request. */
+const warnedKeys = new Set<string>();
+
+function warnOnce(key: string, issues: z.core.$ZodIssue[]): void {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  console.warn(
+    `[yl-editor] ${key} no longer matches its schema and is served as stored: ${issues.map((issue) => issue.message).join("; ")}`,
+  );
+}
+
+export interface SqliteContentStoreOptions {
+  /**
+   * Called when a public read (`draft: false`) finds a payload that fails the current schema. The stored payload is
+   * served anyway. Defaults to a `console.warn` once per key per process.
+   */
+  onReadIssue?: (key: string, issues: z.core.$ZodIssue[]) => void;
+}
+
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
@@ -73,7 +93,9 @@ export function createSqliteContentStore(
   db: Database.Database,
   registry: SchemaRegistry,
   clock: () => Date = () => new Date(),
+  options: SqliteContentStoreOptions = {},
 ): ContentStore {
+  const onReadIssue = options.onReadIssue ?? warnOnce;
   const now = () => clock().toISOString();
 
   const entryFor = (type: string, key: string = type) => {
@@ -89,6 +111,15 @@ export function createSqliteContentStore(
     return result.data;
   };
 
+  const currentVersion = (type: string, key: string): number => entryFor(type, key).version ?? 1;
+
+  /** Brings a stored payload up to the entry's version; a no-op when current or when the entry has no `migrate`. */
+  const migrated = (row: Row, payload: unknown): unknown => {
+    const entry = entryFor(row.type, row.key);
+    if (row.payload_version >= (entry.version ?? 1) || !entry.migrate) return payload;
+    return entry.migrate(row.payload_version, payload);
+  };
+
   const rowByKey = (key: string): Row | undefined =>
     db.prepare<[string], Row>("SELECT * FROM documents WHERE key = ?").get(key);
 
@@ -101,21 +132,27 @@ export function createSqliteContentStore(
   const toDoc = (row: Row, draft: boolean): StoredDocument | null => {
     const raw = draft ? (row.draft_payload ?? row.published_payload) : row.published_payload;
     if (raw === null) return null;
+    const isDraftPayload = draft && row.draft_payload !== null;
+    const stored = migrated(
+      row,
+      parseColumn(row.key, isDraftPayload ? "draft_payload" : "published_payload", raw, z.unknown()),
+    );
+    let payload: unknown;
+    if (draft) payload = validate(row.key, row.type, stored);
+    else {
+      const result = entryFor(row.type, row.key).schema.safeParse(stored);
+      if (result.success) payload = result.data;
+      else {
+        onReadIssue(row.key, result.error.issues);
+        payload = stored;
+      }
+    }
     return {
       id: row.id,
       key: row.key,
       type: row.type,
       slug: row.slug,
-      payload: validate(
-        row.key,
-        row.type,
-        parseColumn(
-          row.key,
-          draft && row.draft_payload !== null ? "draft_payload" : "published_payload",
-          raw,
-          z.unknown(),
-        ),
-      ),
+      payload,
       isDraft: draft && row.draft_payload !== null,
       publishedAt: row.published_at,
       draftUpdatedAt: row.draft_updated_at,
@@ -140,11 +177,14 @@ export function createSqliteContentStore(
 
   const currentPayload = (row: Row): unknown => {
     const hasDraft = row.draft_payload !== null;
-    return parseColumn(
-      row.key,
-      hasDraft ? "draft_payload" : "published_payload",
-      (row.draft_payload ?? row.published_payload) as string,
-      z.unknown(),
+    return migrated(
+      row,
+      parseColumn(
+        row.key,
+        hasDraft ? "draft_payload" : "published_payload",
+        (row.draft_payload ?? row.published_payload) as string,
+        z.unknown(),
+      ),
     );
   };
 
@@ -171,13 +211,19 @@ export function createSqliteContentStore(
       return work(row);
     })();
 
+  /**
+   * Persists a draft under the entry's current version. One `payload_version` covers both columns, so a stale
+   * published payload is migrated in the same statement; otherwise it would be misread as current.
+   */
   const writeDraft = (row: Row, payload: unknown): void => {
     const valid = validate(row.key, row.type, payload);
-    db.prepare("UPDATE documents SET draft_payload = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?").run(
-      JSON.stringify(valid),
-      now(),
-      row.id,
-    );
+    const published =
+      row.published_payload === null
+        ? null
+        : JSON.stringify(migrated(row, parseColumn(row.key, "published_payload", row.published_payload, z.unknown())));
+    db.prepare(
+      "UPDATE documents SET draft_payload = ?, published_payload = ?, payload_version = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?",
+    ).run(JSON.stringify(valid), published, currentVersion(row.type, row.key), now(), row.id);
   };
 
   return {
@@ -190,8 +236,8 @@ export function createSqliteContentStore(
         const valid = validate(key, type, payload);
         const createdAt = now();
         db.prepare(
-          "INSERT INTO documents (key, type, slug, draft_payload, draft_updated_at, created_at, version) VALUES (?, ?, ?, ?, ?, ?, 1)",
-        ).run(key, type, slug, JSON.stringify(valid), createdAt, createdAt);
+          "INSERT INTO documents (key, type, slug, draft_payload, draft_updated_at, created_at, version, payload_version) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+        ).run(key, type, slug, JSON.stringify(valid), createdAt, createdAt, entryFor(type).version ?? 1);
         return mustDoc(key);
       })();
     },
@@ -231,11 +277,13 @@ export function createSqliteContentStore(
     async publish(key, context = {}) {
       return mutate(key, context, (row) => {
         if (row.draft_payload === null) throw new DocumentStateError(`Document ${key} has no draft to publish`);
-        validate(key, row.type, parseColumn(key, "draft_payload", row.draft_payload, z.unknown()));
+        const valid = JSON.stringify(
+          validate(key, row.type, migrated(row, parseColumn(key, "draft_payload", row.draft_payload, z.unknown()))),
+        );
         db.prepare(
-          "UPDATE documents SET published_payload = draft_payload, draft_payload = NULL, draft_updated_at = NULL, published_at = ?, version = version + 1 WHERE id = ?",
-        ).run(now(), row.id);
-        addRevision(row, "publish", row.draft_payload, context);
+          "UPDATE documents SET published_payload = ?, draft_payload = NULL, draft_updated_at = NULL, payload_version = ?, published_at = ?, version = version + 1 WHERE id = ?",
+        ).run(valid, currentVersion(row.type, key), now(), row.id);
+        addRevision(row, "publish", valid, context);
         return mustDoc(key, false);
       });
     },

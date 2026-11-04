@@ -29,10 +29,41 @@ export const contractRegistry: SchemaRegistry = {
   entries: () => [noteEntry],
 };
 
+/** Builds a store over the same storage as the one under test, with a different registry. */
+export type ReopenStore = (
+  registry: SchemaRegistry,
+  hooks: { onReadIssue: (key: string, issues: z.core.$ZodIssue[]) => void },
+) => Promise<ContentStore> | ContentStore;
+
 export interface ContentStoreContractOptions {
   /** The registry the store under test was built with. Defaults to `contractRegistry`. */
   registry?: SchemaRegistry;
+  /**
+   * Reopens the store under test's storage with another registry and an `onReadIssue` hook. Enables the schema
+   * evolution tests; without it they are skipped.
+   */
+  reopen?: ReopenStore;
 }
+
+const registryOf = (entry: RegistryEntry): SchemaRegistry => ({
+  entry: (type) => (type === entry.type ? entry : undefined),
+  byCollection: (collection) => (collection === entry.collection ? entry : undefined),
+  entries: () => [entry],
+});
+
+/** `note` at version 2: requires a `subtitle`, which `migrate` adds to version 1 payloads. */
+const noteV2: RegistryEntry = {
+  ...noteEntry,
+  version: 2,
+  schema: z.strictObject({ title: z.string().min(1), tags: z.array(z.string()), subtitle: z.string() }),
+  migrate: (from, payload) => (from < 2 ? { ...(payload as object), subtitle: "" } : payload),
+};
+
+/** `note` still at version 1 but with a tighter schema: stored version 1 payloads fail it. */
+const noteTightened: RegistryEntry = {
+  ...noteEntry,
+  schema: z.strictObject({ title: z.string().min(1), tags: z.array(z.string()).min(1) }),
+};
 
 /**
  * Registers the full ContentStore lifecycle as vitest `describe`/`test` blocks. `makeStore` runs before every test
@@ -408,6 +439,60 @@ export function runContentStoreContract(
         const published = await store.publish("notes/first", { expectedVersion: written.version });
         expect(published.payload).toEqual({ title: "B", tags: [] });
         expect(published.version).toBe(written.version + 1);
+      });
+    });
+
+    describe.skipIf(!options.reopen)("schema evolution", () => {
+      const reopen: ReopenStore = (reg, hooks) => (options.reopen as ReopenStore)(reg, hooks);
+      const noop = () => undefined;
+
+      test("migrate runs on read when the stored version is behind", async () => {
+        await createPublished();
+        const next = await reopen(registryOf(noteV2), { onReadIssue: noop });
+        expect((await next.get("notes/first"))?.payload).toEqual({ title: "A", tags: [], subtitle: "" });
+        await expect(next.get("notes/first", { draft: true })).resolves.toMatchObject({
+          payload: { title: "A", tags: [], subtitle: "" },
+        });
+      });
+
+      test("the migrated payload is persisted on the next draft write", async () => {
+        await createPublished();
+        const calls: number[] = [];
+        const counting: RegistryEntry = {
+          ...noteV2,
+          migrate: (from, payload) => {
+            calls.push(from);
+            return noteV2.migrate?.(from, payload);
+          },
+        };
+        const next = await reopen(registryOf(counting), { onReadIssue: noop });
+        await next.get("notes/first");
+        await next.get("notes/first");
+        expect(calls).toEqual([1, 1]);
+        await next.writeField("notes/first", "title", "B");
+        calls.length = 0;
+        expect((await next.get("notes/first", { draft: true }))?.payload).toEqual({
+          title: "B",
+          tags: [],
+          subtitle: "",
+        });
+        expect((await next.get("notes/first"))?.payload).toEqual({ title: "A", tags: [], subtitle: "" });
+        expect(calls).toEqual([]);
+      });
+
+      test("a public read of a payload that fails the current schema serves it and reports the issue", async () => {
+        await createPublished();
+        const reported: string[] = [];
+        const next = await reopen(registryOf(noteTightened), { onReadIssue: (key) => reported.push(key) });
+        expect((await next.get("notes/first"))?.payload).toEqual({ title: "A", tags: [] });
+        expect(reported).toEqual(["notes/first"]);
+        expect((await next.list("note")).map((doc) => doc.key)).toEqual(["notes/first"]);
+      });
+
+      test("an editor read of a payload that fails the current schema throws", async () => {
+        await createPublished();
+        const next = await reopen(registryOf(noteTightened), { onReadIssue: noop });
+        await expect(next.get("notes/first", { draft: true })).rejects.toThrow(ContentValidationError);
       });
     });
 

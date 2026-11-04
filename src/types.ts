@@ -15,6 +15,13 @@ export interface RegistryEntry {
   type: string;
   collection: string;
   schema: z.ZodType;
+  /** The payload shape version this entry's schema describes. Defaults to 1. Bump it when the schema changes shape. */
+  version?: number;
+  /**
+   * Upgrades a payload stored under an older version to the current one. Runs on read before validation, and on the
+   * next draft write before the migrated payload is persisted. Must be pure; it may be called many times per document.
+   */
+  migrate?(fromVersion: number, payload: unknown): unknown;
 }
 
 export interface SchemaRegistry {

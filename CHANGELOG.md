@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Schema evolution: `RegistryEntry` takes `version` (default 1) and `migrate(fromVersion, payload)`. Migration
+  `0003_payload_version.sql` adds `documents.payload_version`; apply it before upgrading a SQLite store.
+- `createSqliteContentStore` takes an `onReadIssue(key, issues)` option.
+
+### Changed
+
+- Public reads (`draft: false`) no longer throw when a stored payload fails the current schema: they serve it and call
+  `onReadIssue` (default: `console.warn` once per key). Editor reads and writes still throw `ContentValidationError`.
+
 ## [0.2.0] - 2026-11-04
 
 ### Breaking
