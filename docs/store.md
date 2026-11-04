@@ -107,16 +107,36 @@ runContentStoreContract(
 Keep tests that depend on your storage (malformed rows, clock injection, migrations) in your own file next to the
 contract call, as `src/sqlite-store.test.ts` does here.
 
+## Schema evolution
+
+A registry entry may declare `version` (default 1) and `migrate(fromVersion, payload)`. Bump `version` when the schema
+changes shape and have `migrate` return the payload in the new shape. The store records the entry's version in
+`payload_version` on create, `writeField`, `arrayOp` and `publish`.
+
+- **Reads.** When a row's stored version is behind the entry's and `migrate` exists, it runs before validation. Reads
+  never write: the migrated payload is persisted by the next draft write, which migrates first and stamps the new
+  version. Because one version column covers both payloads, that write also migrates a stale published payload in
+  place.
+- **Public reads (`draft: false`).** Validated with `safeParse`. A payload that fails the current schema is still
+  served as stored (after migrate), and `onReadIssue(key, issues)` is called. The default logs `console.warn` once per
+  key per process. Pass your own in the store's fourth argument: `createSqliteContentStore(db, registry, clock, { onReadIssue })`.
+- **Editor reads (`draft: true`) and all writes** validate strictly and throw `ContentValidationError`.
+
+`migrate` must be pure and cheap: it runs on every read of a stale row until a draft write persists the result.
+
 ## Migrations
 
 The SQLite schema lives in `migrations/`, applied in name order:
 
-| File                         | What it does                                                           |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| `0001_documents.sql`         | The `documents` and `revisions` tables, with JSON checks and indexes.  |
-| `0002_version_and_actor.sql` | Adds `documents.version` (default 0) and `revisions.actor` (nullable). |
+| File                         | What it does                                                                       |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| `0001_documents.sql`         | The `documents` and `revisions` tables, with JSON checks and indexes.              |
+| `0002_version_and_actor.sql` | Adds `documents.version` (default 0) and `revisions.actor` (nullable).             |
+| `0003_payload_version.sql`   | Adds `documents.payload_version` (default 1), the registry version of the payload. |
 
 Rows written before `0002` read as version 0; their first mutation takes them to 1.
+
+Existing rows read as payload version 1.
 
 A host on another database translates these files into its own dialect (for example `TEXT` JSON columns become
 `jsonb`, `json_valid` checks become type constraints) and keeps the same columns and meanings. The contract suite is
