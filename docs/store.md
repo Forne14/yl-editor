@@ -39,7 +39,8 @@ interface WriteContext {
 
 A store is built with a `SchemaRegistry`, which maps a document type to its collection and its zod schema. Documents
 are keyed `collection/slug`. Slugs are lower-case letters and digits joined by single hyphens; anything else throws
-`SlugError`.
+`SlugError`. A registry implements `entry(type)` and `byCollection(collection)`; `entries()` is optional and unused
+by the library, kept for back-office listing.
 
 Every write is validated against the type's schema before it is stored (`ContentValidationError`), and every read is
 validated again, so a payload that drifts from its schema fails loudly with the document's key rather than rendering

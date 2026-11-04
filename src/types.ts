@@ -27,7 +27,10 @@ export interface RegistryEntry {
 export interface SchemaRegistry {
   entry(type: string): RegistryEntry | undefined;
   byCollection(collection: string): RegistryEntry | undefined;
-  entries(): readonly RegistryEntry[];
+  /**
+   * Every registered entry. Optional: nothing in the library calls it; it exists for back-office listing (see #7).
+   */
+  entries?(): readonly RegistryEntry[];
 }
 
 /** The smallest description of a document an access check needs. */
@@ -116,18 +119,6 @@ export interface ContentStore {
 export interface Access {
   canEdit(locals: unknown, doc: DocumentRef): MaybePromise<AccessVerdict>;
   canPublish(locals: unknown, doc: DocumentRef): MaybePromise<AccessVerdict>;
-}
-
-export const MediaVariantSchema = z.object({
-  width: z.number().int().positive(),
-  format: z.enum(["avif", "webp", "png", "mp4"]),
-  url: z.string(),
-});
-export type MediaVariant = z.infer<typeof MediaVariantSchema>;
-
-export interface MediaStore {
-  upload(file: Uint8Array, meta: { role: string; filename: string; alt: string }): Promise<{ id: string }>;
-  resolve(id: string): Promise<MediaVariant[] | null>;
 }
 
 export type OnPublish = (doc: StoredDocument) => Promise<void> | void;
