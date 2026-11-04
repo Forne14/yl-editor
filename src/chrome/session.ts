@@ -3,7 +3,7 @@
 // WRITES ARE SERIALISED PER DOCUMENT, not per field: every write sends `expectedVersion` and bumps the version, so
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
-import { ApiError, type ContentClient } from "./client.ts";
+import { ContentRequestError, type ContentClient } from "../http/client.ts";
 import type { DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
@@ -24,7 +24,8 @@ export interface SaveSlot {
 export interface SessionEvents {
   stateChanged(slot: SaveSlot): void;
   saved(slot: SaveSlot, value: unknown, document: WireDocument): void;
-  failed(slot: SaveSlot, error: ApiError): void;
+  /** `error` is a `ContentRequestError`, or whatever `fetch` threw when the server was unreachable. */
+  failed(slot: SaveSlot, error: unknown): void;
   conflicted(slot: SaveSlot, current: WireDocument): void;
 }
 
@@ -50,7 +51,7 @@ export class Session {
   }
 
   async load(keys: readonly string[]): Promise<void> {
-    const summaries = keys.length > 0 ? await this.client.documents(keys) : {};
+    const summaries = await this.client.documents([...keys]);
     const remembered = this.readTouched();
     for (const key of keys) {
       const summary: DocumentSummary | undefined = summaries[key];
@@ -150,24 +151,18 @@ export class Session {
         const { value } = slot.pending;
         slot.pending = undefined;
         try {
-          const document = await this.client.writeField(
-            slot.key,
-            slot.path,
-            value,
-            this.documents.get(slot.key)?.version,
-          );
+          const document = await this.client.field(slot.key, slot.path, value, this.documents.get(slot.key)?.version);
           this.adopt(document);
           this.markTouched(slot);
           if (!slot.pending) this.setState(slot, "saved");
           this.events.saved(slot, value, document);
-        } catch (cause) {
-          const error = cause instanceof ApiError ? cause : new ApiError(0, "network", String(cause));
+        } catch (error) {
           // A newer commit may have arrived while this one was in flight; that is the one worth retrying.
           const newer = slot.pending as { value: unknown } | undefined;
           slot.failedValue = newer ? newer.value : value;
           slot.pending = undefined;
           this.setState(slot, "failed");
-          if (error.code === "conflict" && error.current) {
+          if (error instanceof ContentRequestError && error.code === "conflict" && error.current) {
             slot.conflict = error.current;
             this.events.conflicted(slot, error.current);
           } else {

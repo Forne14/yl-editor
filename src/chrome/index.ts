@@ -2,7 +2,7 @@
 // alongside `@yl/editor/chrome/chrome.css`. See docs/chrome.md.
 export { mountEditor } from "./mount.ts";
 export { createDefaultWidgets, defaultWidgets, missingWidget, openPopover, type Popover } from "./widgets.ts";
-export { createClient, ApiError, type ArrayOperation, type ContentClient } from "./client.ts";
+export { createContentClient, ContentRequestError, type ContentClient } from "../http/client.ts";
 export { defaultStrings, type Strings } from "./strings.ts";
 export type { EditableAttrs, EditFieldType } from "../editable.ts";
 export type {

@@ -122,9 +122,12 @@ header `X-Requested-With: yl-editor`.
 | `path`        | 400                                                          |
 | `state`       | 409                                                          |
 | `slug`        | 400                                                          |
-| `bad_request` | 400                                                          |
+| `bad_request` | 400, also a 405 for the wrong method                         |
+| `internal`    | 500, also any response without a valid error envelope        |
 
-`createClient(base)` is exported if a host panel wants to call the same endpoints.
+The chrome uses `createContentClient({ base })` from the package's HTTP module, re-exported from
+`@yl/editor/chrome` with `ContentRequestError`, so a host panel can call the same endpoints with the same error
+decoding. A response without a valid error envelope arrives as code `internal`.
 
 ## Widgets
 

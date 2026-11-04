@@ -1,5 +1,5 @@
 // `mountEditor`: wires the scanned fields, the save queue, the bar, the toast and the sheet together.
-import { ApiError, createClient } from "./client.ts";
+import { ContentRequestError, createContentClient } from "../http/client.ts";
 import { Disposer, button, element, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
 import { Session, type SaveSlot } from "./session.ts";
@@ -29,8 +29,9 @@ function sameValue(left: unknown, right: unknown): boolean {
 }
 
 function errorMessage(error: unknown, strings: Strings): string {
-  if (error instanceof ApiError) return error.code === "network" ? strings.networkError : error.message;
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof ContentRequestError) return error.message;
+  // Anything else came from fetch itself: the server could not be reached.
+  return strings.networkError;
 }
 
 /** The value a field holds now: the server's payload once we have it, else what the page renders. */
@@ -63,7 +64,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const base = options.base ?? "/api/content";
   const scanRoot = options.root ?? document.body;
   const widgets: Partial<Record<string, Widget>> = { ...createDefaultWidgets(strings), ...options.widgets };
-  const client = createClient(base);
+  const client = createContentClient({ base });
   const disposer = new Disposer();
 
   const live = element("div", { class: "cms-live", role: "status", "aria-live": "polite" });
