@@ -1,3 +1,3 @@
-export * from "./types";
-export { parsePath, getAt, setAt, applyArrayOp } from "./path";
-export { editable, type EditFieldType } from "./editable";
+export * from "./types.ts";
+export { parsePath, getAt, setAt, applyArrayOp } from "./path.ts";
+export { editable, type EditFieldType } from "./editable.ts";

@@ -1,14 +1,11 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import type Database from "better-sqlite3";
-import { createSqliteContentStore } from "./sqlite-store";
-import { makeTestDb, testRegistry } from "./test-support";
-import {
-  ContentValidationError,
-  DocumentNotFoundError,
-  DocumentStateError,
-  PathError,
-  type ContentStore,
-} from "./types";
+import { contractRegistry, runContentStoreContract } from "./contract.ts";
+import { createSqliteContentStore } from "./sqlite-store.ts";
+import { makeTestDb } from "./test-support.ts";
+import { ContentValidationError, PathError, type ContentStore } from "./types.ts";
+
+runContentStoreContract("sqlite", () => createSqliteContentStore(makeTestDb(), contractRegistry));
 
 let db: Database.Database;
 let store: ContentStore;
@@ -18,146 +15,91 @@ const clock = () => new Date(Date.UTC(2026, 9, 14, 12, 0, tick++));
 beforeEach(() => {
   db = makeTestDb();
   tick = 0;
-  store = createSqliteContentStore(db, testRegistry, clock);
+  store = createSqliteContentStore(db, contractRegistry, clock);
 });
 
-describe("create and get", () => {
-  test("create stores a draft keyed by collection/slug", () => {
-    const doc = store.create("note", "first", { title: "A", tags: [] });
-    expect(doc.key).toBe("notes/first");
-    expect(doc.isDraft).toBe(true);
+describe("migrations", () => {
+  test("every migration applies: documents carry version, revisions carry actor", () => {
+    const documentColumns = db.prepare<[], { name: string }>("PRAGMA table_info(documents)").all();
+    const revisionColumns = db.prepare<[], { name: string }>("PRAGMA table_info(revisions)").all();
+    expect(documentColumns.map((column) => column.name)).toContain("version");
+    expect(revisionColumns.map((column) => column.name)).toContain("actor");
   });
-  test("a draft-only document is invisible to published reads", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    expect(store.get("notes/first")).toBeNull();
-    expect(store.get("notes/first", { draft: true })?.payload).toEqual({ title: "A", tags: [] });
-  });
-  test("create validates the payload", () =>
-    expect(() => store.create("note", "bad", { title: "", tags: [] })).toThrow(ContentValidationError));
-  test("create refuses an unknown type", () =>
-    expect(() => store.create("poster", "x", {})).toThrow(/Unknown document type/));
-  test("create refuses a bad slug", () =>
-    expect(() => store.create("note", "Bad Slug", { title: "A", tags: [] })).toThrow(/slug/));
-  test("create refuses a duplicate key", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    expect(() => store.create("note", "first", { title: "B", tags: [] })).toThrow(DocumentStateError);
+  test("a row written before 0002 reads as version 0 and accepts expectedVersion 0", async () => {
+    db.prepare(
+      "INSERT INTO documents (key, type, slug, draft_payload, created_at) VALUES ('notes/legacy', 'note', 'legacy', ?, '2026-01-01T00:00:00.000Z')",
+    ).run(JSON.stringify({ title: "Old", tags: [] }));
+    expect((await store.get("notes/legacy", { draft: true }))?.version).toBe(0);
+    expect((await store.publish("notes/legacy", { expectedVersion: 0 })).version).toBe(1);
   });
 });
 
-describe("writeField", () => {
-  beforeEach(() => {
-    store.create("note", "first", { title: "A", tags: ["x"] });
-    store.publish("notes/first");
-  });
-  test("writes into a new draft and leaves published untouched", () => {
-    store.writeField("notes/first", "title", "B");
-    expect(store.get("notes/first")?.payload).toEqual({ title: "A", tags: ["x"] });
-    expect(store.get("notes/first", { draft: true })?.payload).toEqual({ title: "B", tags: ["x"] });
-  });
-  test("an invalid value is refused and the stored draft is unchanged", () => {
-    store.writeField("notes/first", "title", "B");
-    expect(() => store.writeField("notes/first", "title", "")).toThrow(ContentValidationError);
-    expect(store.get("notes/first", { draft: true })?.payload).toEqual({ title: "B", tags: ["x"] });
-  });
-  test("a path that does not exist is refused and nothing is written", () => {
-    expect(() => store.writeField("notes/first", "tags.4", "y")).toThrow(PathError);
-    expect(store.get("notes/first", { draft: true })?.isDraft).toBe(false);
-  });
-  test("unknown document", () =>
-    expect(() => store.writeField("notes/none", "title", "B")).toThrow(DocumentNotFoundError));
-});
-
-describe("arrayOp", () => {
-  test("inserts into a list", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    const doc = store.arrayOp("notes/first", "tags", { kind: "insert", index: 0, value: "t" });
-    expect(doc.payload).toEqual({ title: "A", tags: ["t"] });
-  });
-});
-
-describe("publish and discardDraft", () => {
-  test("publish copies draft to published, clears the draft and writes a revision", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    const doc = store.publish("notes/first");
-    expect(doc.isDraft).toBe(false);
-    expect(doc.publishedAt).not.toBeNull();
-    expect(store.revisions("notes/first").map((r) => r.action)).toEqual(["publish"]);
-  });
-  test("publish without a draft is refused", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    store.publish("notes/first");
-    expect(() => store.publish("notes/first")).toThrow(DocumentStateError);
-  });
-  test("discardDraft on a published document restores the published payload", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    store.publish("notes/first");
-    store.writeField("notes/first", "title", "B");
-    expect(store.discardDraft("notes/first")?.payload).toEqual({ title: "A", tags: [] });
-  });
-  test("discardDraft on a never-published document deletes it", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    expect(store.discardDraft("notes/first")).toBeNull();
-    expect(store.get("notes/first", { draft: true })).toBeNull();
+describe("timestamps come from the injected clock", () => {
+  test("publish stamps publishedAt and the revision from the clock", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    const doc = await store.publish("notes/first");
+    expect(doc.publishedAt).toBe("2026-10-14T12:00:01.000Z");
+    expect((await store.revisions("notes/first"))[0]?.createdAt).toBe("2026-10-14T12:00:02.000Z");
   });
 });
 
 describe("reads validate (Review Focus 1)", () => {
-  test("a stored payload that no longer matches the schema throws naming the key", () => {
-    store.create("note", "first", { title: "A", tags: [] });
-    store.publish("notes/first");
+  test("a stored payload that no longer matches the schema throws naming the key", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first");
     db.prepare("UPDATE documents SET published_payload = ? WHERE key = ?").run(
       JSON.stringify({ title: 1 }),
       "notes/first",
     );
-    expect(() => store.get("notes/first")).toThrow(/notes\/first/);
-    expect(() => store.list("note")).toThrow(ContentValidationError);
+    await expect(store.get("notes/first")).rejects.toThrow(/notes\/first/);
+    await expect(store.list("note")).rejects.toThrow(ContentValidationError);
   });
 });
 
-describe("editor writes that miss (Review Focus 2)", () => {
-  beforeEach(() => {
-    store.create("note", "first", { title: "A", tags: ["x"] });
-    store.publish("notes/first");
-    store.writeField("notes/first", "title", "B");
+describe("editor writes that miss leave the stored row byte-identical (Review Focus 2)", () => {
+  beforeEach(async () => {
+    await store.create("note", "first", { title: "A", tags: ["x"] });
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "B");
   });
-  const draftRow = () => db.prepare("SELECT draft_payload FROM documents WHERE key = ?").get("notes/first");
-  test("writeField to a missing parent leaves the stored draft unchanged", () => {
+  const draftRow = () =>
+    db.prepare("SELECT draft_payload, draft_updated_at, version FROM documents WHERE key = ?").get("notes/first");
+  test("writeField to a missing parent leaves the stored draft unchanged", async () => {
     const before = draftRow();
-    expect(() => store.writeField("notes/first", "meta.title", "y")).toThrow(PathError);
-    expect(() => store.writeField("notes/first", "tags.9", "y")).toThrow(PathError);
+    await expect(store.writeField("notes/first", "meta.title", "y")).rejects.toThrow(PathError);
+    await expect(store.writeField("notes/first", "tags.9", "y")).rejects.toThrow(PathError);
     expect(draftRow()).toEqual(before);
   });
-  test("arrayOp out of range leaves the stored draft unchanged", () => {
+  test("arrayOp out of range leaves the stored draft unchanged", async () => {
     const before = draftRow();
-    expect(() => store.arrayOp("notes/first", "tags", { kind: "remove", index: 5 })).toThrow(PathError);
-    expect(() => store.arrayOp("notes/first", "tags", { kind: "insert", index: 9, value: "z" })).toThrow(PathError);
+    await expect(store.arrayOp("notes/first", "tags", { kind: "remove", index: 5 })).rejects.toThrow(PathError);
+    await expect(store.arrayOp("notes/first", "tags", { kind: "insert", index: 9, value: "z" })).rejects.toThrow(
+      PathError,
+    );
     expect(draftRow()).toEqual(before);
   });
-  test("a malformed op is refused", () =>
-    expect(() => store.arrayOp("notes/first", "tags", { kind: "remove", index: -1 })).toThrow(PathError));
 });
 
 describe("malformed JSON columns", () => {
-  test("a bad previous_slugs column throws naming the key", () => {
-    store.create("note", "first", { title: "A", tags: [] });
+  test("a bad previous_slugs column throws naming the key", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
     db.prepare("UPDATE documents SET previous_slugs = ? WHERE key = ?").run('{"a":1}', "notes/first");
-    expect(() => store.get("notes/first", { draft: true })).toThrow(/notes\/first.*previous_slugs/);
-    expect(() => store.get("notes/first", { draft: true })).toThrow(ContentValidationError);
+    await expect(store.get("notes/first", { draft: true })).rejects.toThrow(/notes\/first.*previous_slugs/);
+    await expect(store.get("notes/first", { draft: true })).rejects.toThrow(ContentValidationError);
   });
-  test("a stored document of an unregistered type throws ContentValidationError naming the key", () => {
-    store.create("note", "first", { title: "A", tags: [] });
+  test("a stored document of an unregistered type throws ContentValidationError naming the key", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
     db.prepare("UPDATE documents SET type = 'poster' WHERE key = ?").run("notes/first");
-    expect(() => store.get("notes/first", { draft: true })).toThrow(ContentValidationError);
-    expect(() => store.get("notes/first", { draft: true })).toThrow(/notes\/first/);
+    await expect(store.get("notes/first", { draft: true })).rejects.toThrow(ContentValidationError);
+    await expect(store.get("notes/first", { draft: true })).rejects.toThrow(/notes\/first/);
   });
-});
-
-describe("list", () => {
-  test("lists published documents of a type, ordered by key", () => {
-    store.create("note", "b", { title: "B", tags: [] });
-    store.create("note", "a", { title: "A", tags: [] });
-    store.publish("notes/a");
-    expect(store.list("note").map((d) => d.key)).toEqual(["notes/a"]);
-    expect(store.list("note", { draft: true }).map((d) => d.key)).toEqual(["notes/a", "notes/b"]);
+  test("a rename whose previous_slugs column is malformed rolls back with no revision", async () => {
+    await store.create("note", "first", { title: "A", tags: [] });
+    await store.publish("notes/first");
+    db.prepare("UPDATE documents SET previous_slugs = ? WHERE key = ?").run('"oops"', "notes/first");
+    await expect(store.rename("notes/first", "second")).rejects.toThrow(ContentValidationError);
+    const row = db.prepare<[], { key: string; version: number }>("SELECT key, version FROM documents").get();
+    expect(row).toEqual({ key: "notes/first", version: 2 });
+    expect(db.prepare("SELECT count(*) AS total FROM revisions").get()).toEqual({ total: 1 });
   });
 });

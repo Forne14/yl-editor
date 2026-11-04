@@ -20,6 +20,25 @@ export interface RegistryEntry {
 export interface SchemaRegistry {
   entry(type: string): RegistryEntry | undefined;
   byCollection(collection: string): RegistryEntry | undefined;
+  entries(): readonly RegistryEntry[];
+}
+
+/** The smallest description of a document an access check needs. */
+export interface DocumentRef {
+  type: string;
+  key: string;
+}
+
+export type AccessVerdict = { allowed: true } | { allowed: false; reason: string };
+
+export type MaybePromise<T> = T | Promise<T>;
+
+/** Trailing argument on every write. */
+export interface WriteContext {
+  /** Who made the change, as the host names them. Recorded on lifecycle revisions; null when absent. */
+  actor?: string;
+  /** The version the caller last read. When present and stale, the write throws ConflictError and changes nothing. */
+  expectedVersion?: number;
 }
 
 export interface StoredDocument {
@@ -33,6 +52,8 @@ export interface StoredDocument {
   draftUpdatedAt: string | null;
   previousSlugs: string[];
   retiredAt: string | null;
+  /** Starts at 1 on create; increments on every draft write, publish, discard, retire, restore and rename. */
+  version: number;
 }
 
 export const RevisionSchema = z.object({
@@ -41,6 +62,7 @@ export const RevisionSchema = z.object({
   slug: z.string(),
   payload: z.unknown(),
   createdAt: z.string(),
+  actor: z.string().nullable(),
 });
 export type Revision = z.infer<typeof RevisionSchema>;
 
@@ -51,23 +73,24 @@ export interface ReadOptions {
 }
 
 export interface ContentStore {
-  create(type: string, slug: string, payload: unknown): StoredDocument;
-  get(key: string, opts?: ReadOptions): StoredDocument | null;
-  list(type: string, opts?: ReadOptions): StoredDocument[];
-  writeField(key: string, path: string, value: unknown): StoredDocument;
-  arrayOp(key: string, path: string, op: ArrayOp): StoredDocument;
-  publish(key: string): StoredDocument;
-  discardDraft(key: string): StoredDocument | null;
-  retire(key: string): StoredDocument;
-  restore(key: string): StoredDocument;
-  rename(key: string, newSlug: string): StoredDocument;
-  revisions(key: string): Revision[];
-  findByPreviousSlug(collection: string, slug: string): string | null;
+  create(type: string, slug: string, payload: unknown, context?: WriteContext): Promise<StoredDocument>;
+  get(key: string, opts?: ReadOptions): Promise<StoredDocument | null>;
+  list(type: string, opts?: ReadOptions): Promise<StoredDocument[]>;
+  writeField(key: string, path: string, value: unknown, context?: WriteContext): Promise<StoredDocument>;
+  arrayOp(key: string, path: string, op: ArrayOp, context?: WriteContext): Promise<StoredDocument>;
+  publish(key: string, context?: WriteContext): Promise<StoredDocument>;
+  discardDraft(key: string, context?: WriteContext): Promise<StoredDocument | null>;
+  retire(key: string, context?: WriteContext): Promise<StoredDocument>;
+  restore(key: string, context?: WriteContext): Promise<StoredDocument>;
+  rename(key: string, newSlug: string, context?: WriteContext): Promise<StoredDocument>;
+  revisions(key: string): Promise<Revision[]>;
+  findByPreviousSlug(collection: string, slug: string): Promise<string | null>;
 }
 
+/** Host-supplied permission checks. `locals` stays opaque: the package never learns the host's user shape. */
 export interface Access {
-  canEdit(locals: unknown): boolean;
-  canPublish(locals: unknown): boolean;
+  canEdit(locals: unknown, doc: DocumentRef): MaybePromise<AccessVerdict>;
+  canPublish(locals: unknown, doc: DocumentRef): MaybePromise<AccessVerdict>;
 }
 
 export const MediaVariantSchema = z.object({
@@ -79,7 +102,7 @@ export type MediaVariant = z.infer<typeof MediaVariantSchema>;
 
 export interface MediaStore {
   upload(file: Uint8Array, meta: { role: string; filename: string; alt: string }): Promise<{ id: string }>;
-  resolve(id: string): MediaVariant[] | null;
+  resolve(id: string): Promise<MediaVariant[] | null>;
 }
 
 export type OnPublish = (doc: StoredDocument) => Promise<void> | void;
@@ -109,4 +132,24 @@ export class DocumentNotFoundError extends Error {
 
 export class DocumentStateError extends Error {
   override name = "DocumentStateError";
+}
+
+/** A write carried an `expectedVersion` that no longer matches the stored document. */
+export class ConflictError extends Error {
+  constructor(
+    readonly key: string,
+    readonly expected: number,
+    readonly actual: number,
+  ) {
+    super(`Document ${key} is at version ${actual}, not the expected ${expected}`);
+    this.name = "ConflictError";
+  }
+}
+
+/** A slug that is not lower-case words joined by single hyphens. */
+export class SlugError extends Error {
+  constructor(readonly slug: string) {
+    super(`Invalid slug ${JSON.stringify(slug)}: use lower-case letters and digits joined by single hyphens`);
+    this.name = "SlugError";
+  }
 }
