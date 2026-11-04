@@ -34,7 +34,15 @@ function wireDocument(key: string, version: number, payload: unknown = {}): Wire
 }
 
 function summary(key: string, edit: boolean, publish: boolean, version = 3) {
-  return { key, type: "page", version, isDraft: false, draftUpdatedAt: null, publishedAt: null, access: { edit, publish } };
+  return {
+    key,
+    type: "page",
+    version,
+    isDraft: false,
+    draftUpdatedAt: null,
+    publishedAt: null,
+    access: { edit, publish },
+  };
 }
 
 const echoField: Handler = (body) => ({
@@ -50,7 +58,8 @@ function installFetch(): void {
     calls.push({ method, route: `${route}${url.search}`, body, init });
     const entry = handlers[route];
     const handler = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry;
-    if (!handler) return new Response(JSON.stringify({ error: { code: "not_found", message: "none" } }), { status: 404 });
+    if (!handler)
+      return new Response(JSON.stringify({ error: { code: "not_found", message: "none" } }), { status: 404 });
     const result = handler(body);
     return new Response(JSON.stringify(result.json), { status: result.status ?? 200 });
   });
@@ -115,7 +124,9 @@ beforeEach(() => {
       },
     }),
     "POST /api/content/field": echoField,
-    "POST /api/content/publish": (body) => ({ json: { document: { ...wireDocument(String(body?.key), 9), isDraft: false } } }),
+    "POST /api/content/publish": (body) => ({
+      json: { document: { ...wireDocument(String(body?.key), 9), isDraft: false } },
+    }),
   };
   installFetch();
 });

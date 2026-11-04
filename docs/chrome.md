@@ -43,12 +43,12 @@ date shown as "14 Nov"; without it the chrome reads the element's text until the
 
 ### `editable(docKey)(path, type, attrs?)`
 
-| Attribute           | Source                     | Meaning                                       |
-| ------------------- | -------------------------- | --------------------------------------------- |
-| `data-edit-field`   | `"<docKey>:<path>"`        | Which document and which dotted payload path  |
-| `data-edit-type`    | `type`                     | One of the `EditFieldType` union              |
-| `data-edit-options` | `attrs.options` (JSON)     | Choices for a `select`                        |
-| `data-edit-label`   | `attrs.label`              | Human name shown in the badge                 |
+| Attribute           | Source                 | Meaning                                      |
+| ------------------- | ---------------------- | -------------------------------------------- |
+| `data-edit-field`   | `"<docKey>:<path>"`    | Which document and which dotted payload path |
+| `data-edit-type`    | `type`                 | One of the `EditFieldType` union             |
+| `data-edit-options` | `attrs.options` (JSON) | Choices for a `select`                       |
+| `data-edit-label`   | `attrs.label`          | Human name shown in the badge                |
 
 `EditFieldType` is `"text" | "richtext" | "media" | "select" | "number" | "url" | "date" | "tags" | "toggle"`.
 
@@ -56,13 +56,13 @@ date shown as "14 Nov"; without it the chrome reads the element's text until the
 
 ```ts
 mountEditor({
-  base: "/api/content",        // where the wire contract lives
-  root: document.body,         // element scanned for [data-edit-field]
+  base: "/api/content", // where the wire contract lives
+  root: document.body, // element scanned for [data-edit-field]
   widgets: { richtext: myRichWidget },
   panels: [myPanel],
   actorLabel: "Editing as Maya (Editor)",
-  strings: { publish: "Make live" },  // any visible text, see src/chrome/strings.ts
-  onExit: () => location.reload(),    // called when the editor presses Done
+  strings: { publish: "Make live" }, // any visible text, see src/chrome/strings.ts
+  onExit: () => location.reload(), // called when the editor presses Done
 });
 ```
 
@@ -97,32 +97,32 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 `base` defaults to `/api/content`. Every request is sent with `credentials: "same-origin"`, a JSON body, and the
 header `X-Requested-With: yl-editor`.
 
-| Request                                                                  | Success                         |
-| ------------------------------------------------------------------------ | ------------------------------- |
-| `GET  {base}/documents?keys=k1,k2`                                       | `200 { documents: { [key]: summary } }` |
-| `POST {base}/field` `{ key, path, value, expectedVersion? }`             | `200 { document }`              |
-| `POST {base}/array` `{ key, path, op, expectedVersion? }`                | `200 { document }`              |
-| `POST {base}/publish` `{ key }`                                          | `200 { document }`              |
-| `POST {base}/discard` `{ key }`                                          | `200 { document: document \| null }` |
-| `POST {base}/retire` `{ key }`, `POST {base}/restore` `{ key }`          | `200 { document }`              |
-| `POST {base}/rename` `{ key, slug }`                                     | `200 { document }`              |
-| `GET  {base}/revisions?key=`                                             | `200 { revisions: [{ id, action, slug, payload, actor, createdAt }] }` |
+| Request                                                         | Success                                                                |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `GET  {base}/documents?keys=k1,k2`                              | `200 { documents: { [key]: summary } }`                                |
+| `POST {base}/field` `{ key, path, value, expectedVersion? }`    | `200 { document }`                                                     |
+| `POST {base}/array` `{ key, path, op, expectedVersion? }`       | `200 { document }`                                                     |
+| `POST {base}/publish` `{ key }`                                 | `200 { document }`                                                     |
+| `POST {base}/discard` `{ key }`                                 | `200 { document: document \| null }`                                   |
+| `POST {base}/retire` `{ key }`, `POST {base}/restore` `{ key }` | `200 { document }`                                                     |
+| `POST {base}/rename` `{ key, slug }`                            | `200 { document }`                                                     |
+| `GET  {base}/revisions?key=`                                    | `200 { revisions: [{ id, action, slug, payload, actor, createdAt }] }` |
 
 - `summary` = `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit: boolean, publish: boolean } }`
 - `document` = `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version }`
 - `op` = `{ kind: "insert", index, value } | { kind: "move", from, to } | { kind: "remove", index }`
 - Errors are `{ error: { code, message, issues?, current?: document } }`:
 
-| `code`        | Status |
-| ------------- | ------ |
-| `forbidden`   | 403    |
-| `not_found`   | 404    |
+| `code`        | Status                                                       |
+| ------------- | ------------------------------------------------------------ |
+| `forbidden`   | 403                                                          |
+| `not_found`   | 404                                                          |
 | `conflict`    | 409, carries `current` so the client can offer "take theirs" |
-| `validation`  | 422, may carry `issues` |
-| `path`        | 400    |
-| `state`       | 409    |
-| `slug`        | 400    |
-| `bad_request` | 400    |
+| `validation`  | 422, may carry `issues`                                      |
+| `path`        | 400                                                          |
+| `state`       | 409                                                          |
+| `slug`        | 400                                                          |
+| `bad_request` | 400                                                          |
 
 `createClient(base)` is exported if a host panel wants to call the same endpoints.
 
@@ -131,16 +131,21 @@ header `X-Requested-With: yl-editor`.
 A widget is any object with `mount`:
 
 ```ts
-interface Widget { mount(ctx: WidgetContext): WidgetHandle }
-interface WidgetContext {
-  element: HTMLElement;                      // the host element carrying data-edit-field
-  field: { key: string; path: string; type: EditFieldType; options?: string[]; label?: string };
-  value: unknown;                            // current value
-  commit(next: unknown): Promise<void>;      // save it; the chrome closes the widget
-  cancel(): void;                            // back out; the chrome closes the widget
-  announce(message: string): void;           // polite live region
+interface Widget {
+  mount(ctx: WidgetContext): WidgetHandle;
 }
-interface WidgetHandle { destroy(): void; focus?(): void }
+interface WidgetContext {
+  element: HTMLElement; // the host element carrying data-edit-field
+  field: { key: string; path: string; type: EditFieldType; options?: string[]; label?: string };
+  value: unknown; // current value
+  commit(next: unknown): Promise<void>; // save it; the chrome closes the widget
+  cancel(): void; // back out; the chrome closes the widget
+  announce(message: string): void; // polite live region
+}
+interface WidgetHandle {
+  destroy(): void;
+  focus?(): void;
+}
 ```
 
 The widget owns whatever DOM it changes and restores it in `destroy` or on cancel. The chrome owns focus, the save
@@ -196,12 +201,16 @@ A host adds its own surfaces (SEO, media library, anything) as panels. Each beco
 the shared sheet, which closes on Esc and returns focus to the button.
 
 ```ts
-interface Panel { id: string; label: string; mount(root: HTMLElement, api: EditorApi): { destroy(): void } }
+interface Panel {
+  id: string;
+  label: string;
+  mount(root: HTMLElement, api: EditorApi): { destroy(): void };
+}
 interface EditorApi {
   documents(): ReadonlyMap<string, DocumentState>;
   publish(key: string): Promise<void>;
   discard(key: string): Promise<void>;
-  refresh(): Promise<void>;          // rescan the page and reload the documents
+  refresh(): Promise<void>; // rescan the page and reload the documents
   status(message: string, kind?: "info" | "saving" | "saved" | "error"): void;
 }
 ```
@@ -225,32 +234,32 @@ elements being edited, which sit outside `.cms-root`. Override both from your ow
 Every default rule is wrapped in `:where()`, so it has no specificity and your selectors win without `!important`.
 Outside the token block the stylesheet has no raw colours, pixel sizes or radii.
 
-| Token               | Light default                                              | Dark default                |
-| ------------------- | ---------------------------------------------------------- | --------------------------- |
-| `--cms-font`        | `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif` | same                 |
-| `--cms-size-sm`     | `0.8125rem`                                                | same                        |
-| `--cms-size-md`     | `0.9375rem`                                                | same                        |
-| `--cms-line`        | `1.4` (line height)                                        | same                        |
-| `--cms-bg`          | `#ffffff`                                                  | `#1b1d24`                   |
-| `--cms-fg`          | `#16181d`                                                  | `#f3f4f8`                   |
-| `--cms-muted`       | `#5b6170`                                                  | `#aab0bf`                   |
-| `--cms-border`      | `#d5d8e0`                                                  | `#3a3e4a`                   |
-| `--cms-accent`      | `#2557d6`                                                  | `#6b9bff`                   |
-| `--cms-accent-fg`   | `#ffffff`                                                  | `#0b1020`                   |
-| `--cms-danger`      | `#b42318`                                                  | `#ff8a7a`                   |
-| `--cms-success`     | `#1f7a45`                                                  | `#5fd394`                   |
-| `--cms-warning`     | `#a15c07`                                                  | `#f0b429`                   |
-| `--cms-outline`     | `2px dashed #2557d6` (the field highlight)                 | `2px dashed #6b9bff`        |
-| `--cms-radius`      | `6px`                                                      | same                        |
-| `--cms-space-1`     | `4px`                                                      | same                        |
-| `--cms-space-2`     | `8px`                                                      | same                        |
-| `--cms-space-3`     | `12px`                                                     | same                        |
-| `--cms-space-4`     | `16px`                                                     | same                        |
-| `--cms-space-5`     | `24px`                                                     | same                        |
-| `--cms-shadow`      | `0 8px 28px rgb(15 18 30 / 18%)`                           | `0 10px 30px rgb(0 0 0 / 45%)` |
-| `--cms-z`           | `1000`                                                     | same                        |
-| `--cms-control-h`   | `44px` (minimum touch target)                              | same                        |
-| `--cms-sheet-max-h` | `70vh`                                                     | same                        |
+| Token               | Light default                                                     | Dark default                   |
+| ------------------- | ----------------------------------------------------------------- | ------------------------------ |
+| `--cms-font`        | `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif` | same                           |
+| `--cms-size-sm`     | `0.8125rem`                                                       | same                           |
+| `--cms-size-md`     | `0.9375rem`                                                       | same                           |
+| `--cms-line`        | `1.4` (line height)                                               | same                           |
+| `--cms-bg`          | `#ffffff`                                                         | `#1b1d24`                      |
+| `--cms-fg`          | `#16181d`                                                         | `#f3f4f8`                      |
+| `--cms-muted`       | `#5b6170`                                                         | `#aab0bf`                      |
+| `--cms-border`      | `#d5d8e0`                                                         | `#3a3e4a`                      |
+| `--cms-accent`      | `#2557d6`                                                         | `#6b9bff`                      |
+| `--cms-accent-fg`   | `#ffffff`                                                         | `#0b1020`                      |
+| `--cms-danger`      | `#b42318`                                                         | `#ff8a7a`                      |
+| `--cms-success`     | `#1f7a45`                                                         | `#5fd394`                      |
+| `--cms-warning`     | `#a15c07`                                                         | `#f0b429`                      |
+| `--cms-outline`     | `2px dashed #2557d6` (the field highlight)                        | `2px dashed #6b9bff`           |
+| `--cms-radius`      | `6px`                                                             | same                           |
+| `--cms-space-1`     | `4px`                                                             | same                           |
+| `--cms-space-2`     | `8px`                                                             | same                           |
+| `--cms-space-3`     | `12px`                                                            | same                           |
+| `--cms-space-4`     | `16px`                                                            | same                           |
+| `--cms-space-5`     | `24px`                                                            | same                           |
+| `--cms-shadow`      | `0 8px 28px rgb(15 18 30 / 18%)`                                  | `0 10px 30px rgb(0 0 0 / 45%)` |
+| `--cms-z`           | `1000`                                                            | same                           |
+| `--cms-control-h`   | `44px` (minimum touch target)                                     | same                           |
+| `--cms-sheet-max-h` | `70vh`                                                            | same                           |
 
 Stable class names, all prefixed `cms-`: `cms-root`, `cms-bar`, `cms-bar__state`, `cms-bar__actions`, `cms-enter`,
 `cms-field`, `cms-field--editing`, `cms-field--locked`, `cms-field--saving`, `cms-field--saved`,

@@ -51,12 +51,8 @@ export function createClient(base = "/api/content"): ContentClient {
     } catch (cause) {
       throw new ApiError(0, "network", cause instanceof Error ? cause.message : "Network error");
     }
-    let parsed: unknown = null;
-    try {
-      parsed = await response.json();
-    } catch {
-      parsed = null;
-    }
+    // An empty or non-JSON body (a proxy's HTML error page, say) reads as null rather than throwing.
+    const parsed: unknown = await response.json().catch(() => null);
     if (!response.ok) {
       const error = (parsed as ErrorBody | null)?.error;
       throw new ApiError(

@@ -17,9 +17,30 @@ test("chrome.css has no hex colour or px outside the token blocks", () => {
 
 test("every documented token has a default", () => {
   const tokens = [
-    "font", "size-sm", "size-md", "line", "bg", "fg", "muted", "border", "accent", "accent-fg", "danger",
-    "success", "warning", "outline", "radius", "space-1", "space-2", "space-3", "space-4", "space-5", "shadow", "z",
-    "control-h", "sheet-max-h",
+    "font",
+    "size-sm",
+    "size-md",
+    "line",
+    "bg",
+    "fg",
+    "muted",
+    "border",
+    "accent",
+    "accent-fg",
+    "danger",
+    "success",
+    "warning",
+    "outline",
+    "radius",
+    "space-1",
+    "space-2",
+    "space-3",
+    "space-4",
+    "space-5",
+    "shadow",
+    "z",
+    "control-h",
+    "sheet-max-h",
   ];
   const defaults = (css.match(tokenBlock) ?? [])[0] ?? "";
   for (const token of tokens) expect(defaults).toContain(`--cms-${token}:`);

@@ -38,7 +38,8 @@ export interface WireRevision {
   createdAt: string;
 }
 
-export type ErrorCode = "forbidden" | "not_found" | "conflict" | "validation" | "path" | "state" | "slug" | "bad_request";
+export type ErrorCode =
+  "forbidden" | "not_found" | "conflict" | "validation" | "path" | "state" | "slug" | "bad_request";
 
 /** The chrome's view of one document: the summary, plus the latest payload once a write has returned one. */
 export interface DocumentState {
