@@ -3,9 +3,11 @@ import {
   isErrorEnvelope,
   REQUESTED_WITH_HEADER,
   REQUESTED_WITH_VALUE,
+  type DocumentResponse,
   type DocumentsResponse,
   type DocumentSummary,
   type ErrorCode,
+  type PublishDueResponse,
   type WireArrayOp,
   type WireDocument,
   type WireRevision,
@@ -34,9 +36,17 @@ export interface ContentClientOptions {
 
 export interface ContentClient {
   documents(keys: string[]): Promise<Record<string, DocumentSummary>>;
+  /** One document, draft view, retired included. */
+  document(key: string): Promise<WireDocument>;
   field(key: string, path: string, value: unknown, expectedVersion?: number): Promise<WireDocument>;
   array(key: string, path: string, op: WireArrayOp, expectedVersion?: number): Promise<WireDocument>;
-  publish(key: string): Promise<WireDocument>;
+  /** Publishes now, or with `at` (an ISO datetime) schedules the draft for `publishDue`. */
+  publish(key: string, options?: { at?: string }): Promise<WireDocument>;
+  unpublish(key: string): Promise<WireDocument>;
+  /** Copies a revision's payload into the draft. */
+  restoreRevision(key: string, revisionId: number): Promise<WireDocument>;
+  /** Publishes every scheduled draft due at `now` (default: the server's clock). */
+  publishDue(now?: string): Promise<WireDocument[]>;
   discard(key: string): Promise<WireDocument | null>;
   retire(key: string): Promise<WireDocument>;
   restore(key: string): Promise<WireDocument>;
@@ -84,7 +94,13 @@ export function createContentClient(options: ContentClientOptions = {}): Content
     },
     field: (key, path, value, expectedVersion) => post("field", { key, path, value, expectedVersion }),
     array: (key, path, op, expectedVersion) => post("array", { key, path, op, expectedVersion }),
-    publish: (key) => post("publish", { key }),
+    document: async (key) => (await send<DocumentResponse>("GET", `document?${new URLSearchParams({ key })}`)).document,
+    publish: (key, publishOptions) =>
+      post("publish", publishOptions?.at !== undefined ? { key, at: publishOptions.at } : { key }),
+    unpublish: (key) => post("unpublish", { key }),
+    restoreRevision: (key, revisionId) => post("restore-revision", { key, revisionId }),
+    publishDue: async (now) =>
+      (await send<PublishDueResponse>("POST", "publish-due", now !== undefined ? { now } : {})).documents,
     discard: async (key) => (await send<{ document: WireDocument | null }>("POST", "discard", { key })).document,
     retire: (key) => post("retire", { key }),
     restore: (key) => post("restore", { key }),

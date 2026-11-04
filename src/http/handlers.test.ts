@@ -77,10 +77,14 @@ describe("routes", () => {
   test("lists every route with its method", () => {
     expect(handlers.routes).toEqual([
       "GET documents",
+      "GET document",
       "GET revisions",
       "POST field",
       "POST array",
       "POST publish",
+      "POST unpublish",
+      "POST restore-revision",
+      "POST publish-due",
       "POST discard",
       "POST retire",
       "POST restore",
@@ -448,5 +452,262 @@ describe("onChange", () => {
     await call(get("documents?keys=notes/first"));
     await call(get("revisions?key=notes/first"));
     expect(events).toEqual([]);
+  });
+});
+
+describe("document", () => {
+  test("returns the draft view, retired included, gated by canEdit", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    await store.retire("notes/first");
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({
+      key: "notes/first",
+      isDraft: true,
+      payload: { title: "Draft", tags: [] },
+      retiredAt: expect.any(String),
+    });
+    expect(fake.calls).toEqual([{ check: "canEdit", locals: session, ref: { type: "note", key: "notes/first" } }]);
+    expect(events).toEqual([]);
+  });
+
+  test("an unknown key is 404 before any verdict, a denial is 403, a missing key is 400", async () => {
+    const missing = await call(get("document?key=notes/none"));
+    expect([missing.status, missing.body.error.code]).toEqual([404, "not_found"]);
+    expect(fake.calls).toEqual([]);
+
+    await store.create("note", "first", note);
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
+    const denied = await call(get("document?key=notes/first"));
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toEqual({ code: "forbidden", message: "Not yours" });
+
+    const malformed = await call(get("document"));
+    expect([malformed.status, malformed.body.error.code]).toEqual([400, "bad_request"]);
+    expect((await call(post("document", {}))).status).toBe(405);
+  });
+});
+
+describe("publish with at", () => {
+  test("schedules the draft instead of publishing, and fires a publish change", async () => {
+    await store.create("note", "first", note);
+    const { status, body } = await call(post("publish", { key: "notes/first", at: "2030-01-01T09:00:00+02:00" }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, publishedAt: null, scheduledAt: "2030-01-01T07:00:00.000Z" });
+    expect(fake.calls.map((entry) => entry.check)).toEqual(["canPublish"]);
+    expect(events.map((event) => [event.action, event.key, event.actor])).toEqual([["publish", "notes/first", "ada"]]);
+  });
+
+  test("an at that is not an ISO datetime is 400 and nothing is scheduled", async () => {
+    await store.create("note", "first", note);
+    for (const at of ["tomorrow", "2030-01-01", 42]) {
+      const { status, body } = await call(post("publish", { key: "notes/first", at }));
+      expect([status, body.error.code]).toEqual([400, "bad_request"]);
+      expect(body.error.issues).toEqual([expect.objectContaining({ path: ["at"] })]);
+    }
+    expect((await store.get("notes/first", { draft: true }))?.scheduledAt).toBeNull();
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("scheduling is forbidden when canPublish denies", async () => {
+    await store.create("note", "first", note);
+    fake.verdicts.publish = () => ({ allowed: false, reason: "Publishers only" });
+    const { status, body } = await call(post("publish", { key: "notes/first", at: "2030-01-01T00:00:00Z" }));
+    expect(status).toBe(403);
+    expect(body.error.message).toBe("Publishers only");
+    expect((await store.get("notes/first", { draft: true }))?.scheduledAt).toBeNull();
+  });
+
+  test("a stale expectedVersion is 409 with the current document", async () => {
+    await store.create("note", "first", note);
+    await store.writeField("notes/first", "title", "Theirs");
+    const { status, body } = await call(post("publish", { key: "notes/first", expectedVersion: 1 }));
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+    expect(body.error.current).toMatchObject({ version: 2, payload: { title: "Theirs" } });
+  });
+});
+
+describe("unpublish", () => {
+  test("takes a published document back to draft-only, gated by canPublish", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const { status, body } = await call(post("unpublish", { key: "notes/first" }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, publishedAt: null, retiredAt: null, payload: note });
+    expect(fake.calls.map((entry) => entry.check)).toEqual(["canPublish"]);
+    expect(events.map((event) => [event.action, event.key, event.actor])).toEqual([
+      ["unpublish", "notes/first", "ada"],
+    ]);
+    expect((await store.revisions("notes/first")).map((revision) => revision.action)).toEqual(["publish", "unpublish"]);
+  });
+
+  test("is forbidden when canPublish denies even though canEdit allows", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    fake.verdicts.publish = () => ({ allowed: false, reason: "Publishers only" });
+    const { status, body } = await call(post("unpublish", { key: "notes/first" }));
+    expect(status).toBe(403);
+    expect(body.error).toEqual({ code: "forbidden", message: "Publishers only" });
+    expect((await store.get("notes/first"))?.isDraft).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  test("a never-published document is 409 state, an unknown key 404, a bad body 400", async () => {
+    await store.create("note", "first", note);
+    const never = await call(post("unpublish", { key: "notes/first" }));
+    expect([never.status, never.body.error.code]).toEqual([409, "state"]);
+    const unknown = await call(post("unpublish", { key: "notes/none" }));
+    expect([unknown.status, unknown.body.error.code]).toEqual([404, "not_found"]);
+    const malformed = await call(post("unpublish", { slug: "first" }));
+    expect([malformed.status, malformed.body.error.code]).toEqual([400, "bad_request"]);
+  });
+
+  test("a stale expectedVersion is 409 conflict", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const { status, body } = await call(post("unpublish", { key: "notes/first", expectedVersion: 1 }));
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+    expect(body.error.current).toMatchObject({ version: 2 });
+  });
+});
+
+describe("restore-revision", () => {
+  test("copies a revision's payload into the draft, gated by canEdit", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const [revision] = await store.revisions("notes/first");
+    await store.writeField("notes/first", "title", "Later");
+    const { status, body } = await call(post("restore-revision", { key: "notes/first", revisionId: revision?.id }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: note });
+    expect(fake.calls.map((entry) => entry.check)).toEqual(["canEdit"]);
+    expect(events.map((event) => [event.action, event.key, event.actor])).toEqual([
+      ["restore_revision", "notes/first", "ada"],
+    ]);
+  });
+
+  test("is forbidden when canEdit denies, and nothing is written", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const [revision] = await store.revisions("notes/first");
+    await store.writeField("notes/first", "title", "Later");
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Editors only" });
+    const { status, body } = await call(post("restore-revision", { key: "notes/first", revisionId: revision?.id }));
+    expect(status).toBe(403);
+    expect(body.error.message).toBe("Editors only");
+    expect((await store.get("notes/first", { draft: true }))?.payload).toMatchObject({ title: "Later" });
+    expect(events).toEqual([]);
+  });
+
+  test("a revision of another document, or none at all, is 404", async () => {
+    await store.create("note", "first", note);
+    await store.create("note", "second", note);
+    await store.publish("notes/second");
+    const [foreign] = await store.revisions("notes/second");
+    const other = await call(post("restore-revision", { key: "notes/first", revisionId: foreign?.id }));
+    expect([other.status, other.body.error.code]).toEqual([404, "not_found"]);
+    const none = await call(post("restore-revision", { key: "notes/first", revisionId: 9999 }));
+    expect([none.status, none.body.error.code]).toEqual([404, "not_found"]);
+  });
+
+  test("a revisionId that is not a non-negative integer is 400", async () => {
+    await store.create("note", "first", note);
+    for (const revisionId of ["1", 1.5, -1, undefined]) {
+      const { status, body } = await call(post("restore-revision", { key: "notes/first", revisionId }));
+      expect([status, body.error.code]).toEqual([400, "bad_request"]);
+    }
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("a stale expectedVersion is 409 conflict", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const [revision] = await store.revisions("notes/first");
+    const { status, body } = await call(
+      post("restore-revision", { key: "notes/first", revisionId: revision?.id, expectedVersion: 1 }),
+    );
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+  });
+});
+
+describe("publish-due", () => {
+  const withPublishDue = (authorize: (locals: unknown) => AccessVerdict | Promise<AccessVerdict>) =>
+    createContentHandlers({
+      store,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+      actor: (locals) => (locals as typeof session).user,
+      onChange: (event) => {
+        events.push(event);
+      },
+      publishDue: { authorize },
+    });
+
+  const schedule = async (slug: string, at: string) => {
+    await store.create("note", slug, note);
+    await store.publish(`notes/${slug}`, { at });
+  };
+
+  test("without the option the route is forbidden and publishes nothing", async () => {
+    await schedule("first", "2030-01-01T00:00:00Z");
+    const { status, body } = await call(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect([status, body.error.code]).toEqual([403, "forbidden"]);
+    expect(await store.get("notes/first")).toBeNull();
+  });
+
+  test("publishes what is due at now, firing one publish change per document", async () => {
+    await schedule("first", "2030-01-01T00:00:00Z");
+    await schedule("second", "2030-06-01T00:00:00Z");
+    await schedule("later", "2032-01-01T00:00:00Z");
+    const seen: unknown[] = [];
+    const due = withPublishDue(async (locals) => {
+      seen.push(locals);
+      return allowed;
+    });
+    const response = await due.handle(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { documents: { key: string; isDraft: boolean }[] };
+    expect(body.documents.map((document) => [document.key, document.isDraft])).toEqual([
+      ["notes/first", false],
+      ["notes/second", false],
+    ]);
+    expect(seen).toEqual([session]);
+    expect(fake.calls).toEqual([]);
+    expect(events.map((event) => [event.action, event.key, event.actor])).toEqual([
+      ["publish", "notes/first", "ada"],
+      ["publish", "notes/second", "ada"],
+    ]);
+    expect((await store.revisions("notes/first"))[0]?.actor).toBe("ada");
+    expect((await store.get("notes/later", { draft: true }))?.isDraft).toBe(true);
+  });
+
+  test("an empty body uses the store clock and may publish nothing", async () => {
+    await schedule("first", "2999-01-01T00:00:00Z");
+    const due = withPublishDue(() => allowed);
+    const response = await due.handle(post("publish-due", {}));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ documents: [] });
+    expect(events).toEqual([]);
+  });
+
+  test("a denying authorize is 403 with its reason", async () => {
+    await schedule("first", "2030-01-01T00:00:00Z");
+    const due = withPublishDue(() => ({ allowed: false, reason: "Cron only" }));
+    const response = await due.handle(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: { code: "forbidden", message: "Cron only" } });
+    expect(await store.get("notes/first")).toBeNull();
+  });
+
+  test("a now that is not an ISO datetime is 400", async () => {
+    const due = withPublishDue(() => allowed);
+    const response = await due.handle(post("publish-due", { now: "soon" }));
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; issues: unknown } };
+    expect(body.error.code).toBe("bad_request");
+    expect(body.error.issues).toEqual([expect.objectContaining({ path: ["now"] })]);
   });
 });

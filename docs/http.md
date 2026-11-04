@@ -27,6 +27,7 @@ const handlers = createContentHandlers({
 | `base`       | `/api/content` | Path prefix, matched against the request URL's pathname.                        |
 | `sameOrigin` | `true`         | Refuse requests whose `Origin` or `Sec-Fetch-Site` shows another site.          |
 | `onChange`   | none           | Called after every successful write, after the response (errors are logged).    |
+| `publishDue` | none           | `{ authorize(locals) }` enables `POST publish-due`; see below.                  |
 
 `handlers.handle(request)` always resolves. `handlers.routes` lists every route as `"METHOD name"`.
 
@@ -37,10 +38,14 @@ All bodies are JSON. `{base}` is the configured base.
 | Method | Path                        | Body                                     | Success                                        |
 | ------ | --------------------------- | ---------------------------------------- | ---------------------------------------------- |
 | GET    | `{base}/documents?keys=a,b` | none                                     | `200 { documents: { [key]: summary } }`        |
+| GET    | `{base}/document?key=k`     | none                                     | `200 { document }`                             |
 | GET    | `{base}/revisions?key=k`    | none                                     | `200 { revisions: [revision] }`                |
 | POST   | `{base}/field`              | `{ key, path, value, expectedVersion? }` | `200 { document }`                             |
 | POST   | `{base}/array`              | `{ key, path, op, expectedVersion? }`    | `200 { document }`                             |
-| POST   | `{base}/publish`            | `{ key }`                                | `200 { document }`                             |
+| POST   | `{base}/publish`            | `{ key, at?, expectedVersion? }`         | `200 { document }`                             |
+| POST   | `{base}/unpublish`          | `{ key, expectedVersion? }`              | `200 { document }`                             |
+| POST   | `{base}/restore-revision`   | `{ key, revisionId, expectedVersion? }`  | `200 { document }`                             |
+| POST   | `{base}/publish-due`        | `{ now? }`                               | `200 { documents: [document] }`                |
 | POST   | `{base}/discard`            | `{ key }`                                | `200 { document }` or `200 { document: null }` |
 | POST   | `{base}/retire`             | `{ key }`                                | `200 { document }`                             |
 | POST   | `{base}/restore`            | `{ key }`                                | `200 { document }`                             |
@@ -49,17 +54,31 @@ All bodies are JSON. `{base}` is the configured base.
 
 - `op` is `{ kind: "insert", index, value }`, `{ kind: "move", from, to }` or `{ kind: "remove", index }`.
 - `document` is the `StoredDocument` as JSON:
-  `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version }`.
+  `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version, scheduledAt }`.
+- `document` reads one document with the same view as `documents` (draft, retired included), whole, payload and all.
+  An unknown key is `404 not_found`.
 - A `documents` summary is `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit, publish } }`.
   Unknown keys are left out. Keys are deduped, and more than 100 distinct keys is a `400 bad_request`. Reads use the draft view and include retired documents, because the editor needs to see
   what it is editing.
 - A revision is `{ id, action, slug, payload, actor, createdAt }`.
 - `discard` returns `null` when the document had never been published, so discarding its draft removed it.
-- Pass `expectedVersion` on `field` and `array` to get optimistic concurrency: a stale version is a `conflict`.
+- `publish` with `at` (an ISO 8601 datetime with `Z` or an offset, such as `2030-01-01T09:00:00+02:00`) does not publish:
+  it validates the draft and sets `scheduledAt`, and `publish-due` promotes it later. Anything else in `at` is a
+  `400 bad_request`. The change it fires is still `publish`.
+- `unpublish` takes a published document back to draft-only without retiring it. The published payload becomes the
+  draft unless a draft already exists. A document that was never published is a `409 state`.
+- `restore-revision` copies the payload of revision `revisionId` (an `id` from `revisions`) into the draft; the
+  published payload is untouched. A revision that does not exist, or belongs to another document, is `404 not_found`.
+- `publish-due` publishes every scheduled draft whose `scheduledAt` is at or before `now` (an ISO datetime; default:
+  the store's clock) and returns them in the order they were due, possibly `[]`.
+- Pass `expectedVersion` on `field`, `array`, `publish`, `unpublish` and `restore-revision` to get optimistic
+  concurrency: a stale version is a `conflict`.
 
-The zod schemas for every body (`FieldRequestSchema`, `ArrayRequestSchema`, `KeyRequestSchema`,
-`RenameRequestSchema`, `CreateRequestSchema`) and the `WireDocument`, `DocumentSummary`, `WireRevision`,
-`WireArrayOp` and `ErrorEnvelope` types are exported, so a client of your own can share them.
+The zod schemas for every body and query (`FieldRequestSchema`, `ArrayRequestSchema`, `KeyRequestSchema`,
+`PublishRequestSchema`, `UnpublishRequestSchema`, `RestoreRevisionRequestSchema`, `PublishDueRequestSchema`,
+`RenameRequestSchema`, `CreateRequestSchema`, `DocumentsQuerySchema`, `DocumentQuerySchema`, `RevisionsQuerySchema`)
+and the `WireDocument`, `DocumentSummary`, `WireRevision`, `WireArrayOp`, `PublishDueResponse` and `ErrorEnvelope`
+types are exported, so a client of your own can share them.
 
 Inside the package the contract is split in two. `wire-types.ts` holds the types, the header constants, the
 code-to-status map and the `isErrorEnvelope` guard, and imports nothing. `wire.ts` holds the zod schemas and re-exports
@@ -69,13 +88,14 @@ and a compile-time check in `wire.ts` fails the build if they drift apart.
 
 ## Gating
 
-| Route                                    | Verdict      | Document the verdict is about                                   |
-| ---------------------------------------- | ------------ | --------------------------------------------------------------- |
-| `documents`                              | none to list | Each listed document; `access.edit` and `access.publish` report |
-| `revisions`                              | `canEdit`    | The stored row                                                  |
-| `field`, `array`, `discard`              | `canEdit`    | The stored row                                                  |
-| `publish`, `retire`, `restore`, `rename` | `canPublish` | The stored row                                                  |
-| `create`                                 | `canEdit`    | `{ type, key: "<collection>/<slug>" }` from the body            |
+| Route                                                 | Verdict                | Document the verdict is about                                   |
+| ----------------------------------------------------- | ---------------------- | --------------------------------------------------------------- |
+| `documents`                                           | none to list           | Each listed document; `access.edit` and `access.publish` report |
+| `document`, `revisions`                               | `canEdit`              | The stored row                                                  |
+| `field`, `array`, `discard`, `restore-revision`       | `canEdit`              | The stored row                                                  |
+| `publish`, `unpublish`, `retire`, `restore`, `rename` | `canPublish`           | The stored row                                                  |
+| `create`                                              | `canEdit`              | `{ type, key: "<collection>/<slug>" }` from the body            |
+| `publish-due`                                         | `publishDue.authorize` | None: it acts on whatever is due                                |
 
 The stored row is read with `{ draft: true, includeRetired: true }`, so its `type` comes from the database rather than
 from the request. A key that does not exist is `404` before any verdict is asked for. `create` looks its type up in the
@@ -83,6 +103,29 @@ registry and answers `422 validation` "Unknown document type" when it is not the
 
 `documents` lists a document the actor cannot edit, with `access.edit: false`, so an editing interface can show it
 greyed out instead of pretending it is absent. When a verdict denies, its `reason` becomes the error `message`.
+
+`restore-revision` needs only `canEdit` because it writes the draft, never the published payload. Scheduling with
+`publish { at }` needs `canPublish`, like publishing now.
+
+### `publish-due` and its `authorize` option
+
+`publish-due` publishes across every document at once, so there is no stored row to ask `canPublish` about. It is off
+unless the host passes `publishDue`:
+
+```ts
+createContentHandlers({
+  // ...
+  publishDue: {
+    // (locals: unknown) => AccessVerdict | Promise<AccessVerdict>
+    authorize: (locals) =>
+      (locals as Session | null)?.isCron ? { allowed: true } : { allowed: false, reason: "Cron only" },
+  },
+});
+```
+
+Without the option every call is `403 forbidden` ("publish-due is not enabled"), before the body is read. With it,
+`authorize` gets whatever `locals` returned; a denying verdict is `403` with its reason. A scheduler that already has a
+store at hand can call `store.publishDue()` directly instead and skip HTTP.
 
 ## The CSRF and same-origin guard
 
@@ -133,11 +176,13 @@ or to reapply its own change on top with the new `version`.
 After every successful write the handlers call `onChange` with:
 
 ```ts
-{ action: "create" | "field" | "array" | "publish" | "discard" | "retire" | "restore" | "rename";
+{ action: "create" | "field" | "array" | "publish" | "unpublish" | "discard" | "retire" | "restore" | "rename"
+    | "restore_revision";
   key: string; document: StoredDocument | null; actor?: string }
 ```
 
-`key` is the key the request named (for `rename`, the old key; `document.key` is the new one). Reads never fire it,
+`key` is the key the request named (for `rename`, the old key; `document.key` is the new one). `publish` with `at`
+fires `publish` with the scheduled draft, and `publish-due` fires one `publish` per document it published. Reads never fire it,
 and neither do refused or failed writes. It runs after the response is built and is not awaited on the response path; its errors are logged with
 `console.error`, not returned. The write's response is unchanged: the change has already happened, and a broken activity log must not tell the editor it
 failed.
@@ -196,16 +241,20 @@ try {
 }
 ```
 
-| Method                                        | Returns                        |
-| --------------------------------------------- | ------------------------------ |
-| `documents(keys)`                             | `Record<key, DocumentSummary>` |
-| `field(key, path, value, expectedVersion?)`   | `WireDocument`                 |
-| `array(key, path, op, expectedVersion?)`      | `WireDocument`                 |
-| `publish(key)`, `retire(key)`, `restore(key)` | `WireDocument`                 |
-| `discard(key)`                                | `WireDocument \| null`         |
-| `rename(key, slug)`                           | `WireDocument`                 |
-| `revisions(key)`                              | `WireRevision[]`               |
-| `create(type, slug, payload)`                 | `WireDocument`                 |
+| Method                                          | Returns                        |
+| ----------------------------------------------- | ------------------------------ |
+| `documents(keys)`                               | `Record<key, DocumentSummary>` |
+| `document(key)`                                 | `WireDocument`                 |
+| `field(key, path, value, expectedVersion?)`     | `WireDocument`                 |
+| `array(key, path, op, expectedVersion?)`        | `WireDocument`                 |
+| `publish(key, { at? }?)`                        | `WireDocument`                 |
+| `unpublish(key)`, `retire(key)`, `restore(key)` | `WireDocument`                 |
+| `restoreRevision(key, revisionId)`              | `WireDocument`                 |
+| `publishDue(now?)`                              | `WireDocument[]`               |
+| `discard(key)`                                  | `WireDocument \| null`         |
+| `rename(key, slug)`                             | `WireDocument`                 |
+| `revisions(key)`                                | `WireRevision[]`               |
+| `create(type, slug, payload)`                   | `WireDocument`                 |
 
 The client sends `X-Requested-With: yl-editor` and `credentials: "same-origin"` on every request. Any non-2xx response
 throws a `ContentRequestError` with `status`, `code`, `message`, and `issues` or `current` when the server sent them; a

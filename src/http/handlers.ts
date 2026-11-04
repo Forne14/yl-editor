@@ -18,20 +18,35 @@ import {
   ArrayRequestSchema,
   CreateRequestSchema,
   DEFAULT_BASE,
+  DocumentQuerySchema,
   DocumentsQuerySchema,
   ERROR_STATUS,
   FieldRequestSchema,
   KeyRequestSchema,
+  PublishDueRequestSchema,
+  PublishRequestSchema,
   RenameRequestSchema,
   REQUESTED_WITH_HEADER,
   REQUESTED_WITH_VALUE,
+  RestoreRevisionRequestSchema,
   RevisionsQuerySchema,
+  UnpublishRequestSchema,
   type DocumentSummary,
   type ErrorCode,
   type ErrorEnvelope,
 } from "./wire.ts";
 
-export type ChangeAction = "create" | "field" | "array" | "publish" | "discard" | "retire" | "restore" | "rename";
+export type ChangeAction =
+  | "create"
+  | "field"
+  | "array"
+  | "publish"
+  | "unpublish"
+  | "discard"
+  | "retire"
+  | "restore"
+  | "rename"
+  | "restore_revision";
 
 export interface ChangeEvent {
   action: ChangeAction;
@@ -54,6 +69,12 @@ export interface ContentHandlerOptions {
   sameOrigin?: boolean;
   /** Called after every successful write: the activity-log seam. Errors are logged, never surfaced. */
   onChange?: (event: ChangeEvent) => MaybePromise<void>;
+  /**
+   * Enables `POST publish-due`. That route publishes whatever is due across every document, so no per-document verdict
+   * can gate it; `authorize` decides instead (typically: a cron secret or an admin session). Without it the route
+   * answers `forbidden`.
+   */
+  publishDue?: { authorize: (locals: unknown) => MaybePromise<AccessVerdict> };
 }
 
 export interface ContentHandlers {
@@ -81,10 +102,14 @@ interface RequestContext {
   writeContext: (expectedVersion?: number) => WriteContext;
 }
 
+type Change = Omit<ChangeEvent, "actor">;
+
 interface RouteResult {
   status?: number;
   body: unknown;
-  change?: { action: ChangeAction; key: string; document: StoredDocument | null };
+  change?: Change;
+  /** Several changes from one request (`publish-due`), each notified on its own. */
+  changes?: Change[];
 }
 
 interface Route {
@@ -213,6 +238,14 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         return { body: { documents } };
       },
     },
+    document: {
+      method: "GET",
+      run: async (context) => {
+        const { key } = parseQuery(context.url, DocumentQuerySchema);
+        const document = await gate(context, key, "canEdit");
+        return { body: { document } };
+      },
+    },
     revisions: {
       method: "GET",
       run: async (context) => {
@@ -245,7 +278,51 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         return { body: { document }, change: { action: "array", key: body.key, document } };
       },
     },
-    publish: { method: "POST", run: keyedWrite("publish", "canPublish", (key, write) => store.publish(key, write)) },
+    publish: {
+      method: "POST",
+      run: async (context) => {
+        const body = await parseBody(context.request, PublishRequestSchema);
+        await gate(context, body.key, "canPublish");
+        const write = context.writeContext(body.expectedVersion);
+        const document = await store.publish(body.key, body.at !== undefined ? { ...write, at: body.at } : write);
+        return { body: { document }, change: { action: "publish", key: body.key, document } };
+      },
+    },
+    unpublish: {
+      method: "POST",
+      run: async (context) => {
+        const body = await parseBody(context.request, UnpublishRequestSchema);
+        await gate(context, body.key, "canPublish");
+        const document = await store.unpublish(body.key, context.writeContext(body.expectedVersion));
+        return { body: { document }, change: { action: "unpublish", key: body.key, document } };
+      },
+    },
+    "restore-revision": {
+      method: "POST",
+      run: async (context) => {
+        const body = await parseBody(context.request, RestoreRevisionRequestSchema);
+        await gate(context, body.key, "canEdit");
+        const document = await store.restoreRevision(
+          body.key,
+          body.revisionId,
+          context.writeContext(body.expectedVersion),
+        );
+        return { body: { document }, change: { action: "restore_revision", key: body.key, document } };
+      },
+    },
+    "publish-due": {
+      method: "POST",
+      run: async (context) => {
+        if (!options.publishDue) throw new HttpError("forbidden", "publish-due is not enabled");
+        const body = await parseBody(context.request, PublishDueRequestSchema);
+        deny(await options.publishDue.authorize(context.locals));
+        const documents = await store.publishDue(body.now, context.writeContext());
+        return {
+          body: { documents },
+          changes: documents.map((document) => ({ action: "publish" as const, key: document.key, document })),
+        };
+      },
+    },
     discard: { method: "POST", run: keyedWrite("discard", "canEdit", (key, write) => store.discardDraft(key, write)) },
     retire: { method: "POST", run: keyedWrite("retire", "canPublish", (key, write) => store.retire(key, write)) },
     restore: { method: "POST", run: keyedWrite("restore", "canPublish", (key, write) => store.restore(key, write)) },
@@ -330,7 +407,8 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       };
       const result = await route.run(context);
       const response = json(result.status ?? 200, result.body);
-      if (result.change) void notify({ ...result.change, ...(actor !== undefined ? { actor } : {}) });
+      for (const change of [...(result.change ? [result.change] : []), ...(result.changes ?? [])])
+        void notify({ ...change, ...(actor !== undefined ? { actor } : {}) });
       return response;
     } catch (error) {
       return toResponse(error);

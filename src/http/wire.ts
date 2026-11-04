@@ -14,9 +14,32 @@ export type FieldRequest = z.infer<typeof FieldRequestSchema>;
 export const ArrayRequestSchema = z.object({ key, path: z.string(), op: ArrayOpSchema, expectedVersion });
 export type ArrayRequest = z.infer<typeof ArrayRequestSchema>;
 
-/** Body of `publish`, `discard`, `retire` and `restore`. */
+/** An ISO 8601 datetime with a `Z` or a numeric offset, as `publish.at` and `publish-due.now` take it. */
+const isoDateTime = z.iso.datetime({ offset: true });
+
+/** Body of `discard`, `retire` and `restore`. */
 export const KeyRequestSchema = z.object({ key });
 export type KeyRequest = z.infer<typeof KeyRequestSchema>;
+
+/** Body of `publish`. With `at`, the draft is scheduled instead of published now. */
+export const PublishRequestSchema = z.object({ key, at: isoDateTime.optional(), expectedVersion });
+export type PublishRequest = z.infer<typeof PublishRequestSchema>;
+
+/** Body of `unpublish`. */
+export const UnpublishRequestSchema = z.object({ key, expectedVersion });
+export type UnpublishRequest = z.infer<typeof UnpublishRequestSchema>;
+
+/** Body of `restore-revision`: copies that revision's payload into the draft. */
+export const RestoreRevisionRequestSchema = z.object({
+  key,
+  revisionId: z.number().int().nonnegative(),
+  expectedVersion,
+});
+export type RestoreRevisionRequest = z.infer<typeof RestoreRevisionRequestSchema>;
+
+/** Body of `publish-due`. Without `now`, the store's clock decides what is due. */
+export const PublishDueRequestSchema = z.object({ now: isoDateTime.optional() });
+export type PublishDueRequest = z.infer<typeof PublishDueRequestSchema>;
 
 export const RenameRequestSchema = z.object({ key, slug: z.string() });
 export type RenameRequest = z.infer<typeof RenameRequestSchema>;
@@ -29,6 +52,9 @@ export const DocumentsQuerySchema = z.object({ keys: z.string() });
 
 /** Query of `GET revisions`. */
 export const RevisionsQuerySchema = z.object({ key });
+
+/** Query of `GET document`. */
+export const DocumentQuerySchema = z.object({ key });
 
 const errorCodes = Object.keys(ERROR_STATUS) as [ErrorCode, ...ErrorCode[]];
 
