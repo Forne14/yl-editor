@@ -1,4 +1,4 @@
-import { PathError, type ArrayOp, type PathSegment } from "./types";
+import { PathError, type ArrayOp, type PathSegment } from "./types.ts";
 
 const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
 
