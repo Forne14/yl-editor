@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { contractRegistry } from "../contract.ts";
 import { createSqliteContentStore } from "../sqlite-store.ts";
 import { makeTestDb } from "../test-support.ts";
-import type { Access, AccessVerdict, ContentStore, DocumentRef } from "../types.ts";
+import type { Access, AccessVerdict, ContentStore, DocumentRef, RegistryEntry } from "../types.ts";
 import { createContentHandlers, type ChangeEvent, type ContentHandlers } from "./handlers.ts";
 
 const allowed: AccessVerdict = { allowed: true };
@@ -603,6 +603,216 @@ describe("document publishedPayload", () => {
   });
 });
 
+describe("document with a published payload that cannot be read", () => {
+  const malformed = "{not json";
+  const live = { title: "Live", tags: [] as string[] };
+
+  /** The shipped schema's CHECK refuses malformed JSON, so a damaged row has to bypass it. */
+  const corruptColumn = (column: "published_payload" | "draft_payload") => {
+    db.pragma("ignore_check_constraints = ON");
+    db.prepare(`UPDATE documents SET ${column} = ? WHERE key = 'notes/first'`).run(malformed);
+    db.pragma("ignore_check_constraints = OFF");
+  };
+  const corruptPublished = () => corruptColumn("published_payload");
+  const publishLive = async () => {
+    await store.create("note", "first", live);
+    await store.publish("notes/first");
+  };
+
+  /** Handlers over a store at version 2 with this `migrate`, so version 1 rows run it. */
+  const migrating = (migrate: NonNullable<RegistryEntry["migrate"]>) => {
+    const entry: RegistryEntry = { ...(contractRegistry.entry("note") as RegistryEntry), version: 2, migrate };
+    const registry = { entry: () => entry, byCollection: () => entry, entries: () => [entry] };
+    return createContentHandlers({
+      store: createSqliteContentStore(db, registry),
+      registry,
+      access: fake.access,
+      locals: () => session,
+    });
+  };
+  const blowUp = () => {
+    throw new Error("migrate blew up");
+  };
+  const readWith = async (over: ContentHandlers) => {
+    const response = await over.handle(get("document?key=notes/first"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { status: response.status, body: (await response.json()) as Record<string, any> };
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  test.each([false, true])(
+    "malformed JSON with no draft answers the stored text on both sides, never null (retired: %s)",
+    async (retired) => {
+      await publishLive();
+      if (retired) await store.retire("notes/first");
+      corruptPublished();
+      const { status, body } = await call(get("document?key=notes/first"));
+      expect(status).toBe(200);
+      expect(body.document).toMatchObject({ isDraft: false, payload: malformed, publishedAt: expect.any(String) });
+      expect(body.publishedPayload).toBe(malformed);
+    },
+  );
+
+  test("malformed JSON beside a valid draft answers the draft and the stored text", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    corruptPublished();
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toBe(malformed);
+  });
+
+  test("a JSON null in the published column is not reported as never published", async () => {
+    await publishLive();
+    db.prepare("UPDATE documents SET published_payload = 'null' WHERE key = 'notes/first'").run();
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(200);
+    expect(body.publishedPayload).toBe("null");
+  });
+
+  test("a migrate that throws with no draft answers the stored payload on both sides", async () => {
+    await publishLive();
+    const { status, body } = await readWith(migrating(blowUp));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: false, payload: live, publishedAt: expect.any(String) });
+    expect(body.publishedPayload).toEqual(live);
+  });
+
+  test("a migrate that throws only on the published payload answers the valid draft beside it", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await readWith(
+      migrating((_from, payload) => ((payload as { title: string }).title === live.title ? blowUp() : payload)),
+    );
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(live);
+  });
+
+  test("a migrate that throws on every payload answers the draft as stored", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await readWith(migrating(blowUp));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(live);
+  });
+
+  test("a draft failing its schema is 422 even beside malformed published JSON", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    corruptPublished();
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/first'").run(JSON.stringify({ title: "" }));
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+  });
+
+  test("a malformed draft is 422", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    corruptColumn("draft_payload");
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+  });
+
+  test("a store failing past the gate is 500 and leaks nothing", async () => {
+    await publishLive();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let reads = 0;
+    const failing: ContentStore = {
+      ...store,
+      get: async (key, opts) => {
+        reads += 1;
+        if (reads === 1) return store.get(key, opts);
+        throw new Error("disk on fire at /var/secret.db");
+      },
+    };
+    const response = await createContentHandlers({
+      store: failing,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+    }).handle(get("document?key=notes/first"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
+  });
+
+  test("a store failing only on the published read is 500 and leaks nothing", async () => {
+    await publishLive();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failing: ContentStore = {
+      ...store,
+      get: async (key, opts) => {
+        if (opts?.draft === false) throw new Error("disk on fire at /var/secret.db");
+        return store.get(key, opts);
+      },
+    };
+    const response = await createContentHandlers({
+      store: failing,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+    }).handle(get("document?key=notes/first"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
+  });
+
+  describe("writes", () => {
+    test.each(["malformed", "migrate"] as const)("restore-revision of a valid revision is 200 (%s)", async (damage) => {
+      await publishLive();
+      const [revision] = await store.revisions("notes/first");
+      if (damage === "malformed") corruptPublished();
+      const over = damage === "migrate" ? migrating(blowUp) : handlers;
+      const response = await over.handle(post("restore-revision", { key: "notes/first", revisionId: revision?.id }));
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as { document: unknown }).document).toMatchObject({
+        isDraft: true,
+        payload: live,
+      });
+      if (damage === "malformed")
+        expect((await call(get("document?key=notes/first"))).body.publishedPayload).toBe(malformed);
+    });
+
+    test("field with no draft has nothing to edit: 422 on malformed JSON, 500 when migrate throws", async () => {
+      await publishLive();
+      const body = { key: "notes/first", path: "title", value: "Field" };
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const throwing = await migrating(blowUp).handle(post("field", body));
+      expect(throwing.status).toBe(500);
+      expect(await throwing.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
+      corruptPublished();
+      const unparseable = await call(post("field", body));
+      expect([unparseable.status, unparseable.body.error.code]).toEqual([422, "validation"]);
+    });
+
+    test("restore-revision of a revision failing the schema is still 422", async () => {
+      await publishLive();
+      const [revision] = await store.revisions("notes/first");
+      corruptPublished();
+      db.prepare("UPDATE revisions SET payload = ? WHERE id = ?").run(JSON.stringify({ title: "" }), revision?.id);
+      const { status, body } = await call(post("restore-revision", { key: "notes/first", revisionId: revision?.id }));
+      expect([status, body.error.code]).toEqual([422, "validation"]);
+    });
+
+    test("field and array over a valid draft are 200 beside malformed published JSON; an invalid result is 422", async () => {
+      await publishLive();
+      await store.writeField("notes/first", "title", "Draft");
+      corruptPublished();
+      expect((await call(post("field", { key: "notes/first", path: "title", value: "Field" }))).status).toBe(200);
+      const array = await call(
+        post("array", { key: "notes/first", path: "tags", op: { kind: "insert", index: 0, value: "x" } }),
+      );
+      expect(array.status).toBe(200);
+      const invalid = await call(post("field", { key: "notes/first", path: "title", value: "" }));
+      expect([invalid.status, invalid.body.error.code]).toEqual([422, "validation"]);
+    });
+  });
+});
+
 describe("documents with a payload failing its schema", () => {
   /** Fails `note`'s schema: `title` must be non-empty. */
   const stale = JSON.stringify({ title: "", tags: [] as string[] });
@@ -1119,6 +1329,41 @@ describe("publish-due", () => {
     expect(events.map((event) => [event.action, event.key])).toEqual([["publish", "notes/good"]]);
     const row = db.prepare("SELECT scheduled_at FROM documents WHERE key = 'notes/bad'").get();
     expect(row).toEqual({ scheduled_at: "2030-01-01T00:00:00.000Z" });
+  });
+
+  test("a database failure stops the run and every remaining document is listed in failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await schedule("first", "2030-01-01T00:00:00Z");
+    await schedule("broken", "2030-02-01T00:00:00Z");
+    await schedule("after", "2030-03-01T00:00:00Z");
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/broken'").run(
+      JSON.stringify({ title: "broken", tags: [] }),
+    );
+    const entry: RegistryEntry = {
+      ...(contractRegistry.entry("note") as RegistryEntry),
+      version: 2,
+      migrate: (_from, payload) => {
+        if ((payload as { title: string }).title === "broken")
+          throw new Database.SqliteError("disk I/O error at /var/secret.db", "SQLITE_IOERR_WRITE");
+        return payload;
+      },
+    };
+    const registry = { entry: () => entry, byCollection: () => entry, entries: () => [entry] };
+    const due = createContentHandlers({
+      store: createSqliteContentStore(db, registry),
+      registry,
+      access: fake.access,
+      locals: () => session,
+      publishDue: { authorize: () => allowed },
+    });
+    const response = await due.handle(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { documents: { key: string }[]; failed: unknown[] };
+    expect(body.documents.map((document) => document.key)).toEqual(["notes/first"]);
+    expect(body.failed).toEqual([
+      { key: "notes/broken", code: "internal", message: "Internal error" },
+      { key: "notes/after", code: "internal", message: "Internal error" },
+    ]);
   });
 
   test("an unexpected failure is logged and never leaks its message", async () => {

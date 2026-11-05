@@ -94,7 +94,8 @@ export interface ReadOptions {
 export interface PublishDueContext extends WriteContext {
   /**
    * Called for each due document that could not be published; it stays scheduled and is retried on the next run.
-   * Without it the store logs with `console.warn`.
+   * When a database failure stops the run, it is also called with that error for every document not reached. Without
+   * it the store logs with `console.warn`.
    */
   onFailure?: (key: string, error: unknown) => void;
 }
@@ -113,7 +114,7 @@ export interface ContentStore {
   /**
    * Publishes every document whose `scheduledAt` is at or before `now` (default: the store clock), each on its own, and
    * returns the ones published. One that fails stays scheduled and is reported through `context.onFailure`; the others
-   * still publish.
+   * still publish, unless the database itself is failing, which stops the run and reports the rest as failed too.
    */
   publishDue(now?: string, context?: PublishDueContext): Promise<StoredDocument[]>;
   /**

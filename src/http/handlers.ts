@@ -266,15 +266,20 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       run: async (context) => {
         const { key } = parseQuery(context.url, DocumentQuerySchema);
         const stored = await gate(context, key, "canEdit");
-        // A draft failing its schema is reported, not served. A stale published payload is the document as stored.
+        // A draft failing its schema is reported, not served. Anything else that stops the validated read is a payload
+        // to show as stored, such as a `migrate` that throws. The unvalidated read does not run into those, so if it
+        // fails too then the store is failing, and that stays `internal`.
         const document = await store.get(key, DRAFT_VIEW).catch((error: unknown) => {
-          if (stored.isDraft || !(error instanceof ContentValidationError)) throw error;
-          return stored;
+          if (stored.isDraft && error instanceof ContentValidationError) throw error;
+          return store.get(key, { ...DRAFT_VIEW, unvalidated: true });
         });
         if (!document) throw new HttpError("not_found", `No document ${key}`);
         // `includeRetired`: retiring hides a document from visitors but keeps its published payload.
-        const published = await store.get(key, { draft: false, includeRetired: true });
-        return { body: { document, publishedPayload: published?.payload ?? null } };
+        const view = { draft: false, includeRetired: true };
+        const published = await store.get(key, view).catch(() => store.get(key, { ...view, unvalidated: true }));
+        // `null` means nothing is published, so a stored JSON `null` goes out as its text, like any unparseable column.
+        const publishedPayload = published ? (published.payload ?? "null") : null;
+        return { body: { document, publishedPayload } };
       },
     },
     revisions: {

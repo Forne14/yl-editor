@@ -94,11 +94,14 @@ A due document that cannot be published (usually a draft that no longer matches 
 scheduled, gets no revision, and is retried on every later run, so it publishes once it is repaired. The other due
 documents still publish. Each failure goes to `context.onFailure(key, error)`, or to `console.warn` without one.
 
-Failures of the document, including a `migrate` that throws, do not stop the run. A database failure does: it is
-reported the same way for the document it hit, the documents already published stay published and are returned, and
-the rest stay scheduled for the next run. The failure is about the database rather than any one document, so carrying
-on would only repeat it, and throwing would lose the list of what did publish. A custom store decides what counts as a
-database failure for its own driver.
+Failures of the document, including a `migrate` that throws or a per-document SQLite error such as `SQLITE_CONSTRAINT*`
+or `SQLITE_TOOBIG`, do not stop the run. A database-wide failure does. In the SQLite store that is a `SqliteError` whose
+`code` is `SQLITE_BUSY`, `SQLITE_LOCKED`, `SQLITE_IOERR`, `SQLITE_CORRUPT`, `SQLITE_FULL`, `SQLITE_NOTADB`,
+`SQLITE_READONLY` or `SQLITE_CANTOPEN`, or an extended code of one of those (`SQLITE_IOERR_WRITE`). It is reported for
+the document it hit and, with the same error, for every document not reached, so the failures list everything that did
+not publish. The documents already published stay published and are returned, and the rest stay scheduled for the next
+run. Carrying on would only repeat the failure, and throwing would lose the list of what did publish. A custom store
+decides what counts as a database failure for its own driver, and reports the rest the same way.
 
 Revisions record publish, retire, restore, rename, restore_revision and unpublish, each with the payload that was live at the time. Draft edits are
 not revisions.
@@ -159,7 +162,11 @@ changes shape and have `migrate` return the payload in the new shape. The store 
 - **Reads.** When a row's stored version is behind the entry's and `migrate` exists, it runs before validation. Reads
   never write: the migrated payload is persisted by the next draft write, which migrates first and stamps the new
   version. Because one version column covers both payloads, that write also migrates a stale published payload in
-  place.
+  place. A published payload that cannot be migrated (malformed JSON, or a `migrate` that throws on it) does not refuse
+  the draft: the column stays as stored and the write goes through. The version column still moves, because the draft
+  is at the new version, so a later read no longer migrates that published payload. Public reads serve it unmigrated,
+  through `onReadIssue` if it fails the schema, until a publish replaces it, and fixing `migrate` afterwards does not
+  reach it. Malformed JSON still throws on a validated read.
 - **Public reads (`draft: false`).** Validated with `safeParse`. A payload that fails the current schema is still
   served as stored (after migrate), and `onReadIssue(key, issues)` is called. The default logs `console.warn` once per
   key per process. Pass your own in the store's fourth argument: `createSqliteContentStore(db, registry, clock, { onReadIssue })`.
@@ -189,6 +196,11 @@ it until a draft write or a restored revision repairs it.
 
 A revision has no recorded payload version, so `restoreRevision` validates it against the current schema without
 migrating it. A revision from before a shape change fails with `ContentValidationError`.
+
+The draft writes depend only on their own result, never on the published payload. `restoreRevision` works whatever state
+the published column is in. `writeField` and `arrayOp` edit the draft when there is one, so they work too. With no draft
+they edit the published payload, so they cannot start from one that cannot be read: malformed JSON throws
+`ContentValidationError`, and a `migrate` that throws on it propagates that error.
 
 `migrate` must be pure and cheap: it runs on every read of a stale row until a draft write persists the result.
 
