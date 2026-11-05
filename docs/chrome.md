@@ -62,6 +62,7 @@ mountEditor({
   panels: [myPanel],
   actorLabel: "Editing as Maya (Editor)",
   strings: { publish: "Make live" }, // any visible text, see src/chrome/strings.ts
+  scheduling: false, // show "Publish at" in the publish sheet; see "Scheduling" below before turning it on
   onExit: () => location.reload(), // called when the editor presses Done
 });
 ```
@@ -72,7 +73,9 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 ## Behaviour
 
 - On mount the chrome scans `root` for `[data-edit-field]`, groups the fields by document key, and makes one
-  `GET documents` request for all the keys. It keeps each document's `version` and `access`.
+  `GET documents` request for all the keys. It keeps each document's `version` and `access`. A later load (`api.refresh`)
+  waits for the writes queued for those documents first, and a summary older than what the session already holds, because
+  a write landed during the read, changes only `access`. The version never moves backwards.
 - Every field gets the highlight. A field whose document lacks `access.edit` is still outlined, in the muted
   colour, and its badge and accessible description give the reason. Clicking it shows the reason as a toast.
 - The first time a non-text field opens, the chrome fetches its document with `GET document` and reads the value at
@@ -82,7 +85,14 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - `text` and `richtext` open at once, without a fetch. Their widget starts from the stored value if the document's
   payload is already known, else the field's `data-edit-value` (parsed the same way as below), else the element's text.
   So a host's rich text widget can receive markup the element's text would lose. The default text widget edits the
-  element in place whatever the starting value, and leaving it with its text unchanged writes nothing.
+  element in place whatever the starting value, and leaving it with its text unchanged writes nothing, unless its last
+  save failed (see below).
+- Any widget starts from the newest value the editor has committed for its path, ahead of the cached document: a value
+  queued or in flight, or one that failed to save. Reopening a popover straight after a change shows that change, and
+  changing it back is saved after it (a queued value is replaced, an in-flight one is followed).
+- Reopening a field whose save failed and leaving it resends the value, for text and popover widgets alike; Esc leaves it
+  failed. A host widget that commits the same value resends too, and can read `ctx.unsaved`. A field whose last save
+  didn't fail writes nothing when left untouched. Discard and Restore replace the content, so they drop failed values.
 - When the path is missing from the document, or the fetch fails, a non-text widget starts from the field's
   `data-edit-value`, parsed as JSON or taken as written when it is not valid JSON. The element's rendered text is never
   read. If the fetch failed, a toast says the field started from the page's value; with no `data-edit-value` the widget
@@ -90,28 +100,59 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   untouched writes nothing, wherever the starting value came from.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select, toggle,
   date and number commit on change; Esc cancels and restores. A popover edit still open when another field is opened,
-  the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Focus returns to the field when the widget closes.
+  a sheet or panel is opened, the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Text
+  is too. Focus returns to the field when the widget closes.
+- A popover still waiting on its fetch is cancelled by opening any sheet, panel or the revisions drawer and by starting
+  any lifecycle action, and it doesn't open on a document deleted during the wait.
 - Commits go through a save queue. Each field moves idle → saving → saved, or → failed with a Retry button in the
   toast. Writes to one document are serialised, each sends `expectedVersion`, and the returned `version` is
   stored for the next write. Values committed while a save is in flight coalesce: only the latest is sent.
 - A `conflict` shows a non-blocking choice: **Keep mine (overwrite)** resends against the server's version;
   **Take theirs (reload field)** repaints the field from the server's copy.
-- The bar shows the actor label, the number of fields and documents changed this session (kept in session storage,
-  so a reload does not forget), and Revisions, Done, Discard and Publish. Publish and Discard list the touched
+- The bar shows the actor label, the number of changes and documents changed this session (kept in session storage,
+  so a reload does not forget), and Revisions, Done, Discard and Publish. A change is a field, or one for a document
+  changed with no field to name: Unpublish, or a Restore that left the draft as it was. Both leave the document in the
+  Publish sheet, so it can go live again. Publish and Discard list the touched
   documents the editor may act on before acting: `access.publish` for Publish, `access.edit` for Discard (the server
   gates discard by edit access). The endpoint is called once per document, after that document's pending field
-  writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document that was
-  never published deletes it, so its fields stop being editable until the page is reloaded.
+  writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document with nothing
+  live deletes it, whether it was never published or was unpublished, so its fields stop being editable until the page
+  is reloaded. Its revisions go with it and can't be recovered through the chrome or the HTTP API. The Discard sheet says
+  so on each such document, and they stay listed because discarding is still valid. If a document loses its published
+  version while the sheet is open, the warning appears and that Confirm does nothing, so it can be read first.
+  `api.discard` asks nothing and warns about nothing: a panel that calls it does its own asking.
+- One document failing doesn't stop or misreport the others. Those that worked leave the sheet; those that failed stay in
+  it with the reason, a toast counts both, and Confirm tries the failed ones again.
+- While a run is going, Confirm and "Publish at" are disabled and focus moves to Cancel. Cancel, Close, Esc or anything
+  else that closes the sheet stops the documents not yet started. The one in flight finishes, on its reviewed version if
+  it had one, even if it is still waiting behind that document's queued saves. A toast then says how many finished and
+  names the rest, and stays until dismissed. Those documents stay touched, so they can be published or discarded later.
 - The Publish sheet shows what will change for each document: path and short before and after, from `diffPayloads`.
-  A document with nothing live says "First publish". Each opening makes one fresh `GET document` per listed document,
+  A document with nothing live says so. Each opening makes one fresh `GET document` per listed document,
   after that document's pending writes finish, and compares the `publishedPayload` it returns with its draft, so
-  another editor's change shows. The response replaces the session's cached copy of the document but not its `version`:
-  a later write from this session still conflicts with a change the page has not repainted. If the fetch fails, the
-  sheet says the changes could not be loaded for that document, and Publish stays available.
-- The Publish sheet has an optional "Publish at" input (`datetime-local`, in the browser's time zone). When set, the
-  button reads Schedule and sends `at` as an ISO string with offset; nothing goes live until the host runs
-  `publish-due`. The document stays in the change count, and the bar shows "<key> scheduled for <time>" with
-  **Publish now**, which publishes the draft immediately and clears the schedule.
+  another editor's change shows. The two always come from one response: if a write this session takes lands during the
+  read, the read is repeated, up to three times in all. Only the newest read of a row can render or become its reviewed
+  version. The response replaces the session's cached copy of the document but not its `version`: a later write from this
+  session still conflicts with a change the page has not repainted. If the fetch fails, the
+  sheet says the changes could not be loaded for that document, and Publish stays available. A draft failing its schema
+  is one such failure (`GET document` answers `422`); publishing it answers with the validation error. Reads that keep
+  being overtaken are another, and so is an unreadable published version: a `publishedPayload` that is a string (the
+  stored text of an unparseable column), or `null` with `publishedAt` set. That shows no diff and is never a first publish.
+- **Publish never overwrites a change the editor hasn't seen.** It sends as `expectedVersion` the version whose diff the
+  sheet showed, per document. The editor's own writes after that move it forward, by this rule: a write sent with the
+  reviewed version and accepted proves nothing else landed in between, so the reviewed version becomes that write's
+  result. A write from any other version leaves it behind, so the publish conflicts. With no diff on screen at Confirm
+  (still loading, or the fetch failed) it sends the session's known version, which is also what **Publish now** and
+  `api.publish` send.
+- On a publish conflict nothing is published and there is no overwrite. The sheet stays open and says so, and that
+  document's diff reloads so the editor can review and confirm again. **Publish now** opens the sheet on that document;
+  `api.publish` rejects and its toast has a **Review changes** button.
+- Unpublish, Restore and Discard send the session's known version. On a conflict a toast says the document changed, the
+  session takes the server's copy and repaints the fields from it, and nothing else happens. A field with a save on its
+  way or an open widget keeps what the editor has.
+- `api.publish(key, { at })` schedules whatever `scheduling` says, and refuses nothing: a host panel checks its own time.
+- An existing `scheduledAt` always shows in the bar as "<key> scheduled for <time>" with **Publish now**, which
+  publishes the draft immediately and clears the schedule, by the rule above.
 - **Cancelling a schedule without publishing is not exposed.** Discard would drop the draft and Publish now makes it
   live; clearing `scheduledAt` alone is a store-level operation. The bar learns `scheduledAt` when the document is
   fetched or written, because the `documents` summary does not carry it, so a schedule set in an earlier session shows
@@ -127,32 +168,51 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   always dispatches a bubbling `cms:change` event (`detail: { key, path, value }`) so a host can re-render richer
   markup itself.
 
+### Scheduling
+
+`scheduling: true` adds an optional "Publish at" input to the Publish sheet (`datetime-local`, in the browser's time
+zone). It is off by default because a scheduled draft goes live only when something runs `publish-due`, so without that
+it would silently never publish. **A host that turns it on must run `POST {base}/publish-due` on a schedule and read
+`failed` from the response**: a document that failed stays scheduled and is retried on the next run, and nothing else
+tells anyone. See docs/http.md.
+
+When set, the button reads Schedule and sends `at` as an ISO string with offset. The document stays in the change count
+until it goes live. Past times are refused: the input carries `min`, and because `min` isn't enforced on typed values or
+by a clock that has moved on, the time is checked again on every change and at Confirm. For a past time, as for a
+half-typed date, the button is disabled; for a past time a line says why.
+
 ### Strings
 
 Every label is a key of `defaultStrings` in `src/chrome/strings.ts`, overridable through `strings`. The lifecycle
 actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `restored`, `unpublish`, `unpublishConfirm`,
 `unpublished`, `schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`,
 `firstPublish`, `noDifferences`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`,
-`loadFieldFallback`.
+`loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `bulkStopped`,
+`scheduleInPast`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`.
+
+`discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
+A custom store that keeps them should override it.
 
 ## Wire contract
 
 `base` defaults to `/api/content`. Every request is sent with `credentials: "same-origin"`, a JSON body, and the
 header `X-Requested-With: yl-editor`.
 
-| Request                                                         | Success                                                                |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `GET  {base}/documents?keys=k1,k2`                              | `200 { documents: { [key]: summary } }`                                |
-| `POST {base}/field` `{ key, path, value, expectedVersion? }`    | `200 { document }`                                                     |
-| `POST {base}/array` `{ key, path, op, expectedVersion? }`       | `200 { document }`                                                     |
-| `GET  {base}/document?key=`                                     | `200 { document, publishedPayload }`                                   |
-| `POST {base}/publish` `{ key, at? }`                            | `200 { document }`                                                     |
-| `POST {base}/unpublish` `{ key }`                               | `200 { document }`                                                     |
-| `POST {base}/restore-revision` `{ key, revisionId }`            | `200 { document }`                                                     |
-| `POST {base}/discard` `{ key }`                                 | `200 { document: document \| null }`                                   |
-| `POST {base}/retire` `{ key }`, `POST {base}/restore` `{ key }` | `200 { document }`                                                     |
-| `POST {base}/rename` `{ key, slug }`                            | `200 { document }`                                                     |
-| `GET  {base}/revisions?key=`                                    | `200 { revisions: [{ id, action, slug, payload, actor, createdAt }] }` |
+| Request                                                                | Success                                                                |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `GET  {base}/documents?keys=k1,k2`                                     | `200 { documents: { [key]: summary } }`                                |
+| `POST {base}/field` `{ key, path, value, expectedVersion? }`           | `200 { document }`                                                     |
+| `POST {base}/array` `{ key, path, op, expectedVersion? }`              | `200 { document }`                                                     |
+| `GET  {base}/document?key=`                                            | `200 { document, publishedPayload }`                                   |
+| `POST {base}/publish` `{ key, at?, expectedVersion? }`                 | `200 { document }`                                                     |
+| `POST {base}/unpublish` `{ key, expectedVersion? }`                    | `200 { document }`                                                     |
+| `POST {base}/restore-revision` `{ key, revisionId, expectedVersion? }` | `200 { document }`                                                     |
+| `POST {base}/discard` `{ key, expectedVersion? }`                      | `200 { document: document \| null }`                                   |
+| `POST {base}/retire` `{ key }`, `POST {base}/restore` `{ key }`        | `200 { document }`                                                     |
+| `POST {base}/rename` `{ key, slug }`                                   | `200 { document }`                                                     |
+| `GET  {base}/revisions?key=`                                           | `200 { revisions: [{ id, action, slug, payload, actor, createdAt }] }` |
+
+The chrome always sends `expectedVersion` on these writes.
 
 - `summary` = `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit: boolean, publish: boolean } }`
 - `document` = `{ id, key, type, slug, payload, isDraft, publishedAt, draftUpdatedAt, previousSlugs, retiredAt, version, scheduledAt }`
@@ -186,7 +246,8 @@ interface Widget {
 interface WidgetContext {
   element: HTMLElement; // the host element carrying data-edit-field
   field: { key: string; path: string; type: EditFieldType; options?: string[]; label?: string };
-  value: unknown; // current value
+  value: unknown; // the newest value committed for this path, else the stored value
+  readonly unsaved: boolean; // true while `value` failed to save: leaving should commit it, even unchanged
   commit(next: unknown): Promise<void>; // save it; the chrome closes the widget
   cancel(): void; // back out; the chrome closes the widget
   announce(message: string): void; // polite live region
@@ -194,11 +255,12 @@ interface WidgetContext {
 interface WidgetHandle {
   destroy(): void;
   focus?(): void;
+  commit?(): void; // commit what it holds now, as if the user had finished; called before the chrome tears it down
 }
 ```
 
 The widget owns whatever DOM it changes and restores it in `destroy` or on cancel. The chrome owns focus, the save
-queue and status. Only the first `commit` or `cancel` counts, and committing an unchanged value sends nothing.
+queue and status. Only the first `commit` or `cancel` counts, and committing an unchanged value sends nothing, unless `unsaved` is true.
 
 The defaults: `text` (plain-text contenteditable; paste and drop are reduced to text), `number`, `url`, `date`
 (`<input type="date">`), `toggle`, `select` (a native `<select>` from `data-edit-options`) and `tags` (chips and a
@@ -257,7 +319,8 @@ interface Panel {
 }
 interface EditorApi {
   documents(): ReadonlyMap<string, DocumentState>;
-  publish(key: string, options?: { at?: string }): Promise<void>; // `at` schedules; ISO with Z or an offset
+  // `at` schedules, ISO with Z or an offset, whatever `scheduling` says. Rejects with a `conflict` if the document moved.
+  publish(key: string, options?: { at?: string }): Promise<void>;
   discard(key: string): Promise<void>;
   unpublish(key: string): Promise<void>;
   restoreRevision(key: string, revisionId: number): Promise<void>; // into the draft; repaints the fields

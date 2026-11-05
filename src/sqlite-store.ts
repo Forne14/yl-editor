@@ -86,6 +86,26 @@ export interface SqliteContentStoreOptions {
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/** The filter for a document `publishDue` should promote; takes the cutoff as its one parameter. */
+const DUE = "scheduled_at IS NOT NULL AND scheduled_at <= ? AND retired_at IS NULL AND draft_payload IS NOT NULL";
+
+/** Result codes, primary or extended, about the database as a whole rather than the statement that hit them. */
+const DATABASE_FAILURE_CODE = /^SQLITE_(?:BUSY|LOCKED|IOERR|CORRUPT|FULL|NOTADB|READONLY|CANTOPEN)(?:_|$)/;
+
+/** By name: the store only imports better-sqlite3's types, the host owns the module. */
+const isDatabaseFailure = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.name === "SqliteError" &&
+  "code" in error &&
+  typeof error.code === "string" &&
+  DATABASE_FAILURE_CODE.test(error.code);
+
+const warnPublishFailure = (key: string, error: unknown): void => {
+  console.warn(
+    `[yl-editor] ${key} could not be published and stays scheduled: ${error instanceof Error ? error.message : String(error)}`,
+  );
+};
+
 /**
  * The shipped ContentStore on better-sqlite3. The interface is async; the SQLite calls stay synchronous underneath
  * and each method simply resolves. Every mutation reads, checks and writes inside one transaction.
@@ -130,16 +150,30 @@ export function createSqliteContentStore(
     return row;
   };
 
-  const toDoc = (row: Row, draft: boolean): StoredDocument | null => {
+  /** A payload column as an unvalidated read returns it: migrated where that works, as stored where it does not. */
+  const asStored = (row: Row, raw: string): unknown => {
+    let stored: unknown;
+    try {
+      stored = JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+    try {
+      return migrated(row, stored);
+    } catch {
+      return stored;
+    }
+  };
+
+  const toDoc = (row: Row, draft: boolean, unvalidated = false): StoredDocument | null => {
     const raw = draft ? (row.draft_payload ?? row.published_payload) : row.published_payload;
     if (raw === null) return null;
     const isDraftPayload = draft && row.draft_payload !== null;
-    const stored = migrated(
-      row,
-      parseColumn(row.key, isDraftPayload ? "draft_payload" : "published_payload", raw, z.unknown()),
-    );
+    const column = isDraftPayload ? "draft_payload" : "published_payload";
+    const stored = unvalidated ? asStored(row, raw) : migrated(row, parseColumn(row.key, column, raw, z.unknown()));
     let payload: unknown;
-    if (draft) payload = validate(row.key, row.type, stored);
+    if (unvalidated) payload = stored;
+    else if (draft) payload = validate(row.key, row.type, stored);
     else {
       const result = entryFor(row.type, row.key).schema.safeParse(stored);
       if (result.success) payload = result.data;
@@ -164,10 +198,23 @@ export function createSqliteContentStore(
     };
   };
 
-  const mustDoc = (key: string, draft = true): StoredDocument => {
-    const doc = toDoc(requireRow(key), draft);
+  const mustDoc = (key: string, draft = true, unvalidated = false): StoredDocument => {
+    const doc = toDoc(requireRow(key), draft, unvalidated);
     if (!doc) throw new DocumentNotFoundError(key);
     return doc;
+  };
+
+  /**
+   * The draft view after a write that moved stored payloads without validating them (`unpublish`, `discardDraft`,
+   * `retire`, `restore`, `rename`). These must work on a document whose payload fails its schema, so a payload that
+   * cannot be validated is returned as stored rather than rolling the write back.
+   */
+  const settledDoc = (key: string): StoredDocument => {
+    try {
+      return mustDoc(key);
+    } catch {
+      return mustDoc(key, true, true);
+    }
   };
 
   /** The payload text a lifecycle revision records: published if present, else the draft. */
@@ -233,19 +280,34 @@ export function createSqliteContentStore(
       return work(row);
     })();
 
+  /** The published column at the entry's current version; undefined when there is none or it cannot be brought there. */
+  const migratedPublished = (row: Row): string | undefined => {
+    if (row.published_payload === null) return undefined;
+    try {
+      return JSON.stringify(migrated(row, JSON.parse(row.published_payload)));
+    } catch {
+      return undefined;
+    }
+  };
+
   /**
    * Persists a draft under the entry's current version. One `payload_version` covers both columns, so a stale
-   * published payload is migrated in the same statement; otherwise it would be misread as current.
+   * published payload is migrated in the same statement; otherwise it would be misread as current. A published payload
+   * that cannot be migrated must not refuse a valid draft, so the statement leaves that column out: naming it would run
+   * its CHECK on what is already stored.
    */
   const writeDraft = (row: Row, payload: unknown): void => {
     const valid = validate(row.key, row.type, payload);
-    const published =
-      row.published_payload === null
-        ? null
-        : JSON.stringify(migrated(row, parseColumn(row.key, "published_payload", row.published_payload, z.unknown())));
+    const published = migratedPublished(row);
     db.prepare(
-      "UPDATE documents SET draft_payload = ?, published_payload = ?, payload_version = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?",
-    ).run(JSON.stringify(valid), published, currentVersion(row.type, row.key), now(), row.id);
+      `UPDATE documents SET draft_payload = ?, ${published === undefined ? "" : "published_payload = ?, "}payload_version = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?`,
+    ).run(
+      JSON.stringify(valid),
+      ...(published === undefined ? [] : [published]),
+      currentVersion(row.type, row.key),
+      now(),
+      row.id,
+    );
   };
 
   return {
@@ -268,14 +330,14 @@ export function createSqliteContentStore(
       const row = rowByKey(key);
       if (!row) return null;
       if (row.retired_at && !opts.includeRetired) return null;
-      return toDoc(row, opts.draft ?? false);
+      return toDoc(row, opts.draft ?? false, opts.unvalidated ?? false);
     },
 
     async list(type, opts: ReadOptions = {}) {
       const rows = db.prepare<[string], Row>("SELECT * FROM documents WHERE type = ? ORDER BY key").all(type);
       return rows
         .filter((row) => opts.includeRetired || !row.retired_at)
-        .map((row) => toDoc(row, opts.draft ?? false))
+        .map((row) => toDoc(row, opts.draft ?? false, opts.unvalidated ?? false))
         .filter((doc): doc is StoredDocument => doc !== null);
     },
 
@@ -311,14 +373,41 @@ export function createSqliteContentStore(
 
     async publishDue(at, context = {}) {
       const cutoff = at === undefined ? now() : normalizeAt(at);
-      return db.transaction(() => {
-        const due = db
-          .prepare<[string], Row>(
-            "SELECT * FROM documents WHERE scheduled_at IS NOT NULL AND scheduled_at <= ? AND retired_at IS NULL AND draft_payload IS NOT NULL ORDER BY scheduled_at, id",
-          )
-          .all(cutoff);
-        return due.map((row) => promote(row, { actor: context.actor }));
-      })();
+      const report = (key: string, error: unknown) => {
+        try {
+          (context.onFailure ?? warnPublishFailure)(key, error);
+        } catch (hookError) {
+          // A broken hook must not lose the documents already published in this run.
+          warnPublishFailure(key, hookError);
+        }
+      };
+      const due = db
+        .prepare<[string], { id: number; key: string }>(
+          `SELECT id, key FROM documents WHERE ${DUE} ORDER BY scheduled_at, id`,
+        )
+        .all(cutoff);
+      const published: StoredDocument[] = [];
+      for (const [index, { id, key }] of due.entries()) {
+        try {
+          const document = db.transaction(() => {
+            // Re-checked: anything could have changed the row since the query above, or since an earlier promotion.
+            const row = db
+              .prepare<[number, string], Row>(`SELECT * FROM documents WHERE id = ? AND ${DUE}`)
+              .get(id, cutoff);
+            return row ? promote(row, { actor: context.actor }) : null;
+          })();
+          if (document) published.push(document);
+        } catch (error) {
+          report(key, error);
+          if (isDatabaseFailure(error)) {
+            // The database itself is failing, not this document, so trying the rest would only repeat it. They stay
+            // scheduled for the next run and are reported now, so the failures of a stopped run are complete.
+            for (const rest of due.slice(index + 1)) report(rest.key, error);
+            break;
+          }
+        }
+      }
+      return published;
     },
 
     async unpublish(key, context = {}) {
@@ -329,7 +418,7 @@ export function createSqliteContentStore(
           "UPDATE documents SET draft_payload = ?, draft_updated_at = ?, published_payload = NULL, published_at = NULL, scheduled_at = NULL, version = version + 1 WHERE id = ?",
         ).run(draft, row.draft_payload === null ? now() : row.draft_updated_at, row.id);
         addRevision(row, "unpublish", row.published_payload, context);
-        return mustDoc(key);
+        return settledDoc(key);
       });
     },
 
@@ -357,7 +446,7 @@ export function createSqliteContentStore(
         db.prepare(
           "UPDATE documents SET draft_payload = NULL, draft_updated_at = NULL, scheduled_at = NULL, version = version + 1 WHERE id = ?",
         ).run(row.id);
-        return mustDoc(key, false);
+        return settledDoc(key);
       });
     },
 
@@ -366,7 +455,7 @@ export function createSqliteContentStore(
         if (row.retired_at) throw new DocumentStateError(`Document ${key} is already retired`);
         db.prepare("UPDATE documents SET retired_at = ?, version = version + 1 WHERE id = ?").run(now(), row.id);
         addRevision(row, "retire", livePayload(row), context);
-        return mustDoc(key);
+        return settledDoc(key);
       });
     },
 
@@ -375,7 +464,7 @@ export function createSqliteContentStore(
         if (!row.retired_at) throw new DocumentStateError(`Document ${key} is not retired`);
         db.prepare("UPDATE documents SET retired_at = NULL, version = version + 1 WHERE id = ?").run(row.id);
         addRevision(row, "restore", livePayload(row), context);
-        return mustDoc(key);
+        return settledDoc(key);
       });
     },
 
@@ -391,7 +480,7 @@ export function createSqliteContentStore(
           "UPDATE documents SET key = ?, slug = ?, previous_slugs = ?, version = version + 1 WHERE id = ?",
         ).run(newKey, newSlug, JSON.stringify(previous), row.id);
         addRevision({ ...row, slug: newSlug }, "rename", livePayload(row), context);
-        return mustDoc(newKey);
+        return settledDoc(newKey);
       });
     },
 

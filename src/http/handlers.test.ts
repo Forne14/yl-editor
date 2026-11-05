@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { contractRegistry } from "../contract.ts";
 import { createSqliteContentStore } from "../sqlite-store.ts";
 import { makeTestDb } from "../test-support.ts";
-import type { Access, AccessVerdict, ContentStore, DocumentRef } from "../types.ts";
+import type { Access, AccessVerdict, ContentStore, DocumentRef, RegistryEntry } from "../types.ts";
 import { createContentHandlers, type ChangeEvent, type ContentHandlers } from "./handlers.ts";
 
 const allowed: AccessVerdict = { allowed: true };
@@ -603,6 +603,216 @@ describe("document publishedPayload", () => {
   });
 });
 
+describe("document with a published payload that cannot be read", () => {
+  const malformed = "{not json";
+  const live = { title: "Live", tags: [] as string[] };
+
+  /** The shipped schema's CHECK refuses malformed JSON, so a damaged row has to bypass it. */
+  const corruptColumn = (column: "published_payload" | "draft_payload") => {
+    db.pragma("ignore_check_constraints = ON");
+    db.prepare(`UPDATE documents SET ${column} = ? WHERE key = 'notes/first'`).run(malformed);
+    db.pragma("ignore_check_constraints = OFF");
+  };
+  const corruptPublished = () => corruptColumn("published_payload");
+  const publishLive = async () => {
+    await store.create("note", "first", live);
+    await store.publish("notes/first");
+  };
+
+  /** Handlers over a store at version 2 with this `migrate`, so version 1 rows run it. */
+  const migrating = (migrate: NonNullable<RegistryEntry["migrate"]>) => {
+    const entry: RegistryEntry = { ...(contractRegistry.entry("note") as RegistryEntry), version: 2, migrate };
+    const registry = { entry: () => entry, byCollection: () => entry, entries: () => [entry] };
+    return createContentHandlers({
+      store: createSqliteContentStore(db, registry),
+      registry,
+      access: fake.access,
+      locals: () => session,
+    });
+  };
+  const blowUp = () => {
+    throw new Error("migrate blew up");
+  };
+  const readWith = async (over: ContentHandlers) => {
+    const response = await over.handle(get("document?key=notes/first"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { status: response.status, body: (await response.json()) as Record<string, any> };
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  test.each([false, true])(
+    "malformed JSON with no draft answers the stored text on both sides, never null (retired: %s)",
+    async (retired) => {
+      await publishLive();
+      if (retired) await store.retire("notes/first");
+      corruptPublished();
+      const { status, body } = await call(get("document?key=notes/first"));
+      expect(status).toBe(200);
+      expect(body.document).toMatchObject({ isDraft: false, payload: malformed, publishedAt: expect.any(String) });
+      expect(body.publishedPayload).toBe(malformed);
+    },
+  );
+
+  test("malformed JSON beside a valid draft answers the draft and the stored text", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    corruptPublished();
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toBe(malformed);
+  });
+
+  test("a JSON null in the published column is not reported as never published", async () => {
+    await publishLive();
+    db.prepare("UPDATE documents SET published_payload = 'null' WHERE key = 'notes/first'").run();
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect(status).toBe(200);
+    expect(body.publishedPayload).toBe("null");
+  });
+
+  test("a migrate that throws with no draft answers the stored payload on both sides", async () => {
+    await publishLive();
+    const { status, body } = await readWith(migrating(blowUp));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: false, payload: live, publishedAt: expect.any(String) });
+    expect(body.publishedPayload).toEqual(live);
+  });
+
+  test("a migrate that throws only on the published payload answers the valid draft beside it", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await readWith(
+      migrating((_from, payload) => ((payload as { title: string }).title === live.title ? blowUp() : payload)),
+    );
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(live);
+  });
+
+  test("a migrate that throws on every payload answers the draft as stored", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await readWith(migrating(blowUp));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "Draft", tags: [] } });
+    expect(body.publishedPayload).toEqual(live);
+  });
+
+  test("a draft failing its schema is 422 even beside malformed published JSON", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    corruptPublished();
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/first'").run(JSON.stringify({ title: "" }));
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+  });
+
+  test("a malformed draft is 422", async () => {
+    await publishLive();
+    await store.writeField("notes/first", "title", "Draft");
+    corruptColumn("draft_payload");
+    const { status, body } = await call(get("document?key=notes/first"));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+  });
+
+  test("a store failing past the gate is 500 and leaks nothing", async () => {
+    await publishLive();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let reads = 0;
+    const failing: ContentStore = {
+      ...store,
+      get: async (key, opts) => {
+        reads += 1;
+        if (reads === 1) return store.get(key, opts);
+        throw new Error("disk on fire at /var/secret.db");
+      },
+    };
+    const response = await createContentHandlers({
+      store: failing,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+    }).handle(get("document?key=notes/first"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
+  });
+
+  test("a store failing only on the published read is 500 and leaks nothing", async () => {
+    await publishLive();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failing: ContentStore = {
+      ...store,
+      get: async (key, opts) => {
+        if (opts?.draft === false) throw new Error("disk on fire at /var/secret.db");
+        return store.get(key, opts);
+      },
+    };
+    const response = await createContentHandlers({
+      store: failing,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+    }).handle(get("document?key=notes/first"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
+  });
+
+  describe("writes", () => {
+    test.each(["malformed", "migrate"] as const)("restore-revision of a valid revision is 200 (%s)", async (damage) => {
+      await publishLive();
+      const [revision] = await store.revisions("notes/first");
+      if (damage === "malformed") corruptPublished();
+      const over = damage === "migrate" ? migrating(blowUp) : handlers;
+      const response = await over.handle(post("restore-revision", { key: "notes/first", revisionId: revision?.id }));
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as { document: unknown }).document).toMatchObject({
+        isDraft: true,
+        payload: live,
+      });
+      if (damage === "malformed")
+        expect((await call(get("document?key=notes/first"))).body.publishedPayload).toBe(malformed);
+    });
+
+    test("field with no draft has nothing to edit: 422 on malformed JSON, 500 when migrate throws", async () => {
+      await publishLive();
+      const body = { key: "notes/first", path: "title", value: "Field" };
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const throwing = await migrating(blowUp).handle(post("field", body));
+      expect(throwing.status).toBe(500);
+      expect(await throwing.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
+      corruptPublished();
+      const unparseable = await call(post("field", body));
+      expect([unparseable.status, unparseable.body.error.code]).toEqual([422, "validation"]);
+    });
+
+    test("restore-revision of a revision failing the schema is still 422", async () => {
+      await publishLive();
+      const [revision] = await store.revisions("notes/first");
+      corruptPublished();
+      db.prepare("UPDATE revisions SET payload = ? WHERE id = ?").run(JSON.stringify({ title: "" }), revision?.id);
+      const { status, body } = await call(post("restore-revision", { key: "notes/first", revisionId: revision?.id }));
+      expect([status, body.error.code]).toEqual([422, "validation"]);
+    });
+
+    test("field and array over a valid draft are 200 beside malformed published JSON; an invalid result is 422", async () => {
+      await publishLive();
+      await store.writeField("notes/first", "title", "Draft");
+      corruptPublished();
+      expect((await call(post("field", { key: "notes/first", path: "title", value: "Field" }))).status).toBe(200);
+      const array = await call(
+        post("array", { key: "notes/first", path: "tags", op: { kind: "insert", index: 0, value: "x" } }),
+      );
+      expect(array.status).toBe(200);
+      const invalid = await call(post("field", { key: "notes/first", path: "title", value: "" }));
+      expect([invalid.status, invalid.body.error.code]).toEqual([422, "validation"]);
+    });
+  });
+});
+
 describe("documents with a payload failing its schema", () => {
   /** Fails `note`'s schema: `title` must be non-empty. */
   const stale = JSON.stringify({ title: "", tags: [] as string[] });
@@ -650,11 +860,251 @@ describe("documents with a payload failing its schema", () => {
         expect(fake.calls).toContainEqual({ check, locals: session, ref: { type: "note", key } });
   });
 
-  test("a draft failing its schema still fails the whole request with 422", async () => {
+  test("a draft failing its schema is summarised beside the healthy documents", async () => {
     await store.writeField("notes/first", "title", "Draft");
     corrupt("notes/first", "draft_payload");
-    const { status, body } = await call(get("documents?keys=notes/first,notes/second"));
+    corrupt("notes/second", "draft_payload");
+    await store.create("note", "third", note);
+    const { status, body } = await call(get("documents?keys=notes/first,notes/second,notes/third"));
+    expect(status).toBe(200);
+    expect(body.documents["notes/first"]).toMatchObject({ isDraft: true, publishedAt: expect.any(String) });
+    expect(body.documents["notes/second"]).toMatchObject({ isDraft: true, publishedAt: null });
+    expect(body.documents["notes/third"]).toMatchObject({ isDraft: true, access: { edit: true, publish: true } });
+  });
+});
+
+describe.each([
+  { state: "stale published with no draft", published: true, draft: false },
+  { state: "invalid draft over a published payload", published: true, draft: true },
+  { state: "invalid draft, unpublished", published: false, draft: true },
+] as const)("repairing a document: $state", ({ published, draft }) => {
+  /** Fails `note`'s schema through `tags`, so `tags` is what a repair writes. */
+  const invalid = { title: "A", tags: [1] };
+  const key = "notes/first";
+  const corruptColumn = draft ? "draft_payload" : "published_payload";
+  const strictRead = () => store.get(key, { draft: true, includeRetired: true });
+  const storedRow = () => db.prepare("SELECT * FROM documents WHERE key = ?").get(key);
+  let revisionId: number;
+
+  beforeEach(async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await store.create("note", "first", note);
+    await store.publish(key);
+    revisionId = (await store.revisions(key))[0]?.id ?? -1;
+    if (!published) await store.unpublish(key);
+    else if (draft) await store.writeField(key, "title", "Draft");
+    db.prepare(`UPDATE documents SET ${corruptColumn} = ? WHERE key = ?`).run(JSON.stringify(invalid), key);
+    fake.calls.length = 0;
+  });
+
+  test("the strict read really does fail", async () => {
+    await expect(strictRead()).rejects.toThrow();
+  });
+
+  test("GET documents summarises it", async () => {
+    const { status, body } = await call(get(`documents?keys=${key}`));
+    expect(status).toBe(200);
+    expect(body.documents[key]).toMatchObject({ key, type: "note", isDraft: draft });
+  });
+
+  test("GET revisions lists its history", async () => {
+    const { status, body } = await call(get(`revisions?key=${key}`));
+    expect(status).toBe(200);
+    expect(body.revisions[0]).toMatchObject({ id: revisionId, action: "publish" });
+  });
+
+  test("restore-revision with a valid revision leaves a valid draft", async () => {
+    const { status, body } = await call(post("restore-revision", { key, revisionId }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: note });
+    expect((await strictRead())?.payload).toEqual(note);
+  });
+
+  test("discard succeeds", async () => {
+    const { status, body } = await call(post("discard", { key }));
+    expect(status).toBe(200);
+    if (!published) {
+      expect(body.document).toBeNull();
+      expect(await store.get(key, { draft: true, includeRetired: true })).toBeNull();
+    } else if (draft) {
+      expect(body.document).toMatchObject({ isDraft: false, payload: note });
+      expect((await strictRead())?.payload).toEqual(note);
+    } else {
+      // Nothing to drop: the stale published payload stays, still served as stored.
+      expect(body.document).toMatchObject({ isDraft: false, payload: invalid });
+    }
+  });
+
+  test("unpublish moves the stored payloads, or is a state error with nothing published", async () => {
+    const { status, body } = await call(post("unpublish", { key }));
+    if (!published) {
+      expect([status, body.error.code]).toEqual([409, "state"]);
+      return;
+    }
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, publishedAt: null, payload: invalid });
+    expect(await store.get(key, { includeRetired: true })).toBeNull();
+  });
+
+  test("retire, restore and rename need no validation", async () => {
+    const retired = await call(post("retire", { key }));
+    expect(retired.status).toBe(200);
+    expect(retired.body.document).toMatchObject({ retiredAt: expect.any(String), payload: invalid });
+    const restored = await call(post("restore", { key }));
+    expect(restored.status).toBe(200);
+    expect(restored.body.document).toMatchObject({ retiredAt: null, payload: invalid });
+    const renamed = await call(post("rename", { key, slug: "second" }));
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.document).toMatchObject({ key: "notes/second", payload: invalid });
+  });
+
+  test("a field write that leaves it invalid is 422 with issues and changes nothing", async () => {
+    const before = storedRow();
+    const { status, body } = await call(post("field", { key, path: "title", value: "B" }));
     expect([status, body.error.code]).toEqual([422, "validation"]);
+    expect(body.error.issues).toEqual([expect.objectContaining({ path: ["tags", 0] })]);
+    expect(storedRow()).toEqual(before);
+  });
+
+  test("a field write that makes it valid succeeds", async () => {
+    const { status, body } = await call(post("field", { key, path: "tags", value: [] }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "A", tags: [] } });
+    expect(await strictRead()).toMatchObject({ payload: { title: "A", tags: [] } });
+  });
+
+  test("an array write that leaves it invalid is 422 with issues", async () => {
+    const op = { kind: "insert", index: 0, value: "x" };
+    const { status, body } = await call(post("array", { key, path: "tags", op }));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+    expect(body.error.issues).toEqual([expect.objectContaining({ path: ["tags", 1] })]);
+  });
+
+  test("an array write that makes it valid succeeds", async () => {
+    const { status, body } = await call(post("array", { key, path: "tags", op: { kind: "remove", index: 0 } }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ payload: { title: "A", tags: [] } });
+  });
+
+  test("publish never lets invalid content go live", async () => {
+    const live = () => db.prepare("SELECT published_payload FROM documents WHERE key = ?").get(key);
+    const before = live();
+    const { status, body } = await call(post("publish", { key }));
+    if (draft) expect([status, body.error.code]).toEqual([422, "validation"]);
+    else expect([status, body.error.code]).toEqual([409, "state"]);
+    expect(live()).toEqual(before);
+  });
+
+  test("scheduling an invalid draft is refused too", async () => {
+    const { status } = await call(post("publish", { key, at: "2030-01-01T00:00:00Z" }));
+    expect(status).toBe(draft ? 422 : 409);
+  });
+
+  test("GET document: an invalid draft is 422, a stale published payload is served", async () => {
+    const { status, body } = await call(get(`document?key=${key}`));
+    if (draft) expect([status, body.error.code]).toEqual([422, "validation"]);
+    else {
+      expect(status).toBe(200);
+      expect(body.document).toMatchObject({ isDraft: false, payload: invalid });
+    }
+  });
+
+  test("a stale expectedVersion is 409 and still carries the document as stored", async () => {
+    const { status, body } = await call(post("field", { key, path: "tags", value: [], expectedVersion: 999 }));
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+    expect(body.error.current).toMatchObject({ key, payload: invalid });
+  });
+
+  test.each([
+    ["document", () => get(`document?key=${key}`)],
+    ["revisions", () => get(`revisions?key=${key}`)],
+    ["field", () => post("field", { key, path: "tags", value: [] })],
+    ["array", () => post("array", { key, path: "tags", op: { kind: "remove", index: 0 } })],
+    ["discard", () => post("discard", { key })],
+    ["restore-revision", () => post("restore-revision", { key, revisionId: 1 })],
+  ])("%s asks canEdit about the stored row; a denial is 403 with no payload", async (_route, request) => {
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
+    const before = storedRow();
+    const { status, body } = await call(request());
+    expect(status).toBe(403);
+    expect(body).toEqual({ error: { code: "forbidden", message: "Not yours" } });
+    expect(fake.calls).toEqual([{ check: "canEdit", locals: session, ref: { type: "note", key } }]);
+    expect(storedRow()).toEqual(before);
+  });
+
+  test.each([
+    ["publish", () => post("publish", { key })],
+    ["unpublish", () => post("unpublish", { key })],
+    ["retire", () => post("retire", { key })],
+    ["restore", () => post("restore", { key })],
+    ["rename", () => post("rename", { key, slug: "second" })],
+  ])("%s asks canPublish about the stored row; a denial is 403 with no payload", async (_route, request) => {
+    fake.verdicts.publish = () => ({ allowed: false, reason: "Publishers only" });
+    const before = storedRow();
+    const { status, body } = await call(request());
+    expect(status).toBe(403);
+    expect(body).toEqual({ error: { code: "forbidden", message: "Publishers only" } });
+    expect(fake.calls).toEqual([{ check: "canPublish", locals: session, ref: { type: "note", key } }]);
+    expect(storedRow()).toEqual(before);
+  });
+
+  test("GET documents reports each verdict and no payload", async () => {
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
+    const { status, body } = await call(get(`documents?keys=${key}`));
+    expect(status).toBe(200);
+    expect(body.documents[key].access).toEqual({ edit: false, publish: true });
+    expect(body.documents[key].payload).toBeUndefined();
+  });
+});
+
+describe("a never-published invalid draft", () => {
+  const key = "notes/first";
+  const invalid = { title: "", tags: [] as string[] };
+
+  beforeEach(async () => {
+    await store.create("note", "first", note);
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = ?").run(JSON.stringify(invalid), key);
+  });
+
+  test("is summarised, has an empty history, and unpublish is a state error", async () => {
+    const { status, body } = await call(get(`documents?keys=${key}`));
+    expect(status).toBe(200);
+    expect(body.documents[key]).toMatchObject({ isDraft: true, publishedAt: null });
+    expect((await call(get(`revisions?key=${key}`))).body).toEqual({ revisions: [] });
+    expect((await call(post("unpublish", { key }))).status).toBe(409);
+  });
+
+  test("retire and restore work, and discard removes it", async () => {
+    expect((await call(post("retire", { key }))).status).toBe(200);
+    expect((await call(post("restore", { key }))).status).toBe(200);
+    expect((await call(post("discard", { key }))).body).toEqual({ document: null });
+  });
+
+  test("publish is 422 until a field write repairs it", async () => {
+    expect((await call(post("publish", { key }))).status).toBe(422);
+    expect((await call(post("field", { key, path: "tags", value: ["x"] }))).status).toBe(422);
+    expect((await call(post("field", { key, path: "title", value: "Fixed" }))).status).toBe(200);
+    expect((await call(post("publish", { key }))).status).toBe(200);
+  });
+});
+
+describe("discard expectedVersion", () => {
+  test("a stale version is 409 with the current document, and nothing is discarded", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const draft = await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await call(post("discard", { key: "notes/first", expectedVersion: draft.version - 1 }));
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+    expect(body.error.current).toMatchObject({ version: draft.version, payload: { title: "Draft" } });
+    expect((await store.get("notes/first", { draft: true }))?.isDraft).toBe(true);
+  });
+  test("the current version discards", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const draft = await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await call(post("discard", { key: "notes/first", expectedVersion: draft.version }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: false, payload: note });
   });
 });
 
@@ -857,8 +1307,110 @@ describe("publish-due", () => {
     const due = withPublishDue(() => allowed);
     const response = await due.handle(post("publish-due", {}));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ documents: [] });
+    expect(await response.json()).toEqual({ documents: [], failed: [] });
     expect(events).toEqual([]);
+  });
+
+  test("a due document that fails is reported, the others publish, and it stays scheduled", async () => {
+    await schedule("bad", "2030-01-01T00:00:00Z");
+    await schedule("good", "2030-06-01T00:00:00Z");
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/bad'").run(JSON.stringify({ title: "" }));
+    const due = withPublishDue(() => allowed);
+    const response = await due.handle(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      documents: { key: string }[];
+      failed: { key: string; code: string; message: string }[];
+    };
+    expect(body.documents.map((document) => document.key)).toEqual(["notes/good"]);
+    expect(body.failed).toEqual([
+      { key: "notes/bad", code: "validation", message: expect.stringContaining("notes/bad") },
+    ]);
+    expect(events.map((event) => [event.action, event.key])).toEqual([["publish", "notes/good"]]);
+    const row = db.prepare("SELECT scheduled_at FROM documents WHERE key = 'notes/bad'").get();
+    expect(row).toEqual({ scheduled_at: "2030-01-01T00:00:00.000Z" });
+  });
+
+  test("a database failure stops the run and every remaining document is listed in failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await schedule("first", "2030-01-01T00:00:00Z");
+    await schedule("broken", "2030-02-01T00:00:00Z");
+    await schedule("after", "2030-03-01T00:00:00Z");
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/broken'").run(
+      JSON.stringify({ title: "broken", tags: [] }),
+    );
+    const entry: RegistryEntry = {
+      ...(contractRegistry.entry("note") as RegistryEntry),
+      version: 2,
+      migrate: (_from, payload) => {
+        if ((payload as { title: string }).title === "broken")
+          throw new Database.SqliteError("disk I/O error at /var/secret.db", "SQLITE_IOERR_WRITE");
+        return payload;
+      },
+    };
+    const registry = { entry: () => entry, byCollection: () => entry, entries: () => [entry] };
+    const due = createContentHandlers({
+      store: createSqliteContentStore(db, registry),
+      registry,
+      access: fake.access,
+      locals: () => session,
+      publishDue: { authorize: () => allowed },
+    });
+    const response = await due.handle(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { documents: { key: string }[]; failed: unknown[] };
+    expect(body.documents.map((document) => document.key)).toEqual(["notes/first"]);
+    expect(body.failed).toEqual([
+      { key: "notes/broken", code: "internal", message: "Internal error" },
+      { key: "notes/after", code: "internal", message: "Internal error" },
+    ]);
+  });
+
+  test("an unexpected failure is logged and never leaks its message", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken: ContentStore = {
+      ...store,
+      publishDue: async (_now, context) => {
+        context?.onFailure?.("notes/first", new Error("disk on fire at /var/secret.db"));
+        return [];
+      },
+    };
+    const due = createContentHandlers({
+      store: broken,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+      publishDue: { authorize: () => allowed },
+    });
+    const response = await due.handle(post("publish-due", {}));
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      documents: [],
+      failed: [{ key: "notes/first", code: "internal", message: "Internal error" }],
+    });
+    expect(text).not.toContain("secret");
+    expect(logged).toHaveBeenCalled();
+  });
+
+  test("a store that throws outright is still 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken: ContentStore = {
+      ...store,
+      publishDue: async () => {
+        throw new Error("disk on fire at /var/secret.db");
+      },
+    };
+    const due = createContentHandlers({
+      store: broken,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+      publishDue: { authorize: () => allowed },
+    });
+    const response = await due.handle(post("publish-due", {}));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
   });
 
   test("a denying authorize is 403 with its reason", async () => {

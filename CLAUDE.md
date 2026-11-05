@@ -1,6 +1,6 @@
 # @yl/editor
 
-In-place editing core: draft/publish `ContentStore`, schema registry, path ops, `editable()`, HTTP handlers and browser chrome. Sites consume it as a git tag and bring their own storage. Details are in `docs/`: `store.md`, `http.md`, `chrome.md`, `access.md`, `paths.md`, `diff.md`.
+In-place editing core: draft/publish `ContentStore`, schema registry, path ops, `editable()`, HTTP handlers and browser chrome. Once production ready, sites will consume it as a git tag and bring their own storage. Details are in `docs/`: `store.md`, `http.md`, `chrome.md`, `access.md`, `paths.md`, `diff.md`.
 
 ## Commands
 
@@ -16,7 +16,8 @@ Any change to the visual interface or design needs a hi-fidelity prototype in an
 
 ## Public surface
 
-- Avoid breaking changes. Before removing or changing anything public, search the consumers, not just this repo: `~/Repos/portfolio`, `~/Repos/southoftheriver`, `~/Repos/Tego/skinmenu`. Public means exports, wire shapes, documented attributes such as `data-edit-value`, and `defaultStrings` keys.
+- Breaking changes are allowed before 1.0; mark them **Breaking** in the changelog. After 1.0, avoid them. Public means exports, wire shapes, documented attributes such as `data-edit-value`, and `defaultStrings` keys.
+- This package has no consumers yet. `~/Repos/portfolio`, `~/Repos/southoftheriver` and `~/Repos/Tego/skinmenu` keep their own editors until this one is production ready, so don't change them or plan work around them here. Read them only as reference. Real-browser testing happens in this repo.
 - Every user-visible change goes in `CHANGELOG.md` under `[Unreleased]`. Mark real breaks as **Breaking**. Update the matching doc in `docs/` in the same PR.
 - Consumers never edit `node_modules/@yl/editor`. Fixes land here and go back as a new tag.
 
