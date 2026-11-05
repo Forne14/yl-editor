@@ -824,6 +824,53 @@ export function runContentStoreContract(
           });
       });
 
+      describe("a draft write when the published payload cannot be migrated", () => {
+        const live = { title: "Live", tags: [] as string[] };
+        /** Version 2 with no shape change, so a version 1 revision is still valid. `migrate` refuses only `live`. */
+        const refusingLive: RegistryEntry = {
+          ...noteEntry,
+          version: 2,
+          migrate: (_from, payload) => {
+            if ((payload as { title: string }).title === live.title) throw new Error("migrate blew up");
+            return payload;
+          },
+        };
+        const alwaysRefusing: RegistryEntry = {
+          ...noteEntry,
+          version: 2,
+          migrate: () => {
+            throw new Error("migrate blew up");
+          },
+        };
+
+        test("restoreRevision succeeds and the published payload stays as stored", async () => {
+          await createPublished("first", live);
+          const [revision] = await store.revisions("notes/first");
+          const next = await reopen(registryOf(alwaysRefusing), { onReadIssue: noop });
+          const restored = await next.restoreRevision("notes/first", revision?.id as number);
+          expect(restored).toMatchObject({ isDraft: true, payload: live });
+          expect((await next.get("notes/first"))?.payload).toEqual(live);
+        });
+
+        test("writeField and arrayOp over a valid draft succeed and the published payload stays as stored", async () => {
+          await createPublished("first", live);
+          await store.writeField("notes/first", "title", "Draft");
+          const next = await reopen(registryOf(refusingLive), { onReadIssue: noop });
+          expect((await next.writeField("notes/first", "title", "Field")).payload).toMatchObject({ title: "Field" });
+          const inserted = await next.arrayOp("notes/first", "tags", { kind: "insert", index: 0, value: "x" });
+          expect(inserted.payload).toEqual({ title: "Field", tags: ["x"] });
+          expect((await next.get("notes/first"))?.payload).toEqual(live);
+        });
+
+        test("a write whose own result is invalid is still refused", async () => {
+          await createPublished("first", live);
+          await store.writeField("notes/first", "title", "Draft");
+          const next = await reopen(registryOf(refusingLive), { onReadIssue: noop });
+          await expect(next.writeField("notes/first", "title", "")).rejects.toThrow(ContentValidationError);
+          expect((await next.get("notes/first", { draft: true }))?.payload).toMatchObject({ title: "Draft" });
+        });
+      });
+
       describe("publishDue with a due document that fails", () => {
         const first = "2000-01-01T00:00:00.000Z";
         const second = "2000-01-02T00:00:00.000Z";

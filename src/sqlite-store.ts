@@ -89,8 +89,16 @@ const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** The filter for a document `publishDue` should promote; takes the cutoff as its one parameter. */
 const DUE = "scheduled_at IS NOT NULL AND scheduled_at <= ? AND retired_at IS NULL AND draft_payload IS NOT NULL";
 
+/** Result codes, primary or extended, about the database as a whole rather than the statement that hit them. */
+const DATABASE_FAILURE_CODE = /^SQLITE_(?:BUSY|LOCKED|IOERR|CORRUPT|FULL|NOTADB|READONLY|CANTOPEN)(?:_|$)/;
+
 /** By name: the store only imports better-sqlite3's types, the host owns the module. */
-const isDatabaseFailure = (error: unknown): boolean => error instanceof Error && error.name === "SqliteError";
+const isDatabaseFailure = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.name === "SqliteError" &&
+  "code" in error &&
+  typeof error.code === "string" &&
+  DATABASE_FAILURE_CODE.test(error.code);
 
 const warnPublishFailure = (key: string, error: unknown): void => {
   console.warn(
@@ -272,19 +280,34 @@ export function createSqliteContentStore(
       return work(row);
     })();
 
+  /** The published column at the entry's current version; undefined when there is none or it cannot be brought there. */
+  const migratedPublished = (row: Row): string | undefined => {
+    if (row.published_payload === null) return undefined;
+    try {
+      return JSON.stringify(migrated(row, JSON.parse(row.published_payload)));
+    } catch {
+      return undefined;
+    }
+  };
+
   /**
    * Persists a draft under the entry's current version. One `payload_version` covers both columns, so a stale
-   * published payload is migrated in the same statement; otherwise it would be misread as current.
+   * published payload is migrated in the same statement; otherwise it would be misread as current. A published payload
+   * that cannot be migrated must not refuse a valid draft, so the statement leaves that column out: naming it would run
+   * its CHECK on what is already stored.
    */
   const writeDraft = (row: Row, payload: unknown): void => {
     const valid = validate(row.key, row.type, payload);
-    const published =
-      row.published_payload === null
-        ? null
-        : JSON.stringify(migrated(row, parseColumn(row.key, "published_payload", row.published_payload, z.unknown())));
+    const published = migratedPublished(row);
     db.prepare(
-      "UPDATE documents SET draft_payload = ?, published_payload = ?, payload_version = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?",
-    ).run(JSON.stringify(valid), published, currentVersion(row.type, row.key), now(), row.id);
+      `UPDATE documents SET draft_payload = ?, ${published === undefined ? "" : "published_payload = ?, "}payload_version = ?, draft_updated_at = ?, version = version + 1 WHERE id = ?`,
+    ).run(
+      JSON.stringify(valid),
+      ...(published === undefined ? [] : [published]),
+      currentVersion(row.type, row.key),
+      now(),
+      row.id,
+    );
   };
 
   return {
@@ -364,7 +387,7 @@ export function createSqliteContentStore(
         )
         .all(cutoff);
       const published: StoredDocument[] = [];
-      for (const { id, key } of due) {
+      for (const [index, { id, key }] of due.entries()) {
         try {
           const document = db.transaction(() => {
             // Re-checked: anything could have changed the row since the query above, or since an earlier promotion.
@@ -376,8 +399,12 @@ export function createSqliteContentStore(
           if (document) published.push(document);
         } catch (error) {
           report(key, error);
-          // The database itself is failing, not this document. The rest stay scheduled for the next run.
-          if (isDatabaseFailure(error)) break;
+          if (isDatabaseFailure(error)) {
+            // The database itself is failing, not this document, so trying the rest would only repeat it. They stay
+            // scheduled for the next run and are reported now, so the failures of a stopped run are complete.
+            for (const rest of due.slice(index + 1)) report(rest.key, error);
+            break;
+          }
         }
       }
       return published;

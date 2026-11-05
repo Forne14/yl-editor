@@ -63,6 +63,11 @@ All bodies are JSON. `{base}` is the configured base.
   stored in `publishedPayload`, and also as `document` (with `isDraft: false`) when there is no draft. A draft that
   fails its schema is still `422 validation`, after the `canEdit` verdict, so that a publish sheet reports it instead
   of comparing against it. See [Repairing a document](#repairing-a-document).
+- `publishedPayload` is `null` only when nothing is published. A published column that cannot be parsed comes back as
+  its stored text, a JSON string, so a client must not read it as a first publish; a stored JSON `null` comes back as
+  the string `"null"` for the same reason. With no draft, `document.payload` is that same text. A client that needs to
+  tell this apart checks for a string where its schema has an object. A `migrate` that throws on a payload does not fail
+  `document` either: that payload comes back as stored, unmigrated, on whichever side it is.
 - A `documents` summary is `{ key, type, version, isDraft, draftUpdatedAt, publishedAt, access: { edit, publish } }`.
   Unknown keys are left out. Keys are deduped, and more than 100 distinct keys is a `400 bad_request`. Reads use the draft view and include retired documents, because the editor needs to see
   what it is editing.
@@ -81,8 +86,9 @@ All bodies are JSON. `{base}` is the configured base.
   the store's clock) and returns them in the order they were due, possibly `[]`. A document that cannot be published
   stays scheduled and appears in `failed` as `{ key, code, message }`, with the code and message the [error
   table](#errors) gives it, so an unexpected error is logged and reads `internal`, "Internal error". The status is `200`
-  whatever `failed` holds, so a scheduler should read it. A database failure stops the run: it appears as an `internal`
-  entry, and documents not reached stay scheduled without being listed.
+  whatever `failed` holds, so a scheduler should read it. A database-wide failure stops the run: the document it hit and
+  every document not reached appear as `internal` entries and stay scheduled, so `failed` lists everything due that did
+  not publish.
 - Pass `expectedVersion` on `field`, `array`, `publish`, `unpublish`, `restore-revision` and `discard` to get optimistic
   concurrency: a stale version is a `conflict`.
 
@@ -139,6 +145,11 @@ callers get a plain `403` either way, with no payload or issues.
 
 The routes that answer `200` without validating only move stored payloads, so their `document` can carry a payload that
 fails its schema. docs/store.md explains why. A `conflict` on such a document still carries `current`, as stored.
+
+A published payload that cannot be read at all (malformed JSON, or a `migrate` that throws on it) behaves like a stale
+one for `GET document` and `restore-revision`, and for `field` and `array` over a draft. It stays as stored through those
+writes. With no draft there is nothing to edit: `field` and `array` answer `422` on malformed JSON and `500 internal` when
+`migrate` throws, and `restore-revision` is the way out.
 
 ### `publish-due` and its `authorize` option
 

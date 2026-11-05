@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { contractRegistry, runContentStoreContract } from "./contract.ts";
 import { createSqliteContentStore } from "./sqlite-store.ts";
 import { makeTestDb } from "./test-support.ts";
@@ -189,23 +189,122 @@ describe("publishDue failures", () => {
     expect(failures).toEqual([["notes/bad", boom]]);
   });
 
-  test("a database failure stops the run: it is reported, and earlier publishes are kept and returned", async () => {
+  /** A store at version 2 whose `migrate` runs `act` when it reaches the document titled "broken". */
+  const onBroken = (act: () => void) => {
+    const entry: RegistryEntry = {
+      ...(contractRegistry.entry("note") as RegistryEntry),
+      version: 2,
+      migrate: (_from, payload) => {
+        if ((payload as { title: string }).title === "broken") act();
+        return payload;
+      },
+    };
+    return createSqliteContentStore(db, { entry: () => entry, byCollection: () => entry }, clock);
+  };
+
+  test("a real database failure stops the run: the rest are reported and stay scheduled, earlier publishes are kept", async () => {
+    await schedule("first", past);
+    await schedule("broken", later);
+    await schedule("after", latest);
+    await schedule("last", "2000-01-04T00:00:00.000Z");
+    // Writes then fail with a genuine SQLITE_READONLY.
+    const next = onBroken(() => db.pragma("query_only = ON"));
+    const failures: [string, unknown][] = [];
+    const published = await next.publishDue(undefined, { onFailure: (key, error) => failures.push([key, error]) });
+    db.pragma("query_only = OFF");
+
+    expect(published.map((doc) => doc.key)).toEqual(["notes/first"]);
+    expect(failures.map(([key]) => key)).toEqual(["notes/broken", "notes/after", "notes/last"]);
+    expect(failures[0]?.[1]).toMatchObject({ name: "SqliteError", code: "SQLITE_READONLY" });
+    expect(failures[1]?.[1]).toBe(failures[0]?.[1]);
+    expect(failures[2]?.[1]).toBe(failures[0]?.[1]);
+    expect(row("notes/broken")?.scheduled_at).toBe(later);
+    expect(row("notes/after")?.scheduled_at).toBe(latest);
+
+    const retried = await store.publishDue();
+    expect(retried.map((doc) => doc.key)).toEqual(["notes/broken", "notes/after", "notes/last"]);
+  });
+
+  test.each([
+    "SQLITE_BUSY",
+    "SQLITE_BUSY_SNAPSHOT",
+    "SQLITE_LOCKED",
+    "SQLITE_LOCKED_SHAREDCACHE",
+    "SQLITE_IOERR",
+    "SQLITE_IOERR_WRITE",
+    "SQLITE_CORRUPT",
+    "SQLITE_CORRUPT_INDEX",
+    "SQLITE_FULL",
+    "SQLITE_NOTADB",
+    "SQLITE_READONLY",
+    "SQLITE_READONLY_DBMOVED",
+    "SQLITE_CANTOPEN",
+  ])("%s stops the run and reports every remaining document", async (code) => {
+    await schedule("broken", past);
+    await schedule("after", later);
+    const failure = new Database.SqliteError("database-wide", code);
+    const failures: [string, unknown][] = [];
+    const published = await onBroken(() => {
+      throw failure;
+    }).publishDue(undefined, { onFailure: (key, error) => failures.push([key, error]) });
+    expect(published).toEqual([]);
+    expect(failures).toEqual([
+      ["notes/broken", failure],
+      ["notes/after", failure],
+    ]);
+    expect(row("notes/after")?.scheduled_at).toBe(later);
+    expect(await store.revisions("notes/after")).toEqual([]);
+  });
+
+  test.each([
+    "SQLITE_CONSTRAINT",
+    "SQLITE_CONSTRAINT_CHECK",
+    "SQLITE_CONSTRAINT_UNIQUE",
+    "SQLITE_TOOBIG",
+    "SQLITE_ERROR",
+  ])("%s reports only that document and the run continues", async (code) => {
+    await schedule("broken", past);
+    await schedule("after", later);
+    const failure = new Database.SqliteError("this document", code);
+    const failures: [string, unknown][] = [];
+    const published = await onBroken(() => {
+      throw failure;
+    }).publishDue(undefined, { onFailure: (key, error) => failures.push([key, error]) });
+    expect(published.map((doc) => doc.key)).toEqual(["notes/after"]);
+    expect(failures).toEqual([["notes/broken", failure]]);
+  });
+
+  test("a real constraint failure on one document does not stop the run", async () => {
     await schedule("first", past);
     await schedule("broken", later);
     await schedule("after", latest);
     db.exec(
-      "CREATE TRIGGER refuse BEFORE UPDATE OF published_payload ON documents WHEN NEW.key = 'notes/broken' BEGIN SELECT RAISE(ABORT, 'disk full'); END",
+      "CREATE TRIGGER refuse BEFORE UPDATE OF published_payload ON documents WHEN NEW.key = 'notes/broken' BEGIN SELECT RAISE(ABORT, 'refused'); END",
     );
     const failures: [string, unknown][] = [];
     const published = await store.publishDue(undefined, { onFailure: (key, error) => failures.push([key, error]) });
-    expect(published.map((doc) => doc.key)).toEqual(["notes/first"]);
-    expect(failures).toEqual([["notes/broken", expect.objectContaining({ name: "SqliteError" })]]);
+    expect(published.map((doc) => doc.key)).toEqual(["notes/first", "notes/after"]);
+    expect(failures).toEqual([
+      ["notes/broken", expect.objectContaining({ name: "SqliteError", code: "SQLITE_CONSTRAINT_TRIGGER" })],
+    ]);
     expect(row("notes/broken")?.scheduled_at).toBe(later);
-    expect(row("notes/after")?.scheduled_at).toBe(latest);
+  });
 
-    db.exec("DROP TRIGGER refuse");
-    const retried = await store.publishDue();
-    expect(retried.map((doc) => doc.key)).toEqual(["notes/broken", "notes/after"]);
+  test("an onFailure that throws while the run stops still reaches every remaining document", async () => {
+    await schedule("broken", past);
+    await schedule("after", later);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const seen: string[] = [];
+    await onBroken(() => {
+      throw new Database.SqliteError("disk full", "SQLITE_FULL");
+    }).publishDue(undefined, {
+      onFailure: (key) => {
+        seen.push(key);
+        throw new Error("hook broke");
+      },
+    });
+    expect(seen).toEqual(["notes/broken", "notes/after"]);
+    warn.mockRestore();
   });
 
   test("a row no longer due when its transaction starts is skipped", async () => {
@@ -234,6 +333,123 @@ describe("publishDue failures", () => {
     expect(published.map((doc) => doc.key)).toEqual(["notes/good"]);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("a draft write beside a published payload that cannot be read", () => {
+  const published = { title: "Live", tags: [] as string[] };
+  const fresh = { title: "Fresh", tags: ["x"] };
+  const malformed = "{not json";
+  const publishedColumn = () =>
+    db.prepare<[], { published_payload: string | null }>("SELECT published_payload FROM documents").get()
+      ?.published_payload;
+  const versionColumn = () =>
+    db.prepare<[], { payload_version: number }>("SELECT payload_version FROM documents").get()?.payload_version;
+  /** The shipped schema's CHECK refuses malformed JSON, so a damaged row has to bypass it. It is back on for the write. */
+  const corruptPublished = () => {
+    db.pragma("ignore_check_constraints = ON");
+    db.prepare("UPDATE documents SET published_payload = ? WHERE key = 'notes/first'").run(malformed);
+    db.pragma("ignore_check_constraints = OFF");
+  };
+
+  /** A store at version 2 whose `migrate` refuses the published payload and passes anything else through. */
+  const refusing = () => {
+    const entry: RegistryEntry = {
+      ...(contractRegistry.entry("note") as RegistryEntry),
+      version: 2,
+      migrate: (_from, payload) => {
+        if ((payload as { title: string }).title === published.title) throw new Error("migrate blew up");
+        return payload;
+      },
+    };
+    return createSqliteContentStore(db, { entry: () => entry, byCollection: () => entry }, clock);
+  };
+
+  /** Publishes `fresh`, then publishes `published` over it, so a valid revision of `fresh` can be restored. */
+  const withRevisionOfFresh = async () => {
+    await store.create("note", "first", fresh);
+    await store.publish("notes/first");
+    const [revision] = await store.revisions("notes/first");
+    await store.writeField("notes/first", "title", published.title);
+    await store.writeField("notes/first", "tags", []);
+    await store.publish("notes/first");
+    return revision?.id as number;
+  };
+
+  test("restoreRevision succeeds over malformed published JSON, which stays as stored", async () => {
+    const revisionId = await withRevisionOfFresh();
+    corruptPublished();
+    const restored = await store.restoreRevision("notes/first", revisionId);
+    expect(restored).toMatchObject({ isDraft: true, payload: fresh });
+    expect(publishedColumn()).toBe(malformed);
+  });
+
+  test("restoreRevision succeeds when migrate throws on the published payload, which stays as stored", async () => {
+    const revisionId = await withRevisionOfFresh();
+    const before = publishedColumn();
+    const restored = await refusing().restoreRevision("notes/first", revisionId);
+    expect(restored).toMatchObject({ isDraft: true, payload: fresh });
+    expect(publishedColumn()).toBe(before);
+    expect(versionColumn()).toBe(2);
+  });
+
+  test("a migrate that returns nothing leaves the published payload as stored", async () => {
+    await store.create("note", "first", published);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    const before = publishedColumn();
+    const entry: RegistryEntry = {
+      ...(contractRegistry.entry("note") as RegistryEntry),
+      version: 2,
+      migrate: (_from, payload) => ((payload as { title: string }).title === published.title ? undefined : payload),
+    };
+    const next = createSqliteContentStore(db, { entry: () => entry, byCollection: () => entry }, clock);
+    expect((await next.writeField("notes/first", "title", "Next")).payload).toMatchObject({ title: "Next" });
+    expect(publishedColumn()).toBe(before);
+  });
+
+  test("a stale published payload that does migrate is still migrated in the same write", async () => {
+    await store.create("note", "first", published);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    const entry: RegistryEntry = {
+      ...(contractRegistry.entry("note") as RegistryEntry),
+      version: 2,
+      migrate: (_from, payload) => ({ ...(payload as object), tags: ["migrated"] }),
+    };
+    const next = createSqliteContentStore(db, { entry: () => entry, byCollection: () => entry }, clock);
+    await next.writeField("notes/first", "title", "Next");
+    expect(JSON.parse(publishedColumn() as string)).toEqual({ title: "Live", tags: ["migrated"] });
+    expect(versionColumn()).toBe(2);
+  });
+
+  test("writeField and arrayOp over a valid draft succeed beside malformed published JSON", async () => {
+    await store.create("note", "first", published);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    corruptPublished();
+    expect((await store.writeField("notes/first", "title", "Field")).payload).toMatchObject({ title: "Field" });
+    const inserted = await store.arrayOp("notes/first", "tags", { kind: "insert", index: 0, value: "x" });
+    expect(inserted.payload).toEqual({ title: "Field", tags: ["x"] });
+    expect(publishedColumn()).toBe(malformed);
+  });
+
+  test("a write whose own result is invalid is refused and changes nothing, beside malformed published JSON", async () => {
+    await store.create("note", "first", published);
+    await store.publish("notes/first");
+    await store.writeField("notes/first", "title", "Draft");
+    corruptPublished();
+    const before = db.prepare("SELECT * FROM documents").get();
+    await expect(store.writeField("notes/first", "title", "")).rejects.toThrow(ContentValidationError);
+    expect(db.prepare("SELECT * FROM documents").get()).toEqual(before);
+  });
+
+  test("with no draft and malformed published JSON, a field write has nothing to edit and is refused", async () => {
+    await store.create("note", "first", published);
+    await store.publish("notes/first");
+    corruptPublished();
+    await expect(store.writeField("notes/first", "title", "Field")).rejects.toThrow(ContentValidationError);
+    expect(publishedColumn()).toBe(malformed);
   });
 });
 
