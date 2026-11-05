@@ -53,7 +53,7 @@ export interface DocumentResponse {
 /** Response of `GET document`. */
 export interface DocumentForPublishResponse {
   document: WireDocument;
-  /** The payload published now, whatever the draft says; null when the document has none. */
+  /** The payload published now, whatever the draft says; null only when nothing is published. An unparseable column is its stored text. */
   publishedPayload: unknown | null;
 }
 
