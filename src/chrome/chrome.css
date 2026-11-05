@@ -202,6 +202,15 @@
   font-size: var(--cms-size-sm);
 }
 
+:where(.cms-bar__scheduled) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-2);
+  margin: 0;
+  color: var(--cms-warning);
+}
+
 :where(.cms-bar__actions) {
   display: flex;
   flex-wrap: wrap;
@@ -320,6 +329,23 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+:where(.cms-diff) {
+  margin-block-start: var(--cms-space-1);
+  font-size: var(--cms-size-sm);
+  overflow-wrap: anywhere;
+}
+
+:where(.cms-diff p) {
+  margin: 0;
+}
+
+:where(.cms-field-label) {
+  display: grid;
+  gap: var(--cms-space-1);
+  margin-block: var(--cms-space-3);
+  font-size: var(--cms-size-sm);
 }
 
 :where(.cms-revisions time) {

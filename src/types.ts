@@ -27,7 +27,10 @@ export interface RegistryEntry {
 export interface SchemaRegistry {
   entry(type: string): RegistryEntry | undefined;
   byCollection(collection: string): RegistryEntry | undefined;
-  entries(): readonly RegistryEntry[];
+  /**
+   * Every registered entry. Optional: nothing in the library calls it; it exists for back-office listing (see #7).
+   */
+  entries?(): readonly RegistryEntry[];
 }
 
 /** The smallest description of a document an access check needs. */

@@ -62,14 +62,29 @@ export function uniqueId(prefix: string): string {
   return `${prefix}-${idCounter}`;
 }
 
-/** Reads a value at a dotted path, own properties only, so a key like `__proto__` never walks the prototype. */
+const KEYED_PART = /^(.+)\[_key=([A-Za-z0-9_-]+)\]$/;
+
+function ownChild(node: unknown, segment: string): unknown {
+  if (node === null || typeof node !== "object") return undefined;
+  const property = Array.isArray(node) && /^\d+$/.test(segment) ? Number(segment) : segment;
+  return Object.hasOwn(node, property) ? (node as Record<string | number, unknown>)[property] : undefined;
+}
+
+/**
+ * Reads a value at a path (`a.b.0.c`, `items[_key=abc].title`; see docs/paths.md), own properties only, so a key
+ * like `__proto__` never walks the prototype. Not `getAt` from src/path.ts: that module pulls zod in at runtime, and
+ * the island stays free of it.
+ */
 export function valueAtPath(root: unknown, path: string): unknown {
   let node: unknown = root;
-  for (const segment of path.split(".")) {
-    if (node === null || typeof node !== "object") return undefined;
-    const property = Array.isArray(node) && /^\d+$/.test(segment) ? Number(segment) : segment;
-    if (!Object.hasOwn(node, property)) return undefined;
-    node = (node as Record<string | number, unknown>)[property];
+  for (const part of path.split(".")) {
+    const keyed = KEYED_PART.exec(part);
+    if (!keyed) {
+      node = ownChild(node, part);
+      continue;
+    }
+    const items = ownChild(node, keyed[1] ?? "");
+    node = Array.isArray(items) ? items.find((item) => ownChild(item, "_key") === keyed[2]) : undefined;
   }
   return node;
 }

@@ -105,6 +105,13 @@ function textWidget(note?: string): Widget {
       const originalNodes = [...target.childNodes].map((node) => node.cloneNode(true));
       const originalEditable = target.getAttribute("contenteditable");
       const outcome = once(ctx);
+      // Leaving untouched must write nothing, even when the starting value is not the text the page renders.
+      const untouched = (target.textContent ?? "").trim();
+      const finish = () => {
+        const text = (target.textContent ?? "").trim();
+        if (text === untouched) outcome.cancel();
+        else outcome.commit(text);
+      };
       const notePopover = note ? openPopover(target, note) : undefined;
       notePopover?.root.classList.add("cms-popover--note");
       if (note) ctx.announce(note);
@@ -113,7 +120,7 @@ function textWidget(note?: string): Widget {
       const handleKeydown = (event: KeyboardEvent) => {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
-          outcome.commit((target.textContent ?? "").trim());
+          finish();
         } else if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
@@ -127,7 +134,7 @@ function textWidget(note?: string): Widget {
         insertPlainText(target, text.replace(/\s*\n\s*/g, " "));
       };
       const preventDrop = (event: Event) => event.preventDefault();
-      const handleBlur = () => outcome.commit((target.textContent ?? "").trim());
+      const handleBlur = () => finish();
 
       target.addEventListener("keydown", handleKeydown);
       target.addEventListener("paste", handlePaste);
@@ -171,7 +178,14 @@ function formWidget(
     mount(ctx): WidgetHandle {
       const outcome = once(ctx);
       const parts = build(ctx, outcome);
-      const popover = openPopover(ctx.element, fieldLabel(ctx), () => outcome.commit(parts.read()));
+      // Leaving untouched must write nothing, even when the stored value is missing and the control shows a default.
+      const untouched = JSON.stringify(parts.read());
+      const finish = () => {
+        const value = parts.read();
+        if (JSON.stringify(value) === untouched) outcome.cancel();
+        else outcome.commit(value);
+      };
+      const popover = openPopover(ctx.element, fieldLabel(ctx), finish);
       const handleKeydown = (event: KeyboardEvent) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
@@ -185,7 +199,7 @@ function formWidget(
       );
       return {
         focus: () => (parts.focusTarget ?? parts.control).focus(),
-        commit: () => outcome.commit(parts.read()),
+        commit: finish,
         destroy() {
           popover.root.removeEventListener("keydown", handleKeydown);
           popover.close();

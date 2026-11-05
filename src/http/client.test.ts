@@ -11,25 +11,37 @@ const note = { title: "A", tags: [] as string[] };
 let store: ContentStore;
 let client: ContentClient;
 let publishVerdict: AccessVerdict;
+let editVerdict: AccessVerdict;
+let dueVerdict: AccessVerdict;
 let seenHeaders: Headers[];
+let seenRequests: { method: string; url: string; body: unknown }[];
 
 beforeEach(() => {
   store = createSqliteContentStore(makeTestDb(), contractRegistry);
   publishVerdict = { allowed: true };
+  editVerdict = { allowed: true };
+  dueVerdict = { allowed: true };
   seenHeaders = [];
-  const access: Access = { canEdit: () => ({ allowed: true }), canPublish: () => publishVerdict };
+  seenRequests = [];
+  const access: Access = { canEdit: () => editVerdict, canPublish: () => publishVerdict };
   const handlers = createContentHandlers({
     store,
     registry: contractRegistry,
     access,
     locals: () => ({ user: "grace" }),
     actor: (locals) => (locals as { user: string }).user,
+    publishDue: { authorize: () => dueVerdict },
   });
   client = createContentClient({
     base: "http://host/api/content/",
     fetch: (input, init) => {
       const request = new Request(input, init);
       seenHeaders.push(request.headers);
+      seenRequests.push({
+        method: request.method,
+        url: request.url,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      });
       return handlers.handle(request);
     },
   });
@@ -108,5 +120,94 @@ describe("content client round trip", () => {
   test("a response without an envelope still throws a ContentRequestError", async () => {
     const bare = createContentClient({ fetch: async () => new Response("Bad gateway", { status: 502 }) });
     await expect(bare.publish("notes/first")).rejects.toMatchObject({ status: 502, code: "internal" });
+  });
+});
+
+describe("content client lifecycle verbs", () => {
+  test("document reads one document, draft view, and 404s on an unknown key", async () => {
+    await client.create("note", "first", note);
+    await client.field("notes/first", "title", "B");
+    expect(await client.document("notes/first")).toMatchObject({ key: "notes/first", payload: { title: "B" } });
+    expect(seenRequests.at(-1)).toMatchObject({
+      method: "GET",
+      url: "http://host/api/content/document?key=notes%2Ffirst",
+    });
+    await expect(client.document("notes/none")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    editVerdict = { allowed: false, reason: "Not yours" };
+    await expect(client.document("notes/first")).rejects.toMatchObject({ status: 403, message: "Not yours" });
+  });
+
+  test("documentForPublish hits the document route and returns the draft beside the published payload", async () => {
+    await client.create("note", "first", note);
+    expect(await client.documentForPublish("notes/first")).toMatchObject({
+      document: { key: "notes/first", payload: note },
+      publishedPayload: null,
+    });
+    await client.publish("notes/first");
+    await client.field("notes/first", "title", "B");
+    const read = await client.documentForPublish("notes/first");
+    expect(seenRequests.at(-1)).toMatchObject({
+      method: "GET",
+      url: "http://host/api/content/document?key=notes%2Ffirst",
+    });
+    expect(read.document.payload).toEqual({ title: "B", tags: [] });
+    expect(read.publishedPayload).toEqual(note);
+    expect(await client.document("notes/first")).toEqual(read.document);
+    await expect(client.documentForPublish("notes/none")).rejects.toMatchObject({ status: 404, code: "not_found" });
+    editVerdict = { allowed: false, reason: "Not yours" };
+    await expect(client.documentForPublish("notes/first")).rejects.toMatchObject({ status: 403, message: "Not yours" });
+  });
+
+  test("publish with at schedules; without at the body stays { key }", async () => {
+    await client.create("note", "first", note);
+    const scheduled = await client.publish("notes/first", { at: "2030-01-01T00:00:00Z" });
+    expect(scheduled).toMatchObject({ isDraft: true, scheduledAt: "2030-01-01T00:00:00.000Z" });
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first", at: "2030-01-01T00:00:00Z" });
+    const invalid = await client.publish("notes/first", { at: "soon" }).catch((error: unknown) => error);
+    expect(invalid).toMatchObject({ status: 400, code: "bad_request" });
+    expect((await client.publish("notes/first", {})).isDraft).toBe(false);
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first" });
+  });
+
+  test("unpublish returns the draft-only document and surfaces state and forbidden errors", async () => {
+    await client.create("note", "first", note);
+    await expect(client.unpublish("notes/first")).rejects.toMatchObject({ status: 409, code: "state" });
+    await client.publish("notes/first");
+    publishVerdict = { allowed: false, reason: "Publishers only" };
+    await expect(client.unpublish("notes/first")).rejects.toMatchObject({ status: 403, code: "forbidden" });
+    publishVerdict = { allowed: true };
+    expect(await client.unpublish("notes/first")).toMatchObject({ isDraft: true, publishedAt: null });
+  });
+
+  test("restoreRevision copies a revision into the draft and 404s on an unknown revision", async () => {
+    await client.create("note", "first", note);
+    await client.publish("notes/first");
+    await client.field("notes/first", "title", "Later");
+    const [revision] = await client.revisions("notes/first");
+    const restored = await client.restoreRevision("notes/first", revision?.id ?? -1);
+    expect(restored).toMatchObject({ isDraft: true, payload: note });
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first", revisionId: revision?.id });
+    await expect(client.restoreRevision("notes/first", 9999)).rejects.toMatchObject({ status: 404 });
+    expect((await client.revisions("notes/first")).map((entry) => [entry.action, entry.actor])).toEqual([
+      ["publish", "grace"],
+      ["restore_revision", "grace"],
+    ]);
+  });
+
+  test("publishDue returns the published documents and honours the authorize verdict", async () => {
+    await client.create("note", "first", note);
+    await client.publish("notes/first", { at: "2030-01-01T00:00:00Z" });
+    dueVerdict = { allowed: false, reason: "Cron only" };
+    await expect(client.publishDue("2031-01-01T00:00:00Z")).rejects.toMatchObject({
+      status: 403,
+      message: "Cron only",
+    });
+    dueVerdict = { allowed: true };
+    expect(await client.publishDue("2029-01-01T00:00:00Z")).toEqual([]);
+    const published = await client.publishDue("2031-01-01T00:00:00Z");
+    expect(published.map((document) => [document.key, document.isDraft])).toEqual([["notes/first", false]]);
+    expect(seenRequests.at(-1)?.body).toEqual({ now: "2031-01-01T00:00:00Z" });
+    expect(await client.publishDue()).toEqual([]);
+    expect(seenRequests.at(-1)).toMatchObject({ method: "POST", body: {} });
   });
 });

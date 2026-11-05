@@ -47,6 +47,13 @@ export interface DocumentsResponse {
 
 export interface DocumentResponse {
   document: WireDocument;
+  /** The payload published now, whatever the draft says; null when the document has none. */
+  publishedPayload: unknown | null;
+}
+
+/** Response of `publish-due`: every document it published, in the order they were due. */
+export interface PublishDueResponse {
+  documents: WireDocument[];
 }
 
 export interface DiscardResponse {

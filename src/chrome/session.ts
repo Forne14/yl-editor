@@ -4,7 +4,7 @@
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
-import type { DocumentState, DocumentSummary, WireDocument } from "./types.ts";
+import type { DocumentResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
 
@@ -40,6 +40,8 @@ export class Session {
   readonly documents = new Map<string, MutableDocument>();
   private readonly slots = new Map<string, SaveSlot>();
   private readonly chains = new Map<string, Promise<void>>();
+  /** One `GET document` per key per session, plus `documentForPublish`; replaced by every write's returned document. */
+  private readonly fetched = new Map<string, Promise<WireDocument>>();
   private readonly storageKey: string;
 
   constructor(
@@ -59,7 +61,12 @@ export class Session {
         this.documents.delete(key);
         continue;
       }
-      const existing = this.documents.get(key);
+      let existing = this.documents.get(key);
+      if (existing && existing.version !== summary.version) {
+        // Someone wrote since we last looked: what we cached is stale.
+        this.fetched.delete(key);
+        existing = { ...existing, payload: undefined, scheduledAt: null };
+      }
       const rememberedPaths = summary.isDraft ? (remembered[key] ?? []) : [];
       const touchedPaths = new Set([...(existing?.touchedPaths ?? []), ...rememberedPaths]);
       this.documents.set(key, {
@@ -68,11 +75,95 @@ export class Session {
         version: summary.version,
         isDraft: summary.isDraft,
         access: { edit: summary.access.edit === true, publish: summary.access.publish === true },
+        publishedAt: summary.publishedAt,
+        scheduledAt: existing?.scheduledAt ?? null,
         payload: existing?.payload,
         touched: touchedPaths.size > 0,
         touchedPaths,
       });
     }
+    this.writeTouched();
+  }
+
+  /**
+   * The document's draft view, fetched once per session and replaced by whatever each write returns. A failed fetch
+   * is not cached, so the next call retries.
+   */
+  document(key: string): Promise<WireDocument> {
+    const cached = this.fetched.get(key);
+    if (cached) return cached;
+    const request: Promise<WireDocument> = this.client.document(key).then(
+      (document) => {
+        // A write landed while this was in flight; its document is newer than ours.
+        const current = this.fetched.get(key);
+        if (current !== request) return current ?? document;
+        const state = this.documents.get(key);
+        if (state) {
+          // Keep our version: if the server's is newer, the next write conflicts and the editor chooses.
+          state.payload = document.payload;
+          state.publishedAt = document.publishedAt;
+          state.scheduledAt = document.scheduledAt;
+        }
+        return document;
+      },
+      (error: unknown) => {
+        if (this.fetched.get(key) === request) this.fetched.delete(key);
+        throw error;
+      },
+    );
+    this.fetched.set(key, request);
+    return request;
+  }
+
+  /**
+   * A fresh read for the publish sheet, past the cache and after the document's queued writes. It refreshes the cached
+   * document, unless a write landed while it was in flight. A failure leaves the cache as it was.
+   */
+  async documentForPublish(key: string): Promise<DocumentResponse> {
+    await this.pending(key);
+    const seen = this.fetched.get(key);
+    const response = await this.client.documentForPublish(key);
+    const { document, publishedPayload } = response;
+    const current = this.fetched.get(key);
+    if (current !== seen) {
+      // A write landed while this was in flight; its document is newer than ours.
+      return { document: (await current?.catch(() => undefined)) ?? document, publishedPayload };
+    }
+    this.fetched.set(key, Promise.resolve(document));
+    const state = this.documents.get(key);
+    if (state) {
+      // Keep our version, as `document` does: another editor's change must still conflict with our next write.
+      state.isDraft = document.isDraft;
+      state.payload = document.payload;
+      state.publishedAt = document.publishedAt;
+      state.scheduledAt = document.scheduledAt;
+    }
+    return response;
+  }
+
+  /**
+   * Runs a lifecycle write (publish, discard, unpublish, restore a revision) on the document's write chain, after
+   * every field write queued before it. A failure is the caller's; it does not stall the chain.
+   */
+  run<Result>(key: string, task: () => Promise<Result>): Promise<Result> {
+    const previous = this.chains.get(key) ?? Promise.resolve();
+    const result = previous.then(task);
+    this.chains.set(
+      key,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return result;
+  }
+
+  /** Marks paths as changed this session, for writes that are not field saves (restoring a revision). */
+  touch(key: string, paths: readonly string[]): void {
+    const state = this.documents.get(key);
+    if (!state || paths.length === 0) return;
+    state.touched = true;
+    for (const path of paths) state.touchedPaths.add(path);
     this.writeTouched();
   }
 
@@ -124,18 +215,25 @@ export class Session {
     else {
       state.isDraft = false;
       state.payload = undefined;
+      state.publishedAt = null;
+      state.scheduledAt = null;
+      this.fetched.delete(key);
     }
     state.touched = false;
     state.touchedPaths.clear();
     this.writeTouched();
   }
 
-  private adopt(document: WireDocument): void {
+  /** Takes a document the server returned as the latest: version, payload, lifecycle dates and the fetch cache. */
+  adopt(document: WireDocument): void {
+    this.fetched.set(document.key, Promise.resolve(document));
     const state = this.documents.get(document.key);
     if (!state) return;
     state.version = document.version;
     state.isDraft = document.isDraft;
     state.payload = document.payload;
+    state.publishedAt = document.publishedAt;
+    state.scheduledAt = document.scheduledAt;
   }
 
   /** Resolves once every write queued so far for the document has finished. */
