@@ -82,6 +82,21 @@ export interface ReadOptions {
   /** Return the draft when one exists (editor reads). Default: published only. */
   draft?: boolean;
   includeRetired?: boolean;
+  /**
+   * Return the requested view as stored: no schema validation, nothing reported through `onReadIssue`, and a `migrate`
+   * that throws leaves the stored payload instead of failing the read. For reading a document's identity (access
+   * checks, summaries, repairs); never for rendering, since the payload may not match its schema.
+   */
+  unvalidated?: boolean;
+}
+
+/** Trailing argument of `publishDue`. */
+export interface PublishDueContext extends WriteContext {
+  /**
+   * Called for each due document that could not be published; it stays scheduled and is retried on the next run.
+   * Without it the store logs with `console.warn`.
+   */
+  onFailure?: (key: string, error: unknown) => void;
 }
 
 export interface ContentStore {
@@ -95,8 +110,12 @@ export interface ContentStore {
    * revision is written and the draft document is returned. `publishDue` does the promotion later.
    */
   publish(key: string, context?: WriteContext & { at?: string }): Promise<StoredDocument>;
-  /** Publishes every document whose `scheduledAt` is at or before `now` (default: the store clock). */
-  publishDue(now?: string, context?: WriteContext): Promise<StoredDocument[]>;
+  /**
+   * Publishes every document whose `scheduledAt` is at or before `now` (default: the store clock), each on its own, and
+   * returns the ones published. One that fails stays scheduled and is reported through `context.onFailure`; the others
+   * still publish.
+   */
+  publishDue(now?: string, context?: PublishDueContext): Promise<StoredDocument[]>;
   /**
    * Published to draft-only, without retiring. Throws DocumentStateError when never published. Keeps an existing
    * draft, otherwise the published payload becomes the draft.

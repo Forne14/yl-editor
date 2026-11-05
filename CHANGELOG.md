@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- `publishDue` is no longer all-or-nothing. Each due document is promoted in its own transaction after re-checking it is still due; one that fails stays scheduled and is retried on the next run, and the others publish. Failures go to a new optional `onFailure(key, error)` on its context, or to `console.warn`. A database failure stops the run, reported the same way, keeping what already published.
+- A document whose published payload or draft fails its schema stays repairable over HTTP. Access checks no longer read the payload, so `GET revisions`, `POST restore-revision`, `discard`, `unpublish`, `retire`, `restore` and `rename` work on it, and a denied caller gets `403` rather than `422`. `POST field` and `POST array` still answer `422` with issues when the result is invalid and succeed when it is valid. `POST publish` of an invalid draft is still `422`.
+- `GET documents` summarises a document with an invalid draft instead of failing the whole request with `422`. `GET document` still answers `422` for an invalid draft.
+- Store: `unpublish`, `discardDraft`, `retire`, `restore` and `rename` no longer throw, or roll back, when the document fails its schema. They validate nothing and return it as stored.
+- A `conflict` on a document failing its schema now carries `current`, as stored.
+- `POST discard` honoured no `expectedVersion`; it now accepts it and answers `409 conflict` when stale (`DiscardRequestSchema`).
+- Client: `publish(key, { at?, expectedVersion? })`, `unpublish(key, { expectedVersion? })`, `restoreRevision(key, revisionId, { expectedVersion? })` and `discard(key, { expectedVersion? })` can send `expectedVersion`.
+- `DocumentResponse` is `{ document }` again, as it was before 0.4.0. `GET document` and `client.documentForPublish` use the new `DocumentForPublishResponse`, `{ document, publishedPayload }`.
+
+### Changed
+
+- `POST publish-due` responds `{ documents, failed }`, where `failed` is `{ key, code, message }[]`, and `client.publishDue(now?)` returns that object rather than `WireDocument[]`. This changes a method added in 0.4.0.
+
+### Added
+
+- `ReadOptions.unvalidated` on `get` and `list`: the requested view as stored, with no schema validation, no `onReadIssue`, and no failure from `migrate`. Custom stores should implement it: the contract suite covers it, and without it a document failing its schema still answers `422` on every HTTP route.
+
 ## [0.4.0] - 2026-11-05
 
 ### Added

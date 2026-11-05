@@ -3,7 +3,7 @@ import {
   isErrorEnvelope,
   REQUESTED_WITH_HEADER,
   REQUESTED_WITH_VALUE,
-  type DocumentResponse,
+  type DocumentForPublishResponse,
   type DocumentsResponse,
   type DocumentSummary,
   type ErrorCode,
@@ -39,17 +39,17 @@ export interface ContentClient {
   /** One document, draft view, retired included. */
   document(key: string): Promise<WireDocument>;
   /** The same read with the payload published now beside it (null when none), for comparing before a publish. */
-  documentForPublish(key: string): Promise<DocumentResponse>;
+  documentForPublish(key: string): Promise<DocumentForPublishResponse>;
   field(key: string, path: string, value: unknown, expectedVersion?: number): Promise<WireDocument>;
   array(key: string, path: string, op: WireArrayOp, expectedVersion?: number): Promise<WireDocument>;
   /** Publishes now, or with `at` (an ISO datetime) schedules the draft for `publishDue`. */
-  publish(key: string, options?: { at?: string }): Promise<WireDocument>;
-  unpublish(key: string): Promise<WireDocument>;
+  publish(key: string, options?: { at?: string; expectedVersion?: number }): Promise<WireDocument>;
+  unpublish(key: string, options?: { expectedVersion?: number }): Promise<WireDocument>;
   /** Copies a revision's payload into the draft. */
-  restoreRevision(key: string, revisionId: number): Promise<WireDocument>;
-  /** Publishes every scheduled draft due at `now` (default: the server's clock). */
-  publishDue(now?: string): Promise<WireDocument[]>;
-  discard(key: string): Promise<WireDocument | null>;
+  restoreRevision(key: string, revisionId: number, options?: { expectedVersion?: number }): Promise<WireDocument>;
+  /** Publishes every scheduled draft due at `now` (default: the server's clock), reporting any that failed. */
+  publishDue(now?: string): Promise<PublishDueResponse>;
+  discard(key: string, options?: { expectedVersion?: number }): Promise<WireDocument | null>;
   retire(key: string): Promise<WireDocument>;
   restore(key: string): Promise<WireDocument>;
   rename(key: string, slug: string): Promise<WireDocument>;
@@ -88,7 +88,7 @@ export function createContentClient(options: ContentClientOptions = {}): Content
   const post = async (route: string, body: unknown) =>
     (await send<{ document: WireDocument }>("POST", route, body)).document;
 
-  const read = (key: string) => send<DocumentResponse>("GET", `document?${new URLSearchParams({ key })}`);
+  const read = (key: string) => send<DocumentForPublishResponse>("GET", `document?${new URLSearchParams({ key })}`);
 
   return {
     documents: async (keys) => {
@@ -100,13 +100,13 @@ export function createContentClient(options: ContentClientOptions = {}): Content
     array: (key, path, op, expectedVersion) => post("array", { key, path, op, expectedVersion }),
     document: async (key) => (await read(key)).document,
     documentForPublish: read,
-    publish: (key, publishOptions) =>
-      post("publish", publishOptions?.at !== undefined ? { key, at: publishOptions.at } : { key }),
-    unpublish: (key) => post("unpublish", { key }),
-    restoreRevision: (key, revisionId) => post("restore-revision", { key, revisionId }),
-    publishDue: async (now) =>
-      (await send<PublishDueResponse>("POST", "publish-due", now !== undefined ? { now } : {})).documents,
-    discard: async (key) => (await send<{ document: WireDocument | null }>("POST", "discard", { key })).document,
+    publish: (key, { at, expectedVersion } = {}) => post("publish", { key, at, expectedVersion }),
+    unpublish: (key, { expectedVersion } = {}) => post("unpublish", { key, expectedVersion }),
+    restoreRevision: (key, revisionId, { expectedVersion } = {}) =>
+      post("restore-revision", { key, revisionId, expectedVersion }),
+    publishDue: (now) => send<PublishDueResponse>("POST", "publish-due", now !== undefined ? { now } : {}),
+    discard: async (key, { expectedVersion } = {}) =>
+      (await send<{ document: WireDocument | null }>("POST", "discard", { key, expectedVersion })).document,
     retire: (key) => post("retire", { key }),
     restore: (key) => post("restore", { key }),
     rename: (key, slug) => post("rename", { key, slug }),

@@ -4,7 +4,7 @@
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
-import type { DocumentResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
+import type { DocumentForPublishResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
 
@@ -119,7 +119,7 @@ export class Session {
    * A fresh read for the publish sheet, past the cache and after the document's queued writes. It refreshes the cached
    * document, unless a write landed while it was in flight. A failure leaves the cache as it was.
    */
-  async documentForPublish(key: string): Promise<DocumentResponse> {
+  async documentForPublish(key: string): Promise<DocumentForPublishResponse> {
     await this.pending(key);
     const seen = this.fetched.get(key);
     const response = await this.client.documentForPublish(key);

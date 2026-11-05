@@ -650,11 +650,251 @@ describe("documents with a payload failing its schema", () => {
         expect(fake.calls).toContainEqual({ check, locals: session, ref: { type: "note", key } });
   });
 
-  test("a draft failing its schema still fails the whole request with 422", async () => {
+  test("a draft failing its schema is summarised beside the healthy documents", async () => {
     await store.writeField("notes/first", "title", "Draft");
     corrupt("notes/first", "draft_payload");
-    const { status, body } = await call(get("documents?keys=notes/first,notes/second"));
+    corrupt("notes/second", "draft_payload");
+    await store.create("note", "third", note);
+    const { status, body } = await call(get("documents?keys=notes/first,notes/second,notes/third"));
+    expect(status).toBe(200);
+    expect(body.documents["notes/first"]).toMatchObject({ isDraft: true, publishedAt: expect.any(String) });
+    expect(body.documents["notes/second"]).toMatchObject({ isDraft: true, publishedAt: null });
+    expect(body.documents["notes/third"]).toMatchObject({ isDraft: true, access: { edit: true, publish: true } });
+  });
+});
+
+describe.each([
+  { state: "stale published with no draft", published: true, draft: false },
+  { state: "invalid draft over a published payload", published: true, draft: true },
+  { state: "invalid draft, unpublished", published: false, draft: true },
+] as const)("repairing a document: $state", ({ published, draft }) => {
+  /** Fails `note`'s schema through `tags`, so `tags` is what a repair writes. */
+  const invalid = { title: "A", tags: [1] };
+  const key = "notes/first";
+  const corruptColumn = draft ? "draft_payload" : "published_payload";
+  const strictRead = () => store.get(key, { draft: true, includeRetired: true });
+  const storedRow = () => db.prepare("SELECT * FROM documents WHERE key = ?").get(key);
+  let revisionId: number;
+
+  beforeEach(async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await store.create("note", "first", note);
+    await store.publish(key);
+    revisionId = (await store.revisions(key))[0]?.id ?? -1;
+    if (!published) await store.unpublish(key);
+    else if (draft) await store.writeField(key, "title", "Draft");
+    db.prepare(`UPDATE documents SET ${corruptColumn} = ? WHERE key = ?`).run(JSON.stringify(invalid), key);
+    fake.calls.length = 0;
+  });
+
+  test("the strict read really does fail", async () => {
+    await expect(strictRead()).rejects.toThrow();
+  });
+
+  test("GET documents summarises it", async () => {
+    const { status, body } = await call(get(`documents?keys=${key}`));
+    expect(status).toBe(200);
+    expect(body.documents[key]).toMatchObject({ key, type: "note", isDraft: draft });
+  });
+
+  test("GET revisions lists its history", async () => {
+    const { status, body } = await call(get(`revisions?key=${key}`));
+    expect(status).toBe(200);
+    expect(body.revisions[0]).toMatchObject({ id: revisionId, action: "publish" });
+  });
+
+  test("restore-revision with a valid revision leaves a valid draft", async () => {
+    const { status, body } = await call(post("restore-revision", { key, revisionId }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: note });
+    expect((await strictRead())?.payload).toEqual(note);
+  });
+
+  test("discard succeeds", async () => {
+    const { status, body } = await call(post("discard", { key }));
+    expect(status).toBe(200);
+    if (!published) {
+      expect(body.document).toBeNull();
+      expect(await store.get(key, { draft: true, includeRetired: true })).toBeNull();
+    } else if (draft) {
+      expect(body.document).toMatchObject({ isDraft: false, payload: note });
+      expect((await strictRead())?.payload).toEqual(note);
+    } else {
+      // Nothing to drop: the stale published payload stays, still served as stored.
+      expect(body.document).toMatchObject({ isDraft: false, payload: invalid });
+    }
+  });
+
+  test("unpublish moves the stored payloads, or is a state error with nothing published", async () => {
+    const { status, body } = await call(post("unpublish", { key }));
+    if (!published) {
+      expect([status, body.error.code]).toEqual([409, "state"]);
+      return;
+    }
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, publishedAt: null, payload: invalid });
+    expect(await store.get(key, { includeRetired: true })).toBeNull();
+  });
+
+  test("retire, restore and rename need no validation", async () => {
+    const retired = await call(post("retire", { key }));
+    expect(retired.status).toBe(200);
+    expect(retired.body.document).toMatchObject({ retiredAt: expect.any(String), payload: invalid });
+    const restored = await call(post("restore", { key }));
+    expect(restored.status).toBe(200);
+    expect(restored.body.document).toMatchObject({ retiredAt: null, payload: invalid });
+    const renamed = await call(post("rename", { key, slug: "second" }));
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.document).toMatchObject({ key: "notes/second", payload: invalid });
+  });
+
+  test("a field write that leaves it invalid is 422 with issues and changes nothing", async () => {
+    const before = storedRow();
+    const { status, body } = await call(post("field", { key, path: "title", value: "B" }));
     expect([status, body.error.code]).toEqual([422, "validation"]);
+    expect(body.error.issues).toEqual([expect.objectContaining({ path: ["tags", 0] })]);
+    expect(storedRow()).toEqual(before);
+  });
+
+  test("a field write that makes it valid succeeds", async () => {
+    const { status, body } = await call(post("field", { key, path: "tags", value: [] }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: true, payload: { title: "A", tags: [] } });
+    expect(await strictRead()).toMatchObject({ payload: { title: "A", tags: [] } });
+  });
+
+  test("an array write that leaves it invalid is 422 with issues", async () => {
+    const op = { kind: "insert", index: 0, value: "x" };
+    const { status, body } = await call(post("array", { key, path: "tags", op }));
+    expect([status, body.error.code]).toEqual([422, "validation"]);
+    expect(body.error.issues).toEqual([expect.objectContaining({ path: ["tags", 1] })]);
+  });
+
+  test("an array write that makes it valid succeeds", async () => {
+    const { status, body } = await call(post("array", { key, path: "tags", op: { kind: "remove", index: 0 } }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ payload: { title: "A", tags: [] } });
+  });
+
+  test("publish never lets invalid content go live", async () => {
+    const live = () => db.prepare("SELECT published_payload FROM documents WHERE key = ?").get(key);
+    const before = live();
+    const { status, body } = await call(post("publish", { key }));
+    if (draft) expect([status, body.error.code]).toEqual([422, "validation"]);
+    else expect([status, body.error.code]).toEqual([409, "state"]);
+    expect(live()).toEqual(before);
+  });
+
+  test("scheduling an invalid draft is refused too", async () => {
+    const { status } = await call(post("publish", { key, at: "2030-01-01T00:00:00Z" }));
+    expect(status).toBe(draft ? 422 : 409);
+  });
+
+  test("GET document: an invalid draft is 422, a stale published payload is served", async () => {
+    const { status, body } = await call(get(`document?key=${key}`));
+    if (draft) expect([status, body.error.code]).toEqual([422, "validation"]);
+    else {
+      expect(status).toBe(200);
+      expect(body.document).toMatchObject({ isDraft: false, payload: invalid });
+    }
+  });
+
+  test("a stale expectedVersion is 409 and still carries the document as stored", async () => {
+    const { status, body } = await call(post("field", { key, path: "tags", value: [], expectedVersion: 999 }));
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+    expect(body.error.current).toMatchObject({ key, payload: invalid });
+  });
+
+  test.each([
+    ["document", () => get(`document?key=${key}`)],
+    ["revisions", () => get(`revisions?key=${key}`)],
+    ["field", () => post("field", { key, path: "tags", value: [] })],
+    ["array", () => post("array", { key, path: "tags", op: { kind: "remove", index: 0 } })],
+    ["discard", () => post("discard", { key })],
+    ["restore-revision", () => post("restore-revision", { key, revisionId: 1 })],
+  ])("%s asks canEdit about the stored row; a denial is 403 with no payload", async (_route, request) => {
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
+    const before = storedRow();
+    const { status, body } = await call(request());
+    expect(status).toBe(403);
+    expect(body).toEqual({ error: { code: "forbidden", message: "Not yours" } });
+    expect(fake.calls).toEqual([{ check: "canEdit", locals: session, ref: { type: "note", key } }]);
+    expect(storedRow()).toEqual(before);
+  });
+
+  test.each([
+    ["publish", () => post("publish", { key })],
+    ["unpublish", () => post("unpublish", { key })],
+    ["retire", () => post("retire", { key })],
+    ["restore", () => post("restore", { key })],
+    ["rename", () => post("rename", { key, slug: "second" })],
+  ])("%s asks canPublish about the stored row; a denial is 403 with no payload", async (_route, request) => {
+    fake.verdicts.publish = () => ({ allowed: false, reason: "Publishers only" });
+    const before = storedRow();
+    const { status, body } = await call(request());
+    expect(status).toBe(403);
+    expect(body).toEqual({ error: { code: "forbidden", message: "Publishers only" } });
+    expect(fake.calls).toEqual([{ check: "canPublish", locals: session, ref: { type: "note", key } }]);
+    expect(storedRow()).toEqual(before);
+  });
+
+  test("GET documents reports each verdict and no payload", async () => {
+    fake.verdicts.edit = () => ({ allowed: false, reason: "Not yours" });
+    const { status, body } = await call(get(`documents?keys=${key}`));
+    expect(status).toBe(200);
+    expect(body.documents[key].access).toEqual({ edit: false, publish: true });
+    expect(body.documents[key].payload).toBeUndefined();
+  });
+});
+
+describe("a never-published invalid draft", () => {
+  const key = "notes/first";
+  const invalid = { title: "", tags: [] as string[] };
+
+  beforeEach(async () => {
+    await store.create("note", "first", note);
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = ?").run(JSON.stringify(invalid), key);
+  });
+
+  test("is summarised, has an empty history, and unpublish is a state error", async () => {
+    const { status, body } = await call(get(`documents?keys=${key}`));
+    expect(status).toBe(200);
+    expect(body.documents[key]).toMatchObject({ isDraft: true, publishedAt: null });
+    expect((await call(get(`revisions?key=${key}`))).body).toEqual({ revisions: [] });
+    expect((await call(post("unpublish", { key }))).status).toBe(409);
+  });
+
+  test("retire and restore work, and discard removes it", async () => {
+    expect((await call(post("retire", { key }))).status).toBe(200);
+    expect((await call(post("restore", { key }))).status).toBe(200);
+    expect((await call(post("discard", { key }))).body).toEqual({ document: null });
+  });
+
+  test("publish is 422 until a field write repairs it", async () => {
+    expect((await call(post("publish", { key }))).status).toBe(422);
+    expect((await call(post("field", { key, path: "tags", value: ["x"] }))).status).toBe(422);
+    expect((await call(post("field", { key, path: "title", value: "Fixed" }))).status).toBe(200);
+    expect((await call(post("publish", { key }))).status).toBe(200);
+  });
+});
+
+describe("discard expectedVersion", () => {
+  test("a stale version is 409 with the current document, and nothing is discarded", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const draft = await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await call(post("discard", { key: "notes/first", expectedVersion: draft.version - 1 }));
+    expect([status, body.error.code]).toEqual([409, "conflict"]);
+    expect(body.error.current).toMatchObject({ version: draft.version, payload: { title: "Draft" } });
+    expect((await store.get("notes/first", { draft: true }))?.isDraft).toBe(true);
+  });
+  test("the current version discards", async () => {
+    await store.create("note", "first", note);
+    await store.publish("notes/first");
+    const draft = await store.writeField("notes/first", "title", "Draft");
+    const { status, body } = await call(post("discard", { key: "notes/first", expectedVersion: draft.version }));
+    expect(status).toBe(200);
+    expect(body.document).toMatchObject({ isDraft: false, payload: note });
   });
 });
 
@@ -857,8 +1097,75 @@ describe("publish-due", () => {
     const due = withPublishDue(() => allowed);
     const response = await due.handle(post("publish-due", {}));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ documents: [] });
+    expect(await response.json()).toEqual({ documents: [], failed: [] });
     expect(events).toEqual([]);
+  });
+
+  test("a due document that fails is reported, the others publish, and it stays scheduled", async () => {
+    await schedule("bad", "2030-01-01T00:00:00Z");
+    await schedule("good", "2030-06-01T00:00:00Z");
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/bad'").run(JSON.stringify({ title: "" }));
+    const due = withPublishDue(() => allowed);
+    const response = await due.handle(post("publish-due", { now: "2031-01-01T00:00:00Z" }));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      documents: { key: string }[];
+      failed: { key: string; code: string; message: string }[];
+    };
+    expect(body.documents.map((document) => document.key)).toEqual(["notes/good"]);
+    expect(body.failed).toEqual([
+      { key: "notes/bad", code: "validation", message: expect.stringContaining("notes/bad") },
+    ]);
+    expect(events.map((event) => [event.action, event.key])).toEqual([["publish", "notes/good"]]);
+    const row = db.prepare("SELECT scheduled_at FROM documents WHERE key = 'notes/bad'").get();
+    expect(row).toEqual({ scheduled_at: "2030-01-01T00:00:00.000Z" });
+  });
+
+  test("an unexpected failure is logged and never leaks its message", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken: ContentStore = {
+      ...store,
+      publishDue: async (_now, context) => {
+        context?.onFailure?.("notes/first", new Error("disk on fire at /var/secret.db"));
+        return [];
+      },
+    };
+    const due = createContentHandlers({
+      store: broken,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+      publishDue: { authorize: () => allowed },
+    });
+    const response = await due.handle(post("publish-due", {}));
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      documents: [],
+      failed: [{ key: "notes/first", code: "internal", message: "Internal error" }],
+    });
+    expect(text).not.toContain("secret");
+    expect(logged).toHaveBeenCalled();
+  });
+
+  test("a store that throws outright is still 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken: ContentStore = {
+      ...store,
+      publishDue: async () => {
+        throw new Error("disk on fire at /var/secret.db");
+      },
+    };
+    const due = createContentHandlers({
+      store: broken,
+      registry: contractRegistry,
+      access: fake.access,
+      locals: () => session,
+      publishDue: { authorize: () => allowed },
+    });
+    const response = await due.handle(post("publish-due", {}));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal", message: "Internal error" } });
   });
 
   test("a denying authorize is 403 with its reason", async () => {

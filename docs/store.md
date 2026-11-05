@@ -15,7 +15,7 @@ interface ContentStore {
   writeField(key, path, value, context?): Promise<StoredDocument>;
   arrayOp(key, path, op, context?): Promise<StoredDocument>;
   publish(key, context?: WriteContext & { at?: string }): Promise<StoredDocument>;
-  publishDue(now?, context?): Promise<StoredDocument[]>;
+  publishDue(now?, context?: WriteContext & { onFailure? }): Promise<StoredDocument[]>;
   unpublish(key, context?): Promise<StoredDocument>;
   restoreRevision(key, revisionId, context?): Promise<StoredDocument>;
   discardDraft(key, context?): Promise<StoredDocument | null>;
@@ -46,9 +46,9 @@ The package also exports a `MediaStore` interface (`upload`, `resolve`) and `Med
 `resolve` returns. It ships no implementation: the host implements `MediaStore` over its own storage. Nothing in the
 store, the HTTP handlers or the chrome calls it, so a `media` field also needs a widget the host registers.
 
-Every write is validated against the type's schema before it is stored (`ContentValidationError`), and every read is
-validated again, so a payload that drifts from its schema fails loudly with the document's key rather than rendering
-half a page. Paths into a payload refuse `__proto__`, `prototype`, `constructor` and negative or non-integer indices
+Every write of a payload is validated against the type's schema before it is stored (`ContentValidationError`), and
+every read is validated again unless it asks for `unvalidated` (see [Schema evolution](#schema-evolution)), so a payload
+that drifts from its schema fails loudly with the document's key rather than rendering half a page. Paths into a payload refuse `__proto__`, `prototype`, `constructor` and negative or non-integer indices
 (`PathError`); a path that misses changes nothing.
 
 ## Drafts and publishing
@@ -84,8 +84,21 @@ A document has at most two payloads: the published one, which visitors see, and 
   (`DocumentStateError` otherwise). Scheduling again replaces the time.
 - `publishDue(now?, context?)` runs a plain `publish` (one `publish` revision each, `actor` from the context) for every
   non-retired document whose `scheduledAt` is at or before `now` (default: the store clock), clearing `scheduledAt`,
-  and returns the published documents. It ignores `expectedVersion`. The host calls it from a timer or cron.
+  and returns the published documents. It ignores `expectedVersion`. The host calls it from a timer or cron. Each
+  document is promoted in its own transaction, after re-checking that it is still due. See below for failures.
 - A plain `publish`, `discardDraft` and `unpublish` clear `scheduledAt`. Draft edits leave it in place.
+
+#### When a due document fails
+
+A due document that cannot be published (usually a draft that no longer matches its schema) changes nothing: it stays
+scheduled, gets no revision, and is retried on every later run, so it publishes once it is repaired. The other due
+documents still publish. Each failure goes to `context.onFailure(key, error)`, or to `console.warn` without one.
+
+Failures of the document, including a `migrate` that throws, do not stop the run. A database failure does: it is
+reported the same way for the document it hit, the documents already published stay published and are returned, and
+the rest stay scheduled for the next run. The failure is about the database rather than any one document, so carrying
+on would only repeat it, and throwing would lose the list of what did publish. A custom store decides what counts as a
+database failure for its own driver.
 
 Revisions record publish, retire, restore, rename, restore_revision and unpublish, each with the payload that was live at the time. Draft edits are
 not revisions.
@@ -130,6 +143,10 @@ runContentStoreContract(
 );
 ```
 
+The contract also covers `unvalidated` reads and `publishDue` failures. The cases that need a payload failing its schema
+run only when you pass `reopen`. A store that ignores `unvalidated` still works behind the HTTP handlers, but a
+document failing its schema then answers `422` on every route as it did before, and cannot be repaired over HTTP.
+
 Keep tests that depend on your storage (malformed rows, clock injection, migrations) in your own file next to the
 contract call, as `src/sqlite-store.test.ts` does here.
 
@@ -146,7 +163,32 @@ changes shape and have `migrate` return the payload in the new shape. The store 
 - **Public reads (`draft: false`).** Validated with `safeParse`. A payload that fails the current schema is still
   served as stored (after migrate), and `onReadIssue(key, issues)` is called. The default logs `console.warn` once per
   key per process. Pass your own in the store's fourth argument: `createSqliteContentStore(db, registry, clock, { onReadIssue })`.
-- **Editor reads (`draft: true`) and all writes** validate strictly and throw `ContentValidationError`.
+- **Editor reads (`draft: true`), draft writes and publishing** validate strictly and throw `ContentValidationError`.
+- **Unvalidated reads (`unvalidated: true`, on `get` and `list`).** Return the requested view with no schema validation
+  and nothing sent to `onReadIssue`. `migrate` still runs; if it throws, the payload comes back as stored. Use them for
+  a document's identity (access checks, summaries, repairs), never for rendering. `draft` and `includeRetired` mean
+  what they always do. Columns other than the payload, such as `previous_slugs`, are still checked.
+
+### Repairing a document that fails its schema
+
+A document whose published payload or draft fails the current schema stays repairable. These writes apply:
+
+| Write                         | Validates              | With a stale published payload, no draft   | With an invalid draft                                            |
+| ----------------------------- | ---------------------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| `writeField`, `arrayOp`       | The resulting draft    | Works if the result is valid               | Works if the result is valid                                     |
+| `restoreRevision`             | The revision's payload | Works if the revision is valid             | Works if the revision is valid                                   |
+| `publish`, `publish({ at })`  | The draft              | `DocumentStateError`: no draft             | `ContentValidationError`: invalid content never goes live        |
+| `discardDraft`                | Nothing                | Works; the payload stays as stored         | Drops the draft, or deletes the document if never published      |
+| `unpublish`                   | Nothing                | Works; the stale payload becomes the draft | Works if published, keeping the draft; else `DocumentStateError` |
+| `retire`, `restore`, `rename` | Nothing                | Works                                      | Works                                                            |
+
+The writes that validate nothing only move stored payloads around, so they return the document validated when it can be
+and as stored when it cannot. Taking a broken page offline with `unpublish` or `retire` must not depend on it being
+valid. The result of `unpublish` on a stale payload is an invalid draft, which then behaves like any other: `publish` refuses
+it until a draft write or a restored revision repairs it.
+
+A revision has no recorded payload version, so `restoreRevision` validates it against the current schema without
+migrating it. A revision from before a shape change fails with `ContentValidationError`.
 
 `migrate` must be pure and cheap: it runs on every read of a stale row until a draft write persists the result.
 

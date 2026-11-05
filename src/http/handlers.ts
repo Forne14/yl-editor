@@ -18,6 +18,7 @@ import {
   ArrayRequestSchema,
   CreateRequestSchema,
   DEFAULT_BASE,
+  DiscardRequestSchema,
   DocumentQuerySchema,
   DocumentsQuerySchema,
   ERROR_STATUS,
@@ -34,6 +35,7 @@ import {
   type DocumentSummary,
   type ErrorCode,
   type ErrorEnvelope,
+  type PublishDueFailure,
 } from "./wire.ts";
 
 export type ChangeAction =
@@ -117,6 +119,9 @@ interface Route {
   run: (context: RequestContext) => Promise<RouteResult>;
 }
 
+/** The view an editor works on: the draft when there is one, retired documents included. */
+const DRAFT_VIEW = { draft: true, includeRetired: true };
+
 /** Most keys one `documents` request may name, after deduping. */
 const MAX_DOCUMENT_KEYS = 100;
 
@@ -147,6 +152,20 @@ function isCrossSite(request: Request, url: URL): boolean {
   return false;
 }
 
+/** The code and message a thrown error has on the wire. Unexpected errors are logged and never leak their message. */
+function describeError(error: unknown): { code: ErrorCode; message: string; extra?: ErrorExtra } {
+  if (error instanceof HttpError) return { code: error.code, message: error.message, extra: error.extra };
+  if (error instanceof DocumentNotFoundError) return { code: "not_found", message: error.message };
+  if (error instanceof ConflictError) return { code: "conflict", message: error.message };
+  if (error instanceof ContentValidationError)
+    return { code: "validation", message: error.message, extra: { issues: error.issues } };
+  if (error instanceof PathError) return { code: "path", message: error.message };
+  if (error instanceof DocumentStateError) return { code: "state", message: error.message };
+  if (error instanceof SlugError) return { code: "slug", message: error.message };
+  console.error("[@yl/editor/http] unexpected error", error);
+  return { code: "internal", message: "Internal error" };
+}
+
 export function createContentHandlers(options: ContentHandlerOptions): ContentHandlers {
   const { store, registry, access } = options;
   const base = trimTrailingSlash(options.base ?? DEFAULT_BASE);
@@ -156,9 +175,12 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
     if (!verdict.allowed) throw new HttpError("forbidden", verdict.reason);
   };
 
-  /** The stored row (draft view, retired included) that gates a write; 404 when absent. */
+  /**
+   * The stored row that gates a request; 404 when absent. Read unvalidated, so access checks and the document's
+   * identity never depend on its payload: a document that fails its schema must stay repairable.
+   */
   const existing = async (key: string): Promise<StoredDocument> => {
-    const document = await store.get(key, { draft: true, includeRetired: true });
+    const document = await store.get(key, { ...DRAFT_VIEW, unvalidated: true });
     if (!document) throw new HttpError("not_found", `No document ${key}`);
     return document;
   };
@@ -188,29 +210,12 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
     return result.data;
   };
 
-  /**
-   * The row `GET document` and `GET documents` show; null when absent. With no draft the draft view is the published
-   * payload, which the store validates strictly for editor reads, so a stale one would fail the read; that case takes
-   * the lenient published view, which is the same document. A draft that fails its schema still throws: it is the
-   * draft being reported on.
-   */
-  const readable = async (key: string): Promise<StoredDocument | null> => {
-    try {
-      return await store.get(key, { draft: true, includeRetired: true });
-    } catch (error) {
-      if (!(error instanceof ContentValidationError)) throw error;
-      const published = await store.get(key, { draft: false, includeRetired: true });
-      if (!published || published.draftUpdatedAt !== null) throw error;
-      return published;
-    }
-  };
-
   /** A lifecycle write gated by `check` on the stored row. */
   const keyedWrite =
     (
       action: ChangeAction,
       check: "canEdit" | "canPublish",
-      write: (key: string, context: WriteContext) => Promise<StoredDocument | null>,
+      write: (key: string, context: WriteContext) => Promise<StoredDocument>,
     ): Route["run"] =>
     async (context) => {
       const { key } = await parseBody(context.request, KeyRequestSchema);
@@ -230,7 +235,8 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         const documents: Record<string, DocumentSummary> = {};
         const summaries = await Promise.all(
           unique.map(async (key): Promise<[string, DocumentSummary] | null> => {
-            const document = await readable(key);
+            // Unvalidated: one document with a bad payload must not hide the page the editor would repair it from.
+            const document = await store.get(key, { ...DRAFT_VIEW, unvalidated: true });
             if (!document) return null;
             const ref = { type: document.type, key: document.key };
             const [edit, publish] = await Promise.all([
@@ -259,9 +265,13 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       method: "GET",
       run: async (context) => {
         const { key } = parseQuery(context.url, DocumentQuerySchema);
-        const document = await readable(key);
+        const stored = await gate(context, key, "canEdit");
+        // A draft failing its schema is reported, not served. A stale published payload is the document as stored.
+        const document = await store.get(key, DRAFT_VIEW).catch((error: unknown) => {
+          if (stored.isDraft || !(error instanceof ContentValidationError)) throw error;
+          return stored;
+        });
         if (!document) throw new HttpError("not_found", `No document ${key}`);
-        deny(await access.canEdit(context.locals, { type: document.type, key: document.key }));
         // `includeRetired`: retiring hides a document from visitors but keeps its published payload.
         const published = await store.get(key, { draft: false, includeRetired: true });
         return { body: { document, publishedPayload: published?.payload ?? null } };
@@ -337,14 +347,29 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         if (!options.publishDue) throw new HttpError("forbidden", "publish-due is not enabled");
         const body = await parseBody(context.request, PublishDueRequestSchema);
         deny(await options.publishDue.authorize(context.locals));
-        const documents = await store.publishDue(body.now, context.writeContext());
+        const failed: PublishDueFailure[] = [];
+        const documents = await store.publishDue(body.now, {
+          ...context.writeContext(),
+          onFailure: (key, error) => {
+            const { code, message } = describeError(error);
+            failed.push({ key, code, message });
+          },
+        });
         return {
-          body: { documents },
+          body: { documents, failed },
           changes: documents.map((document) => ({ action: "publish" as const, key: document.key, document })),
         };
       },
     },
-    discard: { method: "POST", run: keyedWrite("discard", "canEdit", (key, write) => store.discardDraft(key, write)) },
+    discard: {
+      method: "POST",
+      run: async (context) => {
+        const body = await parseBody(context.request, DiscardRequestSchema);
+        await gate(context, body.key, "canEdit");
+        const document = await store.discardDraft(body.key, context.writeContext(body.expectedVersion));
+        return { body: { document }, change: { action: "discard", key: body.key, document } };
+      },
+    },
     retire: { method: "POST", run: keyedWrite("retire", "canPublish", (key, write) => store.retire(key, write)) },
     restore: { method: "POST", run: keyedWrite("restore", "canPublish", (key, write) => store.restore(key, write)) },
     rename: {
@@ -377,19 +402,16 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
 
   /** Maps a thrown error onto the wire. Unexpected errors are logged and never leak their message. */
   const toResponse = async (error: unknown): Promise<Response> => {
-    if (error instanceof HttpError) return errorResponse(error.code, error.message, error.extra);
-    if (error instanceof DocumentNotFoundError) return errorResponse("not_found", error.message);
+    const { code, message, extra } = describeError(error);
     if (error instanceof ConflictError) {
-      const current = await store.get(error.key, { draft: true, includeRetired: true }).catch(() => null);
-      return errorResponse("conflict", error.message, current ? { current } : {});
+      // The document may fail its schema: a conflict during a repair still shows what is stored.
+      const current = await store
+        .get(error.key, DRAFT_VIEW)
+        .catch(() => store.get(error.key, { ...DRAFT_VIEW, unvalidated: true }))
+        .catch(() => null);
+      return errorResponse(code, message, current ? { current } : {});
     }
-    if (error instanceof ContentValidationError)
-      return errorResponse("validation", error.message, { issues: error.issues });
-    if (error instanceof PathError) return errorResponse("path", error.message);
-    if (error instanceof DocumentStateError) return errorResponse("state", error.message);
-    if (error instanceof SlugError) return errorResponse("slug", error.message);
-    console.error("[@yl/editor/http] unexpected error", error);
-    return errorResponse("internal", "Internal error");
+    return errorResponse(code, message, extra);
   };
 
   /** Fire-and-forget: never rejects, so callers may leave it unawaited. */

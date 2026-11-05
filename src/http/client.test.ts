@@ -1,13 +1,16 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import type Database from "better-sqlite3";
+import { beforeEach, describe, expect, expectTypeOf, test } from "vitest";
 import { contractRegistry } from "../contract.ts";
 import { createSqliteContentStore } from "../sqlite-store.ts";
 import { makeTestDb } from "../test-support.ts";
 import type { Access, AccessVerdict, ContentStore } from "../types.ts";
 import { ContentRequestError, createContentClient, type ContentClient } from "./client.ts";
 import { createContentHandlers } from "./handlers.ts";
+import type { DocumentForPublishResponse, DocumentResponse, WireDocument } from "./wire-types.ts";
 
 const note = { title: "A", tags: [] as string[] };
 
+let db: Database.Database;
 let store: ContentStore;
 let client: ContentClient;
 let publishVerdict: AccessVerdict;
@@ -17,7 +20,8 @@ let seenHeaders: Headers[];
 let seenRequests: { method: string; url: string; body: unknown }[];
 
 beforeEach(() => {
-  store = createSqliteContentStore(makeTestDb(), contractRegistry);
+  db = makeTestDb();
+  store = createSqliteContentStore(db, contractRegistry);
   publishVerdict = { allowed: true };
   editVerdict = { allowed: true };
   dueVerdict = { allowed: true };
@@ -203,11 +207,93 @@ describe("content client lifecycle verbs", () => {
       message: "Cron only",
     });
     dueVerdict = { allowed: true };
-    expect(await client.publishDue("2029-01-01T00:00:00Z")).toEqual([]);
-    const published = await client.publishDue("2031-01-01T00:00:00Z");
-    expect(published.map((document) => [document.key, document.isDraft])).toEqual([["notes/first", false]]);
+    expect(await client.publishDue("2029-01-01T00:00:00Z")).toEqual({ documents: [], failed: [] });
+    const { documents, failed } = await client.publishDue("2031-01-01T00:00:00Z");
+    expect(documents.map((document) => [document.key, document.isDraft])).toEqual([["notes/first", false]]);
+    expect(failed).toEqual([]);
     expect(seenRequests.at(-1)?.body).toEqual({ now: "2031-01-01T00:00:00Z" });
-    expect(await client.publishDue()).toEqual([]);
+    expect(await client.publishDue()).toEqual({ documents: [], failed: [] });
     expect(seenRequests.at(-1)).toMatchObject({ method: "POST", body: {} });
+  });
+
+  test("publishDue returns the documents that failed beside the ones that published", async () => {
+    await client.create("note", "bad", note);
+    await client.create("note", "good", note);
+    await client.publish("notes/bad", { at: "2030-01-01T00:00:00Z" });
+    await client.publish("notes/good", { at: "2030-01-02T00:00:00Z" });
+    db.prepare("UPDATE documents SET draft_payload = ? WHERE key = 'notes/bad'").run(JSON.stringify({ title: "" }));
+    const { documents, failed } = await client.publishDue("2031-01-01T00:00:00Z");
+    expect(documents.map((document) => document.key)).toEqual(["notes/good"]);
+    expect(failed).toEqual([{ key: "notes/bad", code: "validation", message: expect.any(String) }]);
+  });
+});
+
+describe("content client expectedVersion", () => {
+  const conflict = { status: 409, code: "conflict" };
+  let stale: number;
+  let current: number;
+
+  beforeEach(async () => {
+    const created = await client.create("note", "first", note);
+    stale = created.version;
+    await client.publish("notes/first");
+    current = (await client.field("notes/first", "title", "Draft")).version;
+  });
+
+  test("publish sends it, alone or with at, and a stale one is a conflict", async () => {
+    const failure = await client.publish("notes/first", { expectedVersion: stale }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ContentRequestError);
+    expect(failure).toMatchObject({ ...conflict, current: { version: current } });
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first", expectedVersion: stale });
+    await expect(
+      client.publish("notes/first", { at: "2030-01-01T00:00:00Z", expectedVersion: stale }),
+    ).rejects.toMatchObject(conflict);
+    expect(seenRequests.at(-1)?.body).toEqual({
+      key: "notes/first",
+      at: "2030-01-01T00:00:00Z",
+      expectedVersion: stale,
+    });
+    expect((await client.publish("notes/first", { expectedVersion: current })).isDraft).toBe(false);
+  });
+
+  test("unpublish sends it, and a stale one is a conflict", async () => {
+    await expect(client.unpublish("notes/first", { expectedVersion: stale })).rejects.toMatchObject(conflict);
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first", expectedVersion: stale });
+    expect((await client.unpublish("notes/first", { expectedVersion: current })).publishedAt).toBeNull();
+  });
+
+  test("restoreRevision sends it, and a stale one is a conflict", async () => {
+    const [revision] = await client.revisions("notes/first");
+    const revisionId = revision?.id ?? -1;
+    await expect(client.restoreRevision("notes/first", revisionId, { expectedVersion: stale })).rejects.toMatchObject(
+      conflict,
+    );
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first", revisionId, expectedVersion: stale });
+    const restored = await client.restoreRevision("notes/first", revisionId, { expectedVersion: current });
+    expect(restored.payload).toEqual(note);
+  });
+
+  test("discard sends it, and a stale one is a conflict", async () => {
+    await expect(client.discard("notes/first", { expectedVersion: stale })).rejects.toMatchObject(conflict);
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first", expectedVersion: stale });
+    expect(await client.discard("notes/first", { expectedVersion: current })).toMatchObject({ isDraft: false });
+  });
+
+  test("without options the body carries only what it did before", async () => {
+    await client.unpublish("notes/first");
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first" });
+    await client.discard("notes/first");
+    expect(seenRequests.at(-1)?.body).toEqual({ key: "notes/first" });
+  });
+});
+
+describe("response types", () => {
+  test("DocumentResponse is the POST shape; documentForPublish returns its own type", () => {
+    expectTypeOf<DocumentResponse>().toEqualTypeOf<{ document: WireDocument }>();
+    expectTypeOf<DocumentForPublishResponse>().toEqualTypeOf<{
+      document: WireDocument;
+      publishedPayload: unknown | null;
+    }>();
+    expectTypeOf<ContentClient["documentForPublish"]>().returns.resolves.toEqualTypeOf<DocumentForPublishResponse>();
   });
 });

@@ -17,7 +17,7 @@ export type ArrayRequest = z.infer<typeof ArrayRequestSchema>;
 /** An ISO 8601 datetime with a `Z` or a numeric offset, as `publish.at` and `publish-due.now` take it. */
 const isoDateTime = z.iso.datetime({ offset: true });
 
-/** Body of `discard`, `retire` and `restore`. */
+/** Body of `retire` and `restore`. */
 export const KeyRequestSchema = z.object({ key });
 export type KeyRequest = z.infer<typeof KeyRequestSchema>;
 
@@ -28,6 +28,10 @@ export type PublishRequest = z.infer<typeof PublishRequestSchema>;
 /** Body of `unpublish`. */
 export const UnpublishRequestSchema = z.object({ key, expectedVersion });
 export type UnpublishRequest = z.infer<typeof UnpublishRequestSchema>;
+
+/** Body of `discard`. */
+export const DiscardRequestSchema = z.object({ key, expectedVersion });
+export type DiscardRequest = z.infer<typeof DiscardRequestSchema>;
 
 /** Body of `restore-revision`: copies that revision's payload into the draft. */
 export const RestoreRevisionRequestSchema = z.object({
