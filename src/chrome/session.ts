@@ -47,6 +47,17 @@ interface MutableDocument extends DocumentState {
 
 const STORAGE_PREFIX = "yl-editor:touched:";
 
+/** How many times one look at a document re-reads because a write landed during the read. */
+const MAX_PUBLISH_READS = 3;
+
+/** The publish sheet has nothing it can honestly compare: writes kept landing, or the published payload is unreadable. */
+export class ChangesUnavailableError extends Error {
+  constructor(readonly reason: "moving" | "unreadable") {
+    super(`Changes unavailable: ${reason}`);
+    this.name = "ChangesUnavailableError";
+  }
+}
+
 export class Session {
   readonly documents = new Map<string, MutableDocument>();
   private readonly slots = new Map<string, SaveSlot>();
@@ -54,6 +65,10 @@ export class Session {
   /** One `GET document` per key per session, plus `documentForPublish`; replaced by every write's returned document. */
   private readonly fetched = new Map<string, Promise<WireDocument>>();
   private readonly reviews = new Map<string, Review>();
+  /** Bumped per key whenever the session takes a document as the latest, so a read can tell one landed meanwhile. */
+  private readonly writes = new Map<string, number>();
+  /** The newest `documentForPublish` per key: an older one still in flight touches nothing. */
+  private readonly reads = new Map<string, number>();
   private readonly storageKey: string;
 
   constructor(
@@ -64,7 +79,12 @@ export class Session {
     this.storageKey = STORAGE_PREFIX + base;
   }
 
+  /**
+   * Reads the summaries after every write already queued for these documents. A write can still land during the read,
+   * so a summary older than what the session holds changes only `access`.
+   */
   async load(keys: readonly string[]): Promise<void> {
+    await Promise.all(keys.map((key) => this.pending(key)));
     const summaries = await this.client.documents([...keys]);
     const remembered = this.readTouched();
     for (const key of keys) {
@@ -74,6 +94,10 @@ export class Session {
         continue;
       }
       let existing = this.documents.get(key);
+      if (existing && summary.version < existing.version) {
+        existing.access = { edit: summary.access.edit === true, publish: summary.access.publish === true };
+        continue;
+      }
       if (existing && existing.version !== summary.version) {
         // Someone wrote since we last looked: what we cached is stale.
         this.fetched.delete(key);
@@ -129,35 +153,41 @@ export class Session {
   }
 
   /**
-   * A fresh read for the publish sheet, past the cache and after the document's queued writes. It refreshes the cached
-   * document, unless a write landed while it was in flight. A failure leaves the cache as it was. The version it returns
-   * becomes the version of the document's open review, if it has one.
+   * A fresh read for the publish sheet, past the cache and after the document's queued writes. The document and
+   * `publishedPayload` it returns always come from one response: if a write lands during the read, it reads again, up
+   * to `MAX_PUBLISH_READS` times, then rejects. The version it returns becomes the version of the document's open review,
+   * if it has one, and refreshes the cached document. A rejection, or a newer read of the same document, does neither.
    */
   async documentForPublish(key: string): Promise<DocumentForPublishResponse> {
+    const read = (this.reads.get(key) ?? 0) + 1;
+    this.reads.set(key, read);
     const review = this.reviews.get(key);
     if (review) review.version = undefined;
-    await this.pending(key);
-    const seen = this.fetched.get(key);
-    const response = await this.client.documentForPublish(key);
-    const { document, publishedPayload } = response;
-    const current = this.fetched.get(key);
-    if (current !== seen) {
-      // A write landed while this was in flight; its document is newer than ours.
-      const newer = (await current?.catch(() => undefined)) ?? document;
-      if (review) review.version = newer.version;
-      return { document: newer, publishedPayload };
+    for (let attempt = 0; attempt < MAX_PUBLISH_READS; attempt += 1) {
+      await this.pending(key);
+      const writes = this.writes.get(key) ?? 0;
+      const response = await this.client.documentForPublish(key);
+      if (this.reads.get(key) !== read) return response;
+      if ((this.writes.get(key) ?? 0) !== writes) continue;
+      const { document, publishedPayload } = response;
+      // A string is the stored text of an unparseable published column (schemas are objects). Live with no published
+      // payload is the same thing from a server that sends null. Neither compares, and neither is a first publish.
+      if (typeof publishedPayload === "string" || (publishedPayload === null && document.publishedAt !== null)) {
+        throw new ChangesUnavailableError("unreadable");
+      }
+      if (review) review.version = document.version;
+      this.fetched.set(key, Promise.resolve(document));
+      const state = this.documents.get(key);
+      if (state) {
+        // Keep our version, as `document` does: another editor's change must still conflict with our next write.
+        state.isDraft = document.isDraft;
+        state.payload = document.payload;
+        state.publishedAt = document.publishedAt;
+        state.scheduledAt = document.scheduledAt;
+      }
+      return response;
     }
-    if (review) review.version = document.version;
-    this.fetched.set(key, Promise.resolve(document));
-    const state = this.documents.get(key);
-    if (state) {
-      // Keep our version, as `document` does: another editor's change must still conflict with our next write.
-      state.isDraft = document.isDraft;
-      state.payload = document.payload;
-      state.publishedAt = document.publishedAt;
-      state.scheduledAt = document.scheduledAt;
-    }
-    return response;
+    throw new ChangesUnavailableError("moving");
   }
 
   /**
@@ -202,9 +232,12 @@ export class Session {
     if (this.reviews.get(key) === review) this.reviews.delete(key);
   }
 
-  /** What a publish sends: the open review's version, else the version this session knows. */
-  publishVersion(key: string): number | undefined {
-    return this.reviews.get(key)?.version ?? this.documents.get(key)?.version;
+  /**
+   * What a publish sends: the review's version, else the version this session knows. A publish from a sheet passes its
+   * own review, because that sheet may have closed and another opened by the time the publish reaches the chain.
+   */
+  publishVersion(key: string, review = this.reviews.get(key)): number | undefined {
+    return review?.version ?? this.documents.get(key)?.version;
   }
 
   /**
@@ -280,6 +313,7 @@ export class Session {
       state.publishedAt = null;
       state.scheduledAt = null;
       this.fetched.delete(key);
+      this.noteWrite(key);
     }
     state.touched = false;
     state.touchedPaths.clear();
@@ -288,6 +322,7 @@ export class Session {
 
   /** Takes a document the server returned as the latest: version, payload, lifecycle dates and the fetch cache. */
   adopt(document: WireDocument): void {
+    this.noteWrite(document.key);
     this.fetched.set(document.key, Promise.resolve(document));
     const state = this.documents.get(document.key);
     if (!state) return;
@@ -312,6 +347,10 @@ export class Session {
   /** Resolves once every write queued so far for the document has finished. */
   pending(key: string): Promise<void> {
     return this.chains.get(key) ?? Promise.resolve();
+  }
+
+  private noteWrite(key: string): void {
+    this.writes.set(key, (this.writes.get(key) ?? 0) + 1);
   }
 
   private enqueue(key: string, task: () => Promise<void>): Promise<void> {

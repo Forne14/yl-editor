@@ -3,7 +3,7 @@ import { diffPayloads, type DiffEntry } from "../diff.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
 import { Disposer, button, element, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
-import { Session, type Review, type SaveSlot } from "./session.ts";
+import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
   DocumentState,
@@ -36,6 +36,9 @@ function isConflict(error: unknown): error is ContentRequestError {
 
 function errorMessage(error: unknown, strings: Strings): string {
   if (error instanceof ContentRequestError) return error.message;
+  if (error instanceof ChangesUnavailableError) {
+    return error.reason === "moving" ? strings.changesKeptMoving : strings.changesUnreadable;
+  }
   // Anything else came from fetch itself: the server could not be reached.
   return strings.networkError;
 }
@@ -79,6 +82,14 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
+/** A `Date` as a `datetime-local` value, to the minute. */
+function localInputValue(when: Date): string {
+  return (
+    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
+    `T${pad(when.getHours())}:${pad(when.getMinutes())}`
+  );
+}
+
 /** A `datetime-local` value (wall-clock time, no zone) as an ISO string with the browser's offset. */
 function localToIso(value: string): string | undefined {
   const when = new Date(value);
@@ -86,18 +97,7 @@ function localToIso(value: string): string | undefined {
   const offset = -when.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
   const zone = `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
-  return (
-    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
-    `T${pad(when.getHours())}:${pad(when.getMinutes())}:${pad(when.getSeconds())}${zone}`
-  );
-}
-
-/** A `Date` as a `datetime-local` value, to the minute. */
-function localInputValue(when: Date): string {
-  return (
-    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
-    `T${pad(when.getHours())}:${pad(when.getMinutes())}`
-  );
+  return `${localInputValue(when)}:${pad(when.getSeconds())}${zone}`;
 }
 
 /** A document's share of the change count. An unpublish changes a document without changing a field; it still counts. */
@@ -410,19 +410,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     ]);
   }
 
-  /** Never rejects: a failure is shown in `target`. */
-  async function fillChanges(key: string, target: HTMLElement, isOpen: () => boolean): Promise<void> {
+  /** Never rejects: a failure is shown in `target`. Once `isCurrent` is false, the result is dropped. */
+  async function fillChanges(key: string, target: HTMLElement, isCurrent: () => boolean): Promise<void> {
     const note = (text: string, className = "cms-muted") =>
       target.replaceChildren(element("p", { class: className }, [text]));
     note(strings.loadingChanges);
     try {
       const changes = await changesOf(key);
-      if (!isOpen()) return;
+      if (!isCurrent()) return;
       if (changes === null) note(strings.firstPublish);
       else if (changes.length === 0) note(strings.noDifferences);
       else target.replaceChildren(element("ul", { class: "cms-list" }, changes.map(changeLine)));
     } catch (error) {
-      if (isOpen()) note(format(strings.changesFailed, { message: errorMessage(error, strings) }), "cms-error");
+      if (isCurrent()) note(format(strings.changesFailed, { message: errorMessage(error, strings) }), "cms-error");
     }
   }
 
@@ -430,7 +430,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     item: HTMLElement;
     changes: HTMLElement;
     notice: HTMLElement | undefined;
+    /** The Discard sheet's warning that this document would be deleted. */
+    deletes: HTMLElement | undefined;
     review: Review | undefined;
+    /** The newest diff read for this row: an older one still in flight renders nothing. */
+    ticket: number;
   }
 
   /**
@@ -450,7 +454,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           body.append(element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]));
           return;
         }
-        const stillOpen = () => isOpen;
+        // A run is going: Confirm stays off whatever else tries to enable it. Only the sheet closing ends it early.
+        let running = false;
+        // The document a run has handed to `publish` or `discard`: it keeps its review if the sheet closes.
+        let inFlight: string | undefined;
         const rows = new Map<string, SheetRow>();
         const showNotice = (row: SheetRow, text: string) => {
           row.notice?.remove();
@@ -462,7 +469,29 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         const review = (key: string, row: SheetRow) => {
           if (row.review) session.endReview(key, row.review);
           row.review = session.startReview(key);
-          return fillChanges(key, row.changes, stillOpen);
+          const ticket = ++row.ticket;
+          return fillChanges(key, row.changes, () => isOpen && ticket === row.ticket);
+        };
+        /**
+         * Discarding a document with nothing published deletes it, revisions included. Reads the session each time, as a
+         * write may have changed that since the sheet opened. Returns the warnings that weren't showing before.
+         */
+        const syncDeleteWarnings = (): string[] => {
+          const added: string[] = [];
+          if (kind !== "discard") return added;
+          for (const [key, row] of rows) {
+            const deletes = session.documents.get(key)?.publishedAt === null;
+            if (deletes && !row.deletes) {
+              const warning = format(strings.discardDeletes, { key });
+              row.deletes = element("div", { class: "cms-diff" }, [element("p", { class: "cms-error" }, [warning])]);
+              row.item.append(row.deletes);
+              added.push(warning);
+            } else if (!deletes && row.deletes) {
+              row.deletes.remove();
+              row.deletes = undefined;
+            }
+          }
+          return added;
         };
         body.append(
           element(
@@ -475,13 +504,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
                 ` · ${changeCount(state)}`,
               ]);
               if (kind === "publish") item.append(changes);
-              const row: SheetRow = { item, changes, notice: undefined, review: undefined };
+              const row: SheetRow = {
+                item,
+                changes,
+                notice: undefined,
+                deletes: undefined,
+                review: undefined,
+                ticket: 0,
+              };
               rows.set(state.key, row);
               if (kind === "publish") void review(state.key, row);
               return item;
             }),
           ),
         );
+        syncDeleteWarnings();
         const others = touched.length - eligible.length;
         if (others > 0) {
           body.append(
@@ -505,6 +542,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           return when !== undefined && new Date(when).getTime() <= Date.now();
         };
         const syncConfirm = () => {
+          if (running) return;
           if (!publishAt) {
             confirm.disabled = false;
             return;
@@ -521,12 +559,23 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         const confirm: HTMLButtonElement = button(
           kind === "publish" ? strings.publish : strings.discard,
           async () => {
+            if (running) return;
             // `min` isn't enforced on typed values, and the clock may have passed this time since it was typed.
             if (inPast()) {
               syncConfirm();
               return;
             }
+            // A document can lose its published version while the sheet is open. Say so before acting on it.
+            const newWarnings = syncDeleteWarnings();
+            if (newWarnings.length > 0) {
+              toast.announce(newWarnings.join(" "));
+              return;
+            }
+            running = true;
             confirm.disabled = true;
+            if (publishAt) publishAt.disabled = true;
+            // Focus can't stay on a disabled button, and Cancel is what a run still offers.
+            cancel.focus();
             const when = at();
             const action =
               kind === "discard" ? strings.discard : when !== undefined ? strings.schedule : strings.publish;
@@ -535,69 +584,81 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
               row.notice?.remove();
               row.notice = undefined;
               // Nothing reviewed yet: this goes out on the session's version, even if the diff arrives meanwhile.
-              if (row.review && row.review.version === undefined) session.endReview(key, row.review);
+              if (row.review && row.review.version === undefined) {
+                session.endReview(key, row.review);
+                row.review = undefined;
+              }
             }
             const failed: { key: string; error: unknown }[] = [];
             for (const key of keys) {
+              // Closing the sheet stops what hasn't started; its reviews have ended, and nobody is looking.
+              if (!isOpen) break;
+              const row = rows.get(key);
+              if (!row) continue;
+              inFlight = key;
               try {
-                if (kind === "publish") await publish(key, when);
+                if (kind === "publish") await publish(key, when, row.review);
                 else await discard(key);
-                const row = rows.get(key) as SheetRow;
                 row.item.remove();
-                if (row.review) session.endReview(key, row.review);
                 rows.delete(key);
+                if (row.review) session.endReview(key, row.review);
               } catch (error) {
                 // Reported below and by `lifecycle`; carry on with the rest.
                 failed.push({ key, error });
+                if (!isOpen && row.review) session.endReview(key, row.review);
               }
+              inFlight = undefined;
             }
             const total = keys.length;
-            if (failed.length === 0) {
+            const notDone = keys.filter((key) => rows.has(key));
+            if (notDone.length === 0) {
               if (total > 1) toast.show(format(strings.bulkDone, { action, total }), "saved");
               if (isOpen) sheet.close();
               return;
             }
-            if (total > 1) {
-              toast.show(
-                format(strings.bulkPartial, {
-                  action,
-                  total,
-                  done: total - failed.length,
-                  keys: failed.map(({ key }) => key).join(", "),
-                }),
-                "error",
-              );
+            const stopped = notDone.length > failed.length;
+            const message = format(stopped ? strings.bulkStopped : strings.bulkPartial, {
+              action,
+              total,
+              done: total - notDone.length,
+              keys: notDone.join(", "),
+            });
+            if (stopped && failed.length === 0) {
+              // Nothing went wrong, but it names what didn't go out, so it mustn't hide itself.
+              toast.show(message, "info", [{ label: strings.close, onClick: () => toast.hide(), variant: "ghost" }]);
+            } else if (total > 1) {
+              toast.show(message, "error");
             }
             if (!isOpen) return;
+            syncDeleteWarnings();
             await Promise.all(
               failed.map(({ key, error }) => {
-                const row = rows.get(key) as SheetRow;
+                const row = rows.get(key);
+                if (!row) return undefined;
                 const conflict = kind === "publish" ? strings.publishConflict : strings.actionConflict;
                 showNotice(row, failureText(action, key, error, conflict));
                 return kind === "publish" && isConflict(error) ? review(key, row) : undefined;
               }),
             );
             if (!isOpen) return;
+            running = false;
+            if (publishAt) publishAt.disabled = false;
             syncConfirm();
             confirm.focus();
           },
           kind === "publish" ? "primary" : "danger",
         );
+        const cancel = button(strings.cancel, () => sheet.close(), "ghost");
         if (publishAt) {
           publishAt.min = localInputValue(new Date());
           publishAt.addEventListener("input", syncConfirm);
           publishAt.addEventListener("change", syncConfirm);
           body.append(element("label", { class: "cms-field-label" }, [strings.publishAt, publishAt]), pastNote);
         }
-        body.append(
-          element("div", { class: "cms-sheet__actions" }, [
-            button(strings.cancel, () => sheet.close(), "ghost"),
-            confirm,
-          ]),
-        );
+        body.append(element("div", { class: "cms-sheet__actions" }, [cancel, confirm]));
         return () => {
           isOpen = false;
-          for (const [key, row] of rows) if (row.review) session.endReview(key, row.review);
+          for (const [key, row] of rows) if (row.review && key !== inFlight) session.endReview(key, row.review);
         };
       },
       opener,
@@ -821,12 +882,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     };
   }
 
-  async function publish(key: string, at: string | undefined): Promise<void> {
+  async function publish(key: string, at: string | undefined, review?: Review): Promise<void> {
     const document = await lifecycle(
       strings.publish,
       key,
       async () => {
-        const expectedVersion = session.publishVersion(key);
+        const expectedVersion = session.publishVersion(key, review);
         const known = session.documents.get(key)?.version;
         const written = await client.publish(key, { ...(at !== undefined ? { at } : {}), expectedVersion });
         // Scheduled, not published: the draft is still this session's change until it goes live.

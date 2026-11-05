@@ -73,7 +73,9 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 ## Behaviour
 
 - On mount the chrome scans `root` for `[data-edit-field]`, groups the fields by document key, and makes one
-  `GET documents` request for all the keys. It keeps each document's `version` and `access`.
+  `GET documents` request for all the keys. It keeps each document's `version` and `access`. A later load (`api.refresh`)
+  waits for the writes queued for those documents first, and a summary older than what the session already holds, because
+  a write landed during the read, changes only `access`. The version never moves backwards.
 - Every field gets the highlight. A field whose document lacks `access.edit` is still outlined, in the muted
   colour, and its badge and accessible description give the reason. Clicking it shows the reason as a toast.
 - The first time a non-text field opens, the chrome fetches its document with `GET document` and reads the value at
@@ -115,16 +117,27 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   gates discard by edit access). The endpoint is called once per document, after that document's pending field
   writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document with nothing
   live deletes it, whether it was never published or was unpublished, so its fields stop being editable until the page
-  is reloaded.
+  is reloaded. Its revisions go with it and can't be recovered through the chrome or the HTTP API. The Discard sheet says
+  so on each such document, and they stay listed because discarding is still valid. If a document loses its published
+  version while the sheet is open, the warning appears and that Confirm does nothing, so it can be read first.
+  `api.discard` asks nothing and warns about nothing: a panel that calls it does its own asking.
 - One document failing doesn't stop or misreport the others. Those that worked leave the sheet; those that failed stay in
   it with the reason, a toast counts both, and Confirm tries the failed ones again.
+- While a run is going, Confirm and "Publish at" are disabled and focus moves to Cancel. Cancel, Close, Esc or anything
+  else that closes the sheet stops the documents not yet started. The one in flight finishes, on its reviewed version if
+  it had one, even if it is still waiting behind that document's queued saves. A toast then says how many finished and
+  names the rest, and stays until dismissed. Those documents stay touched, so they can be published or discarded later.
 - The Publish sheet shows what will change for each document: path and short before and after, from `diffPayloads`.
   A document with nothing live says so. Each opening makes one fresh `GET document` per listed document,
   after that document's pending writes finish, and compares the `publishedPayload` it returns with its draft, so
-  another editor's change shows. The response replaces the session's cached copy of the document but not its `version`:
-  a later write from this session still conflicts with a change the page has not repainted. If the fetch fails, the
+  another editor's change shows. The two always come from one response: if a write this session takes lands during the
+  read, the read is repeated, up to three times in all. Only the newest read of a row can render or become its reviewed
+  version. The response replaces the session's cached copy of the document but not its `version`: a later write from this
+  session still conflicts with a change the page has not repainted. If the fetch fails, the
   sheet says the changes could not be loaded for that document, and Publish stays available. A draft failing its schema
-  is one such failure (`GET document` answers `422`); publishing it answers with the validation error.
+  is one such failure (`GET document` answers `422`); publishing it answers with the validation error. Reads that keep
+  being overtaken are another, and so is an unreadable published version: a `publishedPayload` that is a string (the
+  stored text of an unparseable column), or `null` with `publishedAt` set. That shows no diff and is never a first publish.
 - **Publish never overwrites a change the editor hasn't seen.** It sends as `expectedVersion` the version whose diff the
   sheet showed, per document. The editor's own writes after that move it forward, by this rule: a write sent with the
   reviewed version and accepted proves nothing else landed in between, so the reviewed version becomes that write's
@@ -174,7 +187,11 @@ Every label is a key of `defaultStrings` in `src/chrome/strings.ts`, overridable
 actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `restored`, `unpublish`, `unpublishConfirm`,
 `unpublished`, `schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`,
 `firstPublish`, `noDifferences`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`,
-`loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `scheduleInPast`.
+`loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `bulkStopped`,
+`scheduleInPast`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`.
+
+`discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
+A custom store that keeps them should override it.
 
 ## Wire contract
 
