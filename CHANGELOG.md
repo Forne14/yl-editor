@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
 ### Added
 
 - HTTP: `GET document?key=` returns `{ document, publishedPayload }`, gated by `canEdit`: one document (draft view, retired included) and the payload published now, or `null` when it has none. A published payload that fails the current schema does not fail the route. Client `document(key)` and `documentForPublish(key)`.
@@ -121,7 +123,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - First release: `ContentStore` seam, `SchemaRegistry`, path operations, `editable()` addressing, `Access` seam and the
   SQLite store.
 
-[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Forne14/yl-editor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Forne14/yl-editor/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Forne14/yl-editor/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Forne14/yl-editor/compare/v0.1.0...v0.2.0
