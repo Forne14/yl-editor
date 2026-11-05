@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-05
+
 ### Fixed
 
 - `publishDue` is no longer all-or-nothing. Each due document is promoted in its own transaction after re-checking it is still due; one that fails stays scheduled and is retried on the next run, and the others publish. Failures go to a new optional `onFailure(key, error)` on its context, or to `console.warn`. A database failure stops the run, reported the same way, keeping what already published.
@@ -164,7 +166,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - First release: `ContentStore` seam, `SchemaRegistry`, path operations, `editable()` addressing, `Access` seam and the
   SQLite store.
 
-[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/Forne14/yl-editor/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Forne14/yl-editor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Forne14/yl-editor/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Forne14/yl-editor/compare/v0.2.0...v0.2.1
