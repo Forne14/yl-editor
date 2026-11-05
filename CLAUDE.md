@@ -35,5 +35,5 @@ Any change to the visual interface or design needs a hi-fidelity prototype in an
 ## Git and release
 
 - Work is tracked in GitHub issues. Branch from `main` and PR back to `main`. Use `Closes #n` only when the issue is really finished. Commits are `type(scope): summary`.
-- CI `verify` is the only automated gate. CodeRabbit is not installed here.
+- CI `verify` is the automated gate. There is no CodeRabbit here: run the `code-review` skill on any PR that changes code before merging.
 - Release: bump the version and date the changelog in a `chore: release X.Y.Z` commit on `main`, then `npm run release -- vX.Y.Z`, then `git push origin vX.Y.Z`. Branches never track `dist/`; it exists only on the tag.
