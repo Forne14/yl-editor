@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
 import { Session } from "./session.ts";
-import type { EditorHandle, WidgetContext, WireDocument } from "./types.ts";
+import type { EditorHandle, EditorOptions, WidgetContext, WireDocument } from "./types.ts";
 
 interface RecordedCall {
   method: string;
@@ -12,7 +12,8 @@ interface RecordedCall {
   init: RequestInit;
 }
 
-type Handler = (body: Record<string, unknown> | undefined) => { status?: number; json: unknown };
+type Answer = { status?: number; json: unknown };
+type Handler = (body: Record<string, unknown> | undefined, url: URL) => Answer | Promise<Answer>;
 
 let calls: RecordedCall[] = [];
 let handlers: Record<string, Handler[] | Handler> = {};
@@ -62,7 +63,7 @@ function installFetch(): void {
     const handler = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry;
     if (!handler)
       return new Response(JSON.stringify({ error: { code: "not_found", message: "none" } }), { status: 404 });
-    const result = handler(body);
+    const result = await handler(body, url);
     return new Response(JSON.stringify(result.json), { status: result.status ?? 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -133,14 +134,16 @@ beforeEach(() => {
   installFetch();
 });
 
-afterEach(() => {
+afterEach(async () => {
   handle?.destroy();
   handle = undefined;
+  // Destroying commits an open edit; let that write reach the stub rather than the real fetch.
+  await settle();
   vi.unstubAllGlobals();
 });
 
-async function mount(): Promise<EditorHandle> {
-  handle = mountEditor({ actorLabel: "Editing as Maya (Editor)" });
+async function mount(extra: EditorOptions = {}): Promise<EditorHandle> {
+  handle = mountEditor({ actorLabel: "Editing as Maya (Editor)", ...extra });
   await handle.ready;
   return handle;
 }
@@ -279,7 +282,7 @@ test("publish lists only the touched documents the user may publish, then publis
   buttonNamed("Publish", sheet ?? document).click();
   await settle();
   const publishes = calls.filter((call) => call.route === "POST /api/content/publish");
-  expect(publishes.map((call) => call.body)).toEqual([{ key: "pages/home" }]);
+  expect(publishes.map((call) => call.body)).toEqual([{ key: "pages/home", expectedVersion: 4 }]);
   expect(sheet?.hidden).toBe(true);
 });
 
@@ -395,7 +398,10 @@ test("bulk discard lists touched documents the user may edit, not only publish",
   buttonNamed("Discard", sheet ?? document).click();
   await settle();
   const discards = calls.filter((call) => call.route === "POST /api/content/discard");
-  expect(discards.map((call) => call.body)).toEqual([{ key: "pages/home" }, { key: "artists/finn" }]);
+  expect(discards.map((call) => call.body)).toEqual([
+    { key: "pages/home", expectedVersion: 4 },
+    { key: "artists/finn", expectedVersion: 4 },
+  ]);
 });
 
 test("publishing waits for an in-flight field write of the same document", async () => {
@@ -879,7 +885,7 @@ test("Restore calls restoreRevision, repaints the fields from the draft and relo
   buttonNamed("Confirm", sheet).click();
   await settle();
   const write = calls.find((call) => call.route === "POST /api/content/restore-revision");
-  expect(write?.body).toEqual({ key: "pages/home", revisionId: 7 });
+  expect(write?.body).toEqual({ key: "pages/home", revisionId: 7, expectedVersion: 3 });
   expect(field("pages/home:title").textContent).toBe("Old title");
   expect(changed).toHaveBeenCalledOnce();
   const state = api.documents().get("pages/home");
@@ -983,10 +989,11 @@ test("a failed restore shows a toast, leaves the fields alone and does not stall
   });
   const { api } = await mount();
   await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
-  expect(visibleToast().textContent).toContain("Restore failed for pages/home: Stale");
+  expect(visibleToast().textContent).toContain("Restore did nothing: pages/home has changed");
   expect(field("pages/home:title").textContent).toBe("Hello");
   await editText("pages/home:title", "Still saves");
   expect(calls.at(-1)?.route).toBe("POST /api/content/field");
+  expect(calls.at(-1)?.body?.expectedVersion).toBe(9);
 });
 
 function published(key: string, version: number, payload: unknown) {
@@ -1016,17 +1023,19 @@ test("the publish sheet lists the changes against the published payload, without
   buttonNamed("Publish", sheet ?? document).click();
   await settle();
   expect(calls.filter((call) => call.route === "POST /api/content/publish").map((call) => call.body)).toEqual([
-    { key: "pages/home" },
+    { key: "pages/home", expectedVersion: 4 },
   ]);
 });
 
-test("the publish sheet says first publish when nothing is live, without reading revisions", async () => {
+test("the publish sheet says when nothing is live when nothing is live, without reading revisions", async () => {
   handlers["GET /api/content/document"] = documentResponse(wireDocument("pages/home", 4, { title: "One" }), null);
   await mount();
   await editText("pages/home:title", "One");
   buttonNamed("Publish").click();
   await settle();
-  expect(document.querySelector(".cms-diff")?.textContent).toBe("First publish: nothing is live yet.");
+  expect(document.querySelector(".cms-diff")?.textContent).toBe(
+    "Nothing is live: publishing puts this version on the site.",
+  );
   expect(calls.some((call) => call.route.startsWith("GET /api/content/revisions"))).toBe(false);
 });
 
@@ -1059,9 +1068,10 @@ test("a failed fetch says so for that document only, and Publish stays usable", 
   expect(confirm.disabled).toBe(false);
   confirm.click();
   await settle();
+  // The failed fetch reviewed nothing, so that document goes out on the session's version.
   expect(calls.filter((call) => call.route === "POST /api/content/publish").map((call) => call.body)).toEqual([
-    { key: "pages/home" },
-    { key: "artists/finn" },
+    { key: "pages/home", expectedVersion: 4 },
+    { key: "artists/finn", expectedVersion: 4 },
   ]);
 });
 
@@ -1161,7 +1171,7 @@ test("Publish at sends at with an offset, shows the schedule, and Publish now pu
       },
     },
   });
-  const { api } = await mount();
+  const { api } = await mount({ scheduling: true });
   await editText("pages/home:title", "One");
   buttonNamed("Publish").click();
   await settle();
@@ -1183,13 +1193,13 @@ test("Publish at sends at with an offset, shows the schedule, and Publish now pu
   buttonNamed("Publish now", line).click();
   await settle();
   const publishes = calls.filter((call) => call.route === "POST /api/content/publish");
-  expect(publishes[1]?.body).toEqual({ key: "pages/home" });
+  expect(publishes[1]?.body).toEqual({ key: "pages/home", expectedVersion: 9 });
   expect(document.querySelector<HTMLElement>(".cms-bar__schedule")?.hidden).toBe(true);
   expect(api.documents().get("pages/home")?.touched).toBe(false);
 });
 
 test("without Publish at the sheet publishes now and the button still reads Publish", async () => {
-  await mount();
+  await mount({ scheduling: true });
   await editText("pages/home:title", "One");
   buttonNamed("Publish").click();
   await settle();
@@ -1201,7 +1211,10 @@ test("without Publish at the sheet publishes now and the button still reads Publ
   input.dispatchEvent(new Event("input"));
   buttonNamed("Publish", sheet).click();
   await settle();
-  expect(calls.find((call) => call.route === "POST /api/content/publish")?.body).toEqual({ key: "pages/home" });
+  expect(calls.find((call) => call.route === "POST /api/content/publish")?.body).toEqual({
+    key: "pages/home",
+    expectedVersion: 4,
+  });
 });
 
 function summariesWithLive(): void {
@@ -1233,7 +1246,7 @@ test("Unpublish asks first, calls the client and refreshes the state", async () 
   buttonNamed("Confirm", sheet).click();
   await settle();
   expect(calls.filter((call) => call.route === "POST /api/content/unpublish").map((call) => call.body)).toEqual([
-    { key: "pages/home" },
+    { key: "pages/home", expectedVersion: 3 },
   ]);
   const state = api.documents().get("pages/home");
   expect(state?.publishedAt).toBeNull();
@@ -1274,7 +1287,7 @@ test("discarding a never-published document detaches its fields and says so", as
   expect(api.documents().has("artists/finn")).toBe(false);
   const name = field("artists/finn:name");
   expect(name.classList.contains("cms-field")).toBe(false);
-  expect(visibleToast().textContent).toContain("Discarded artists/finn; it had never been published.");
+  expect(visibleToast().textContent).toContain("Discarded artists/finn. Nothing was live, so the document is gone.");
   expect(visibleToast().textContent).not.toContain("Reload");
   name.click();
   expect(name.hasAttribute("contenteditable")).toBe(false);
@@ -1296,4 +1309,1174 @@ test("malformed remembered touched entries are dropped instead of breaking load"
   const { api } = await mount();
   expect(api.documents().get("pages/home")?.touchedPaths.size).toBe(0);
   expect(api.documents().get("artists/finn")?.touchedPaths.size).toBe(0);
+});
+
+// A small fake of the server for the concurrency tests: it keeps one version per document and answers a stale
+// `expectedVersion` the way the handlers do, so a test sees a real 409 rather than a scripted one.
+interface FakeDocument {
+  version: number;
+  payload: unknown;
+  publishedPayload: unknown;
+  scheduledAt: string | null;
+}
+
+function serve(initial: Record<string, Partial<FakeDocument>>) {
+  const stored = new Map<string, FakeDocument>(
+    Object.entries(initial).map(([key, partial]) => [
+      key,
+      { version: 3, payload: {}, publishedPayload: null, scheduledAt: null, ...partial },
+    ]),
+  );
+  const wire = (key: string): WireDocument => {
+    const entry = stored.get(key) as FakeDocument;
+    return {
+      ...wireDocument(key, entry.version, entry.payload),
+      publishedAt: entry.publishedPayload === null ? null : "2026-01-01T00:00:00.000Z",
+      scheduledAt: entry.scheduledAt,
+    };
+  };
+  /** Runs `write` when the version matches, as the store does; otherwise answers the 409 that carries `current`. */
+  const guarded =
+    (write: (entry: FakeDocument, body: Record<string, unknown>) => void): Handler =>
+    (body) => {
+      const key = String(body?.key);
+      const entry = stored.get(key);
+      if (!entry) return { status: 404, json: { error: { code: "not_found", message: `No document ${key}` } } };
+      if (body?.expectedVersion !== undefined && body.expectedVersion !== entry.version) {
+        return { status: 409, json: { error: { code: "conflict", message: "Stale", current: wire(key) } } };
+      }
+      write(entry, body as Record<string, unknown>);
+      entry.version += 1;
+      return { json: { document: wire(key) } };
+    };
+  handlers["GET /api/content/documents"] = () => ({
+    json: {
+      documents: Object.fromEntries(
+        [...stored].map(([key, entry]) => [
+          key,
+          {
+            ...summary(key, true, true, entry.version),
+            publishedAt: entry.publishedPayload === null ? null : "2026-01-01T00:00:00.000Z",
+          },
+        ]),
+      ),
+    },
+  });
+  handlers["GET /api/content/document"] = (_body, url) => {
+    const key = url.searchParams.get("key") ?? "";
+    return { json: { document: wire(key), publishedPayload: stored.get(key)?.publishedPayload ?? null } };
+  };
+  handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [revision(7, "publish", {})] } });
+  handlers["POST /api/content/field"] = guarded((entry, body) => {
+    entry.payload = { ...(entry.payload as object), [String(body.path)]: body.value };
+  });
+  handlers["POST /api/content/publish"] = guarded((entry, body) => {
+    if (typeof body.at === "string") entry.scheduledAt = body.at;
+    else {
+      entry.publishedPayload = entry.payload;
+      entry.scheduledAt = null;
+    }
+  });
+  handlers["POST /api/content/unpublish"] = guarded((entry) => {
+    entry.publishedPayload = null;
+  });
+  handlers["POST /api/content/restore-revision"] = guarded((entry) => {
+    entry.payload = { ...(entry.payload as object), title: "Restored" };
+  });
+  handlers["POST /api/content/discard"] = guarded((entry) => {
+    entry.payload = entry.publishedPayload;
+  });
+  return {
+    stored,
+    /** Another editor's write: the version moves and nothing on this page knows. */
+    theirWrite(key: string, change: Record<string, unknown>) {
+      const entry = stored.get(key) as FakeDocument;
+      entry.payload = { ...(entry.payload as object), ...change };
+      entry.version += 1;
+    },
+  };
+}
+
+/** Holds a route's answers until released. */
+function hold(route: string) {
+  const entry = handlers[route];
+  const inner = (Array.isArray(entry) ? entry[0] : entry) as Handler;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  handlers[route] = async (body, url) => {
+    await gate;
+    return inner(body, url);
+  };
+  return { release: () => release() };
+}
+
+const posts = (route: string) => calls.filter((call) => call.route === `POST /api/content/${route}`);
+const toastText = () => document.querySelector<HTMLElement>(".cms-toast")?.textContent ?? "";
+const theSheet = () => document.querySelector<HTMLElement>(".cms-sheet") as HTMLElement;
+const changesLine = () => document.querySelector<HTMLElement>(".cms-bar__changes");
+
+function commitText(address: string, next: string): void {
+  const target = field(address);
+  target.click();
+  target.textContent = next;
+  press(target, "Enter");
+}
+
+async function openPublishSheet(): Promise<HTMLElement> {
+  buttonNamed("Publish").click();
+  await settle();
+  return theSheet();
+}
+
+type Api = EditorHandle["api"];
+
+describe("a save queued behind a lifecycle write", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+  const actions: [string, string, (api: Api) => Promise<unknown>][] = [
+    ["publish", "publish", (api) => api.publish("pages/home")],
+    ["schedule", "publish", (api) => api.publish("pages/home", { at: "2030-01-01T00:00:00+00:00" })],
+    ["discard", "discard", (api) => api.discard("pages/home")],
+    ["unpublish", "unpublish", (api) => api.unpublish("pages/home")],
+    ["restore", "restore-revision", (api) => api.restoreRevision("pages/home", 7)],
+  ];
+
+  test.each(actions)("%s: sends the new version and gets no conflict", async (_name, route, act) => {
+    serve({ "pages/home": live });
+    const { release } = hold(`POST /api/content/${route}`);
+    const { api } = await mount();
+    const action = act(api);
+    await settle();
+    commitText("pages/home:lede", "Typed meanwhile");
+    await settle();
+    expect(fieldWrites()).toEqual([]);
+    release();
+    await action;
+    await settle();
+    expect(fieldWrites()[0]?.body?.expectedVersion).toBe(4);
+    expect(toastText()).not.toContain("Keep mine");
+    expect(field("pages/home:lede").dataset.cmsState).toBe("saved");
+    expect(field("pages/home:lede").textContent).toBe("Typed meanwhile");
+    expect(api.documents().get("pages/home")?.version).toBe(5);
+    expect(api.documents().get("pages/home")?.touchedPaths.has("lede")).toBe(true);
+  });
+
+  test("a discard that deletes the document: its state is gone before the queued save runs", async () => {
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    handlers["POST /api/content/discard"] = () => ({ json: { document: null } });
+    handlers["POST /api/content/field"] = () => ({
+      status: 404,
+      json: { error: { code: "not_found", message: "No document" } },
+    });
+    const { release } = hold("POST /api/content/discard");
+    const { api } = await mount();
+    const action = api.discard("pages/home");
+    await settle();
+    commitText("pages/home:lede", "Typed meanwhile");
+    await settle();
+    release();
+    await action;
+    await settle();
+    // With no version there is nothing stale to conflict with: the server answers not_found, and that is what shows.
+    expect(fieldWrites()[0]?.body?.expectedVersion).toBeUndefined();
+    expect(toastText()).not.toContain("Keep mine");
+    expect(toastText()).toContain("Not saved: No document");
+    expect(api.documents().has("pages/home")).toBe(false);
+  });
+});
+
+describe("publish sends the version the editor reviewed", () => {
+  const home = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+
+  test("per document: another editor's change that the sheet showed publishes, with its version", async () => {
+    const server = serve({ "pages/home": home, "artists/finn": { version: 11, publishedPayload: {} } });
+    await mount();
+    await editText("pages/home:title", "Mine");
+    await editText("artists/finn:name", "Finnegan");
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    const sheet = await openPublishSheet();
+    expect(diffLines(sheet.querySelector('li[data-key="pages/home"]') as HTMLElement)).toContain('lede added "Theirs"');
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish").map((call) => call.body)).toEqual([
+      { key: "pages/home", expectedVersion: 5 },
+      { key: "artists/finn", expectedVersion: 12 },
+    ]);
+    expect(sheet.hidden).toBe(true);
+  });
+
+  test("an own save still running at Confirm moves the reviewed version with it, so no false conflict", async () => {
+    serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    const { release } = hold("POST /api/content/field");
+    commitText("pages/home:lede", "Two");
+    await settle();
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish")).toEqual([]);
+    release();
+    await settle();
+    expect(posts("publish").map((call) => call.body)).toEqual([{ key: "pages/home", expectedVersion: 5 }]);
+    expect(sheet.hidden).toBe(true);
+    expect(toastText()).toContain("Published pages/home");
+  });
+
+  test("several own saves after the review all count", async () => {
+    serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    await editText("pages/home:title", "Two");
+    await editText("pages/home:lede", "Three");
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish")[0]?.body?.expectedVersion).toBe(6);
+    expect(sheet.hidden).toBe(true);
+  });
+
+  test("a save that lands while the sheet's read is in flight causes no false conflict", async () => {
+    serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    const read = hold("GET /api/content/document");
+    buttonNamed("Publish").click();
+    await settle();
+    await editText("pages/home:lede", "Two");
+    read.release();
+    await settle();
+    buttonNamed("Publish", theSheet()).click();
+    await settle();
+    expect(posts("publish")[0]?.body?.expectedVersion).toBe(5);
+    expect(theSheet().hidden).toBe(true);
+  });
+
+  test("another editor's write after the review conflicts", async () => {
+    const server = serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish")).toHaveLength(1);
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual(home.publishedPayload);
+    expect(sheet.hidden).toBe(false);
+  });
+
+  test("Keep mine past a third editor's write does not count as reviewing that write", async () => {
+    const server = serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One"); // ours: version 4
+    server.theirWrite("pages/home", { lede: "Seen in the sheet" }); // version 5
+    const sheet = await openPublishSheet();
+    expect(diffLines(sheet)).toContain('lede added "Seen in the sheet"');
+    server.theirWrite("pages/home", { extra: "Never seen" }); // version 6
+    commitText("pages/home:title", "Two");
+    await settle();
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click(); // writes 6 -> 7
+    await settle();
+    expect(server.stored.get("pages/home")?.version).toBe(7);
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish")[0]?.body?.expectedVersion).toBe(5);
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual(home.publishedPayload);
+    expect(diffLines(sheet)).toContain('extra added "Never seen"');
+  });
+
+  test("Confirm before the diff has shown sends the session's version, not the one arriving later", async () => {
+    const server = serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    server.theirWrite("pages/home", { lede: "Unseen" });
+    const read = hold("GET /api/content/document");
+    buttonNamed("Publish").click();
+    await settle();
+    const write = hold("POST /api/content/publish");
+    buttonNamed("Publish", theSheet()).click();
+    await settle();
+    read.release();
+    await settle();
+    write.release();
+    await settle();
+    expect(posts("publish")[0]?.body?.expectedVersion).toBe(4);
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual(home.publishedPayload);
+  });
+
+  test("a conflict doesn't publish: the sheet stays, says so, shows the updated diff, offers no overwrite", async () => {
+    const server = serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    expect(diffLines(sheet)).toEqual(['title "Hello" → "One"']);
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(sheet.hidden).toBe(false);
+    const item = sheet.querySelector('li[data-key="pages/home"]') as HTMLElement;
+    expect(item.querySelector(".cms-error")?.textContent).toContain("changed since you reviewed it");
+    expect(toastText()).toContain("changed since you reviewed it");
+    expect(diffLines(item)).toEqual(['title "Hello" → "One"', 'lede added "Theirs"']);
+    expect(() => buttonNamed("Keep mine (overwrite)")).toThrow();
+    expect(posts("publish")).toHaveLength(1);
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual(home.publishedPayload);
+
+    const confirm = buttonNamed("Publish", sheet);
+    expect(confirm.disabled).toBe(false);
+    confirm.click();
+    await settle();
+    expect(posts("publish")[1]?.body).toEqual({ key: "pages/home", expectedVersion: 5 });
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual({ title: "One", lede: "Theirs" });
+    expect(sheet.hidden).toBe(true);
+  });
+
+  test("Publish now sends the known version; a conflict opens the sheet on the updated diff", async () => {
+    addToggle("x");
+    const server = serve({ "pages/home": { ...home, scheduledAt: "2030-01-01T00:00:00+00:00" } });
+    await mount();
+    field("pages/home:live").click();
+    await settle();
+    press(checkbox(), "Escape");
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    buttonNamed("Publish now").click();
+    await settle();
+    expect(posts("publish")[0]?.body).toEqual({ key: "pages/home", expectedVersion: 3 });
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual(home.publishedPayload);
+    const sheet = theSheet();
+    expect(sheet.hidden).toBe(false);
+    expect(sheet.querySelector(".cms-error")?.textContent).toContain("changed since you reviewed it");
+    expect(diffLines(sheet)).toEqual(['lede added "Theirs"']);
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish")[1]?.body).toEqual({ key: "pages/home", expectedVersion: 4 });
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual({ title: "Hello", lede: "Theirs" });
+  });
+
+  test("Publish now succeeds without a sheet when nothing changed", async () => {
+    addToggle("x");
+    const server = serve({ "pages/home": { ...home, scheduledAt: "2030-01-01T00:00:00+00:00" } });
+    await mount();
+    field("pages/home:live").click();
+    await settle();
+    press(checkbox(), "Escape");
+    buttonNamed("Publish now").click();
+    await settle();
+    expect(theSheet().hidden).toBe(true);
+    expect(server.stored.get("pages/home")?.scheduledAt).toBeNull();
+    expect(toastText()).toContain("Published pages/home");
+  });
+
+  test("api.publish rejects on a conflict and the toast offers the review, not an overwrite", async () => {
+    const server = serve({ "pages/home": home });
+    const { api } = await mount();
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await expect(api.publish("pages/home")).rejects.toThrow("Stale");
+    expect(posts("publish")[0]?.body).toEqual({ key: "pages/home", expectedVersion: 3 });
+    expect(theSheet().hidden).toBe(true);
+    buttonNamed("Review changes", visibleToast()).click();
+    await settle();
+    expect(diffLines(theSheet())).toEqual(['lede added "Theirs"']);
+    buttonNamed("Publish", theSheet()).click();
+    await settle();
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual({ title: "Hello", lede: "Theirs" });
+  });
+
+  test("publishing a change the sheet showed repaints the page, which hadn't seen it", async () => {
+    const server = serve({ "pages/home": home });
+    await mount();
+    await editText("pages/home:title", "One");
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    buttonNamed("Publish", await openPublishSheet()).click();
+    await settle();
+    expect(field("pages/home:lede").textContent).toBe("Theirs");
+  });
+});
+
+describe("Unpublish, Restore and Discard send the known version", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+  const actions: [string, string, (api: Api) => Promise<unknown>][] = [
+    ["Unpublish", "unpublish", (api) => api.unpublish("pages/home")],
+    ["Restore", "restore-revision", (api) => api.restoreRevision("pages/home", 7)],
+    ["Discard", "discard", (api) => api.discard("pages/home")],
+  ];
+
+  test.each(actions)("%s sends it, and writes once", async (_name, route, act) => {
+    serve({ "pages/home": live });
+    const { api } = await mount();
+    await editText("pages/home:lede", "Mine");
+    await act(api);
+    expect(posts(route)).toHaveLength(1);
+    expect(posts(route)[0]?.body?.expectedVersion).toBe(4);
+  });
+
+  test.each(actions)(
+    "%s on a conflict: says the document changed and refreshes its state",
+    async (name, route, act) => {
+      const server = serve({ "pages/home": live });
+      const { api } = await mount();
+      server.theirWrite("pages/home", { lede: "Theirs" });
+      const before = server.stored.get("pages/home")?.payload;
+      await expect(act(api)).rejects.toThrow("Stale");
+      expect(visibleToast().textContent).toContain(`${name} did nothing: pages/home has changed`);
+      expect(posts(route)).toHaveLength(1);
+      expect(server.stored.get("pages/home")?.payload).toEqual(before);
+      expect(server.stored.get("pages/home")?.version).toBe(4);
+      const state = api.documents().get("pages/home");
+      expect(state?.version).toBe(4);
+      expect(state?.payload).toEqual({ title: "Hello", lede: "Theirs" });
+      expect(state?.touched).toBe(false);
+      expect(field("pages/home:lede").textContent).toBe("Theirs");
+      // The retry now goes through, because the session has the version the page shows.
+      await act(api);
+      expect(posts(route)[1]?.body?.expectedVersion).toBe(4);
+    },
+  );
+
+  test("a conflict refresh doesn't close a widget the editor is typing in", async () => {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    const lede = field("pages/home:lede");
+    lede.click();
+    lede.textContent = "Typing";
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    expect(lede.getAttribute("contenteditable")).not.toBeNull();
+    expect(lede.textContent).toBe("Typing");
+  });
+});
+
+describe("a bulk publish with a failure", () => {
+  const two = () =>
+    serve({
+      "pages/home": { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } },
+      "artists/finn": { publishedPayload: { name: "Finn" }, payload: { name: "Finn" } },
+    });
+  async function bothEdited() {
+    await editText("pages/home:title", "One");
+    await editText("artists/finn:name", "Two");
+    return openPublishSheet();
+  }
+
+  test("a failing first document doesn't stop the second, and each is reported as what happened", async () => {
+    const server = two();
+    const real = handlers["POST /api/content/publish"] as Handler;
+    handlers["POST /api/content/publish"] = (body, url) =>
+      body?.key === "pages/home"
+        ? { status: 422, json: { error: { code: "validation", message: "Title too long" } } }
+        : real(body, url);
+    await mount();
+    const sheet = await bothEdited();
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(server.stored.get("artists/finn")?.publishedPayload).toEqual({ name: "Two" });
+    expect(sheet.hidden).toBe(false);
+    expect([...sheet.querySelectorAll("li[data-key]")].map((item) => item.getAttribute("data-key"))).toEqual([
+      "pages/home",
+    ]);
+    expect(sheet.querySelector('li[data-key="pages/home"] .cms-error')?.textContent).toContain("Title too long");
+    expect(visibleToast().textContent).toContain("1 of 2");
+    expect(visibleToast().textContent).toContain("pages/home");
+    expect(visibleToast().dataset.kind).toBe("error");
+    expect(buttonNamed("Publish", sheet).disabled).toBe(false);
+  });
+
+  test("a failing last document is not hidden by the earlier success, and retrying sends only it", async () => {
+    const server = two();
+    const real = handlers["POST /api/content/publish"] as Handler;
+    handlers["POST /api/content/publish"] = [
+      real,
+      () => ({ status: 500, json: { error: { code: "internal", message: "Boom" } } }),
+      real,
+    ];
+    await mount();
+    const sheet = await bothEdited();
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(visibleToast().textContent).toContain("1 of 2");
+    expect(handle?.api.documents().get("pages/home")?.touched).toBe(false);
+    expect(handle?.api.documents().get("artists/finn")?.touched).toBe(true);
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish").map((call) => call.body?.key)).toEqual(["pages/home", "artists/finn", "artists/finn"]);
+    expect(server.stored.get("artists/finn")?.publishedPayload).toEqual({ name: "Two" });
+    expect(sheet.hidden).toBe(true);
+  });
+
+  test("a conflict on one refreshes only that document's diff; the other still publishes", async () => {
+    const server = two();
+    await mount();
+    const sheet = await bothEdited();
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(server.stored.get("artists/finn")?.publishedPayload).toEqual({ name: "Two" });
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual({ title: "Hello" });
+    expect(diffLines(sheet)).toEqual(['title "Hello" → "One"', 'lede added "Theirs"']);
+    expect(visibleToast().textContent).toContain("1 of 2");
+  });
+
+  test("everything publishing says so for all of them, not just the last", async () => {
+    two();
+    await mount();
+    const sheet = await bothEdited();
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(sheet.hidden).toBe(true);
+    expect(visibleToast().textContent).toContain("2 documents");
+    expect(visibleToast().dataset.kind).toBe("saved");
+  });
+
+  test("a bulk discard behaves the same way", async () => {
+    const server = two();
+    const real = handlers["POST /api/content/discard"] as Handler;
+    handlers["POST /api/content/discard"] = (body, url) =>
+      body?.key === "pages/home"
+        ? { status: 500, json: { error: { code: "internal", message: "Boom" } } }
+        : real(body, url);
+    await mount();
+    await editText("pages/home:title", "One");
+    await editText("artists/finn:name", "Two");
+    buttonNamed("Discard").click();
+    await settle();
+    const sheet = theSheet();
+    buttonNamed("Discard", sheet).click();
+    await settle();
+    expect(server.stored.get("artists/finn")?.payload).toEqual({ name: "Finn" });
+    expect(sheet.querySelector('li[data-key="pages/home"] .cms-error')?.textContent).toContain("Boom");
+    expect(visibleToast().textContent).toContain("1 of 2");
+  });
+});
+
+describe("reopening a field whose save failed", () => {
+  const failOnce = () => {
+    handlers["POST /api/content/field"] = [serverError, handlers["POST /api/content/field"] as Handler];
+  };
+
+  test.each(["blur", "Enter"])("text left by %s resends the failed value", async (exit) => {
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    failOnce();
+    await mount();
+    await editText("pages/home:title", "Again");
+    const title = field("pages/home:title");
+    expect(title.dataset.cmsState).toBe("failed");
+    title.click();
+    if (exit === "blur") title.dispatchEvent(new FocusEvent("blur"));
+    else press(title, "Enter");
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual(["Again", "Again"]);
+    expect(title.dataset.cmsState).toBe("saved");
+  });
+
+  test("text left with Esc doesn't resend", async () => {
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    failOnce();
+    await mount();
+    await editText("pages/home:title", "Again");
+    const title = field("pages/home:title");
+    title.click();
+    press(title, "Escape");
+    await settle();
+    expect(fieldWrites()).toHaveLength(1);
+    expect(title.dataset.cmsState).toBe("failed");
+  });
+
+  test("text changed back to the stored value is sent, so the failed value doesn't linger", async () => {
+    addToggle("x");
+    serve({ "pages/home": { payload: { title: "Hello", live: true } } });
+    failOnce();
+    await mount();
+    field("pages/home:live").click();
+    await settle();
+    press(checkbox(), "Escape");
+    await editText("pages/home:title", "Again");
+    await editText("pages/home:title", "Hello");
+    expect(fieldWrites().at(-1)?.body?.value).toBe("Hello");
+    expect(field("pages/home:title").dataset.cmsState).toBe("saved");
+  });
+
+  test("once it has saved, reopening and leaving writes nothing", async () => {
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    failOnce();
+    await mount();
+    await editText("pages/home:title", "Again");
+    const title = field("pages/home:title");
+    title.click();
+    press(title, "Enter");
+    await settle();
+    title.click();
+    press(title, "Enter");
+    await settle();
+    expect(fieldWrites()).toHaveLength(2);
+  });
+
+  test("a popover starts from the failed value and leaving it resends", async () => {
+    addEditValueField("spaces", "number");
+    serve({ "pages/home": { payload: { spaces: 1 } } });
+    await mount();
+    const spaces = field("pages/home:spaces");
+    spaces.click();
+    await settle();
+    failOnce();
+    const input = popoverControl<HTMLInputElement>("input");
+    input.value = "2";
+    input.dispatchEvent(new Event("change"));
+    await settle();
+    expect(spaces.dataset.cmsState).toBe("failed");
+    spaces.click();
+    await settle();
+    expect(popoverControl<HTMLInputElement>("input").value).toBe("2");
+    field("pages/home:title").click();
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual([2, 2]);
+    expect(spaces.dataset.cmsState).toBe("saved");
+  });
+
+  test("a popover left with Esc doesn't resend", async () => {
+    addEditValueField("spaces", "number");
+    serve({ "pages/home": { payload: { spaces: 1 } } });
+    await mount();
+    const spaces = field("pages/home:spaces");
+    spaces.click();
+    await settle();
+    failOnce();
+    const input = popoverControl<HTMLInputElement>("input");
+    input.value = "2";
+    input.dispatchEvent(new Event("change"));
+    await settle();
+    spaces.click();
+    await settle();
+    press(popoverControl<HTMLInputElement>("input"), "Escape");
+    await settle();
+    expect(fieldWrites()).toHaveLength(1);
+  });
+
+  test("a host widget receives the failed value, and committing it unchanged resends", async () => {
+    const { seen, widget } = richWidget();
+    serve({ "pages/home": { payload: { lede: "Stored" } } });
+    failOnce();
+    handle = mountEditor({ widgets: { richtext: widget } });
+    await handle.ready;
+    field("pages/home:lede").click();
+    await seen[0]?.commit("<p>Mine</p>");
+    await settle();
+    field("pages/home:lede").click();
+    expect(seen[1]?.value).toBe("<p>Mine</p>");
+    await seen[1]?.commit("<p>Mine</p>");
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual(["<p>Mine</p>", "<p>Mine</p>"]);
+    // Saved now: the same commit from a truly untouched widget writes nothing.
+    field("pages/home:lede").click();
+    await seen[2]?.commit("<p>Mine</p>");
+    await settle();
+    expect(fieldWrites()).toHaveLength(2);
+  });
+
+  test.each([
+    ["discard", (api: Api) => api.discard("pages/home")],
+    ["restore", (api: Api) => api.restoreRevision("pages/home", 7)],
+  ])("%s drops the failed value: it isn't resent on the next open", async (_name, act) => {
+    serve({ "pages/home": { payload: { title: "Hello" }, publishedPayload: { title: "Hello" } } });
+    failOnce();
+    const { api } = await mount();
+    await editText("pages/home:title", "Again");
+    await act(api);
+    const title = field("pages/home:title");
+    expect(title.dataset.cmsState).toBe("idle");
+    title.click();
+    press(title, "Enter");
+    await settle();
+    expect(fieldWrites()).toHaveLength(1);
+  });
+});
+
+describe("unpublish and restore leave something to publish", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+
+  test("unpublish on an unedited page, then Publish from the sheet, goes live", async () => {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    expect(changesLine()?.textContent).toMatch(/^No changes yet/);
+    await api.unpublish("pages/home");
+    expect(server.stored.get("pages/home")?.publishedPayload).toBeNull();
+    expect(changesLine()?.textContent).toMatch(/^1 change on this page/);
+    const sheet = await openPublishSheet();
+    const item = sheet.querySelector('li[data-key="pages/home"]') as HTMLElement;
+    expect(item.textContent).not.toContain("· 0");
+    expect(item.querySelector(".cms-diff")?.textContent).toBe(
+      "Nothing is live: publishing puts this version on the site.",
+    );
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual({ title: "Hello" });
+    expect(api.documents().get("pages/home")?.touched).toBe(false);
+    expect(changesLine()?.textContent).toMatch(/^No changes yet/);
+  });
+
+  test("a restore whose payload equals the draft stays in the publish sheet", async () => {
+    serve({ "pages/home": { publishedPayload: { title: "Old" }, payload: { title: "Restored" } } });
+    const { api } = await mount();
+    await api.restoreRevision("pages/home", 7);
+    expect(api.documents().get("pages/home")?.touched).toBe(true);
+    expect(api.documents().get("pages/home")?.touchedPaths.size).toBe(0);
+    expect(changesLine()?.textContent).toMatch(/^1 change on this page/);
+    const sheet = await openPublishSheet();
+    expect(sheet.querySelector('li[data-key="pages/home"]')).not.toBeNull();
+    expect(diffLines(sheet)).toEqual(['title "Old" → "Restored"']);
+  });
+
+  test("a change with no paths survives a reload", async () => {
+    const server = serve({ "pages/home": live });
+    const editor = await mount();
+    await editor.api.unpublish("pages/home");
+    editor.destroy();
+    handle = undefined;
+    const documents = handlers["GET /api/content/documents"] as Handler;
+    handlers["GET /api/content/documents"] = async (body, url) => {
+      const answer = await documents(body, url);
+      const summaries = (answer.json as { documents: Record<string, { isDraft: boolean }> }).documents;
+      for (const entry of Object.values(summaries)) entry.isDraft = true;
+      return answer;
+    };
+    expect(server.stored.get("pages/home")?.publishedPayload).toBeNull();
+    const { api } = await mount();
+    expect(api.documents().get("pages/home")?.touched).toBe(true);
+    expect(changesLine()?.textContent).toMatch(/^1 change on this page/);
+  });
+
+  test("a change with no paths counts as one beside other documents' fields", async () => {
+    serve({ "pages/home": live, "artists/finn": { publishedPayload: {} } });
+    const { api } = await mount();
+    await api.unpublish("pages/home");
+    await editText("artists/finn:name", "Two");
+    expect(changesLine()?.textContent).toMatch(/^2 changes across 2 documents/);
+    expect(changesLine()?.dataset.fields).toBe("2");
+  });
+});
+
+describe("a popover opened while a save is on its way", () => {
+  function setValue(value: string): void {
+    const input = popoverControl<HTMLInputElement>("input");
+    input.value = value;
+    input.dispatchEvent(new Event("change"));
+  }
+
+  async function opened(): Promise<HTMLElement> {
+    addEditValueField("n", "number");
+    serve({ "pages/home": { payload: { n: 1 } } });
+    await mount();
+    const target = field("pages/home:n");
+    target.click();
+    await settle();
+    return target;
+  }
+
+  test("in flight: it shows the committed value, and a revert is saved after it", async () => {
+    const target = await opened();
+    const { release } = hold("POST /api/content/field");
+    setValue("2");
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual([2]);
+    target.click();
+    await settle();
+    expect(popoverControl<HTMLInputElement>("input").value).toBe("2");
+    setValue("1");
+    await settle();
+    release();
+    await settle();
+    expect(fieldWrites().map((call) => [call.body?.value, call.body?.expectedVersion])).toEqual([
+      [2, 3],
+      [1, 4],
+    ]);
+    expect(toastText()).not.toContain("Keep mine");
+  });
+
+  test("queued: it shows the committed value, and a revert replaces it", async () => {
+    const target = await opened();
+    press(popoverControl("input"), "Escape");
+    const { release } = hold("POST /api/content/field");
+    commitText("pages/home:title", "Ahead");
+    await settle();
+    target.click();
+    await settle();
+    setValue("2");
+    await settle();
+    target.click();
+    await settle();
+    expect(popoverControl<HTMLInputElement>("input").value).toBe("2");
+    setValue("1");
+    await settle();
+    release();
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual(["Ahead", 1]);
+    expect(handle?.api.documents().get("pages/home")?.payload).toMatchObject({ n: 1 });
+  });
+
+  test.each(["in flight", "queued"])("%s: leaving it untouched lets the committed value land", async (when) => {
+    const target = await opened();
+    const { release } = hold("POST /api/content/field");
+    if (when === "queued") {
+      press(popoverControl("input"), "Escape");
+      commitText("pages/home:title", "Ahead");
+      await settle();
+      target.click();
+      await settle();
+    }
+    setValue("2");
+    await settle();
+    target.click();
+    await settle();
+    field("pages/home:lede").click();
+    await settle();
+    release();
+    await settle();
+    expect(fieldWrites().at(-1)?.body?.value).toBe(2);
+    expect(fieldWrites().filter((call) => call.body?.path === "n")).toHaveLength(1);
+  });
+
+  test("a text field reverted while its save is in flight is saved too", async () => {
+    addToggle("x");
+    serve({ "pages/home": { payload: { title: "Hello", live: true } } });
+    await mount();
+    field("pages/home:live").click();
+    await settle();
+    press(checkbox(), "Escape");
+    const { release } = hold("POST /api/content/field");
+    commitText("pages/home:title", "Changed");
+    await settle();
+    commitText("pages/home:title", "Hello");
+    await settle();
+    release();
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual(["Changed", "Hello"]);
+  });
+});
+
+describe("a popover waiting on its fetch", () => {
+  async function waiting(extra: EditorOptions = {}) {
+    addToggle("x");
+    serve({ "pages/home": { payload: { live: true }, publishedPayload: { live: true } } });
+    const { release } = hold("GET /api/content/document");
+    const editor = await mount(extra);
+    field("pages/home:live").click();
+    await settle();
+    return { editor, release };
+  }
+
+  async function expectNoPopover(release: () => void): Promise<void> {
+    release();
+    await settle();
+    expect(document.querySelector(".cms-popover")).toBeNull();
+    expect(field("pages/home:live").classList.contains("cms-field--editing")).toBe(false);
+  }
+
+  test("still opens when nothing else happens", async () => {
+    const { release } = await waiting();
+    release();
+    await settle();
+    expect(document.querySelector(".cms-popover")).not.toBeNull();
+  });
+
+  test.each(["Publish", "Discard", "Revisions"])("is cancelled by opening the %s sheet", async (label) => {
+    const { release } = await waiting();
+    buttonNamed(label).click();
+    await expectNoPopover(release);
+    expect(theSheet().hidden).toBe(false);
+  });
+
+  test("is cancelled by opening a host panel", async () => {
+    const { release } = await waiting({
+      panels: [{ id: "notes", label: "Notes", mount: () => ({ destroy() {} }) }],
+    });
+    buttonNamed("Notes").click();
+    await expectNoPopover(release);
+  });
+
+  test.each([
+    ["publish", (api: Api) => api.publish("pages/home")],
+    ["discard", (api: Api) => api.discard("pages/home")],
+    ["unpublish", (api: Api) => api.unpublish("pages/home")],
+    ["restore", (api: Api) => api.restoreRevision("pages/home", 7)],
+  ])("is cancelled by starting %s", async (_name, act) => {
+    const { editor, release } = await waiting();
+    const action = act(editor.api).catch(() => undefined);
+    await expectNoPopover(release);
+    await action;
+    await settle();
+    expect(document.querySelector(".cms-popover")).toBeNull();
+  });
+
+  test("doesn't mount on a document deleted during the wait", async () => {
+    addToggle("x");
+    serve({ "pages/home": { payload: { live: true } } });
+    handlers["POST /api/content/discard"] = () => ({ json: { document: null } });
+    const discard = hold("POST /api/content/discard");
+    const read = hold("GET /api/content/document");
+    const { api } = await mount();
+    const discarding = api.discard("pages/home");
+    await settle();
+    field("pages/home:live").click();
+    await settle();
+    discard.release();
+    await discarding;
+    await settle();
+    read.release();
+    await settle();
+    expect(document.querySelector(".cms-popover")).toBeNull();
+    expect(field("pages/home:live").classList.contains("cms-field--editing")).toBe(false);
+  });
+});
+
+test("opening a sheet commits an open popover first, so the sheet's diff includes it", async () => {
+  addEditValueField("spaces", "number");
+  serve({ "pages/home": { payload: { spaces: 1 }, publishedPayload: { spaces: 1 } } });
+  await mount();
+  await editText("pages/home:title", "One");
+  field("pages/home:spaces").click();
+  await settle();
+  popoverControl<HTMLInputElement>("input").value = "2";
+  buttonNamed("Publish").click();
+  await settle();
+  expect(document.querySelector(".cms-popover")).toBeNull();
+  expect(fieldWrites().at(-1)?.body).toMatchObject({ path: "spaces", value: 2 });
+  expect(diffLines(theSheet())).toContain("spaces 1 → 2");
+});
+
+describe("scheduling", () => {
+  const dateInput = (sheet: HTMLElement) => sheet.querySelector<HTMLInputElement>("input[type=datetime-local]");
+  const type = (input: HTMLInputElement, value: string) => {
+    input.value = value;
+    input.dispatchEvent(new Event("input"));
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("is off by default: no Publish at input, and Confirm publishes", async () => {
+    await mount();
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    expect(dateInput(sheet)).toBeNull();
+    expect(sheet.textContent).not.toContain("Publish at");
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish")[0]?.body?.at).toBeUndefined();
+  });
+
+  test("off: a schedule already on the document still shows in the bar with Publish now", async () => {
+    addToggle("x");
+    serve({ "pages/home": { payload: { live: true }, scheduledAt: "2030-01-01T00:00:00+00:00" } });
+    await mount();
+    field("pages/home:live").click();
+    await settle();
+    const line = document.querySelector<HTMLElement>(".cms-bar__scheduled") as HTMLElement;
+    expect(line.textContent).toContain("pages/home scheduled for");
+    expect(() => buttonNamed("Publish now", line)).not.toThrow();
+  });
+
+  test("off: api.publish with at still schedules, for host panels", async () => {
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    const { api } = await mount();
+    await api.publish("pages/home", { at: "2030-01-01T00:00:00+00:00" });
+    expect(posts("publish")[0]?.body).toEqual({
+      key: "pages/home",
+      at: "2030-01-01T00:00:00+00:00",
+      expectedVersion: 3,
+    });
+    expect(document.querySelector(".cms-bar__scheduled")?.textContent).toContain("pages/home scheduled for");
+  });
+
+  test("on: the input has a min of now and a future time schedules", async () => {
+    vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    await mount({ scheduling: true });
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    const input = dateInput(sheet) as HTMLInputElement;
+    expect(input.min).toBe("2030-06-01T09:30");
+    type(input, "2030-06-01T09:31");
+    const confirm = buttonNamed("Schedule", sheet);
+    expect(confirm.disabled).toBe(false);
+    expect(sheet.querySelector(".cms-error")).toBeNull();
+    confirm.click();
+    await settle();
+    expect(String(posts("publish")[0]?.body?.at)).toMatch(/^2030-06-01T09:31:00/);
+    expect(posts("publish")[0]?.body?.expectedVersion).toBe(4);
+  });
+
+  test("on: a past time disables the button and says why, and clearing it recovers", async () => {
+    vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    await mount({ scheduling: true });
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    const input = dateInput(sheet) as HTMLInputElement;
+    type(input, "2030-06-01T09:00");
+    expect(buttonNamed("Schedule", sheet).disabled).toBe(true);
+    const reason = sheet.querySelector(".cms-error");
+    expect(reason?.textContent).toContain("in the past");
+    expect(input.getAttribute("aria-describedby")).toBe(reason?.parentElement?.id);
+    type(input, "");
+    expect(buttonNamed("Publish", sheet).disabled).toBe(false);
+    expect(sheet.querySelector(".cms-error")).toBeNull();
+  });
+
+  test("on: a time the clock passes while the sheet is open is refused at Confirm", async () => {
+    vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    await mount({ scheduling: true });
+    await editText("pages/home:title", "One");
+    const sheet = await openPublishSheet();
+    const input = dateInput(sheet) as HTMLInputElement;
+    type(input, "2030-06-01T09:45");
+    const confirm = buttonNamed("Schedule", sheet);
+    expect(confirm.disabled).toBe(false);
+    vi.setSystemTime(new Date(2030, 5, 1, 10, 0));
+    confirm.click();
+    await settle();
+    expect(posts("publish")).toEqual([]);
+    expect(sheet.hidden).toBe(false);
+    expect(confirm.disabled).toBe(true);
+    expect(sheet.querySelector(".cms-error")?.textContent).toContain("in the past");
+  });
+});
+
+describe("a document whose draft fails its schema", () => {
+  const invalid = () => ({
+    status: 422,
+    json: { error: { code: "validation", message: "Draft is invalid", issues: [{ path: "title" }] } },
+  });
+
+  function invalidHome() {
+    const server = serve({ "pages/home": { payload: { title: 42 }, publishedPayload: { title: "Live" } } });
+    handlers["GET /api/content/document"] = invalid;
+    return server;
+  }
+
+  test("the page and the bar load, and the fields are editable", async () => {
+    invalidHome();
+    const { api } = await mount();
+    expect(api.documents().get("pages/home")?.access.edit).toBe(true);
+    expect(field("pages/home:title").classList.contains("cms-field--locked")).toBe(false);
+    expect(changesLine()?.textContent).toMatch(/^No changes yet/);
+  });
+
+  test("the revisions drawer opens and lists", async () => {
+    invalidHome();
+    await mount();
+    const sheet = await openRevisions();
+    expect(sheet.querySelector("li[data-revision]")).not.toBeNull();
+    expect(sheet.querySelector(".cms-error")).toBeNull();
+  });
+
+  test("Restore works from the drawer and repaints", async () => {
+    invalidHome();
+    const { api } = await mount();
+    const sheet = await openRevisions();
+    buttonNamed("Restore", sheet).click();
+    buttonNamed("Confirm", sheet).click();
+    await settle();
+    expect(posts("restore-revision")[0]?.body?.expectedVersion).toBe(3);
+    expect(field("pages/home:title").textContent).toBe("Restored");
+    expect(api.documents().get("pages/home")?.version).toBe(4);
+    expect(visibleToast().textContent).toContain("Restored a revision of pages/home");
+    expect(buttonNamed("Publish").disabled).toBe(false);
+    expect(api.documents().get("pages/home")?.touched).toBe(true);
+  });
+
+  test("Discard works and repaints from the document it returns", async () => {
+    invalidHome();
+    const { api } = await mount();
+    await api.discard("pages/home");
+    expect(field("pages/home:title").textContent).toBe("Live");
+    expect(api.documents().get("pages/home")?.version).toBe(4);
+  });
+
+  test.each([
+    ["a string", "not an object"],
+    ["null", null],
+    ["a number", 7],
+    ["an array", [1, 2]],
+    ["a wrong shape", { title: { nested: true }, lede: ["a"] }],
+  ])("a lifecycle response carrying %s as its payload doesn't throw", async (_name, payload) => {
+    serve({ "pages/home": { publishedPayload: { title: "Live" } } });
+    for (const route of ["restore-revision", "unpublish", "discard", "publish"]) {
+      handlers[`POST /api/content/${route}`] = (body) => ({
+        json: { document: wireDocument(String(body?.key), Number(body?.expectedVersion) + 1, payload) },
+      });
+    }
+    const { api } = await mount();
+    await api.restoreRevision("pages/home", 7);
+    expect(api.documents().get("pages/home")?.payload).toEqual(payload);
+    await api.unpublish("pages/home");
+    await api.publish("pages/home", { at: "2030-01-01T00:00:00+00:00" });
+    await api.publish("pages/home");
+    await api.discard("pages/home");
+    expect(api.documents().get("pages/home")?.version).toBe(8);
+    expect(() => field("pages/home:title").click()).not.toThrow();
+    expect(field("pages/home:title").getAttribute("contenteditable")).not.toBeNull();
+  });
+
+  test("a conflict carrying an invalid payload refreshes without throwing", async () => {
+    serve({ "pages/home": {} });
+    handlers["POST /api/content/discard"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, "garbage") } },
+    });
+    const { api } = await mount();
+    await expect(api.discard("pages/home")).rejects.toThrow("Stale");
+    expect(api.documents().get("pages/home")?.version).toBe(9);
+    expect(visibleToast().textContent).toContain("Discard did nothing");
+  });
+
+  test("the publish sheet says could-not-load for that document only, and Publish answers the validation error", async () => {
+    const server = serve({
+      "pages/home": { payload: { title: 42 }, publishedPayload: { title: "Live" } },
+      "artists/finn": { payload: { name: "Finn" }, publishedPayload: { name: "Finn" } },
+    });
+    const read = handlers["GET /api/content/document"] as Handler;
+    handlers["GET /api/content/document"] = (body, url) =>
+      url.searchParams.get("key") === "pages/home" ? invalid() : read(body, url);
+    const write = handlers["POST /api/content/publish"] as Handler;
+    handlers["POST /api/content/publish"] = (body, url) => (body?.key === "pages/home" ? invalid() : write(body, url));
+    const { api } = await mount();
+    await editText("pages/home:lede", "Still bad");
+    await editText("artists/finn:name", "Finnegan");
+    const sheet = await openPublishSheet();
+    expect(sheet.querySelector('li[data-key="pages/home"] .cms-diff')?.textContent).toBe(
+      "Couldn’t load the changes: Draft is invalid",
+    );
+    expect(diffLines(sheet.querySelector('li[data-key="artists/finn"]') as HTMLElement)).toEqual([
+      'name "Finn" → "Finnegan"',
+    ]);
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish").map((call) => call.body?.key)).toEqual(["pages/home", "artists/finn"]);
+    expect(server.stored.get("pages/home")?.publishedPayload).toEqual({ title: "Live" });
+    expect(server.stored.get("artists/finn")?.publishedPayload).toEqual({ name: "Finnegan" });
+    expect(sheet.querySelector('li[data-key="pages/home"] .cms-error')?.textContent).toContain("Draft is invalid");
+    expect(api.documents().get("pages/home")?.touched).toBe(true);
+    expect(visibleToast().textContent).toContain("1 of 2");
+  });
+
+  test("Publish of it alone says the validation error, without a crash", async () => {
+    invalidHome();
+    handlers["POST /api/content/publish"] = invalid;
+    const { api } = await mount();
+    await expect(api.publish("pages/home")).rejects.toThrow("Draft is invalid");
+    expect(visibleToast().textContent).toContain("Publish failed for pages/home: Draft is invalid");
+  });
+
+  test("a popover on it says it couldn't load, and opens once a restore has repaired the document", async () => {
+    invalidHome();
+    addEditValueField("thing", "number");
+    const { api } = await mount();
+    field("pages/home:thing").click();
+    await settle();
+    expect(visibleToast().textContent).toContain("Couldn’t load this field: Draft is invalid");
+    await api.restoreRevision("pages/home", 7);
+    field("pages/home:thing").click();
+    await settle();
+    expect(document.querySelector(".cms-popover")).not.toBeNull();
+  });
 });

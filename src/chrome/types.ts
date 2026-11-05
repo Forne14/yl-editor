@@ -45,7 +45,13 @@ export interface WidgetContext {
   /** The host element carrying `data-edit-field`. */
   element: HTMLElement;
   field: FieldInfo;
+  /** The newest value the editor has committed for this path, else the stored value. */
   value: unknown;
+  /**
+   * True while `value` failed to save. Leaving the widget should then commit it, even unchanged, so reopening a field
+   * and leaving it resends; Esc still cancels. Committing an unchanged value sends nothing otherwise.
+   */
+  readonly unsaved: boolean;
   /** Hand the new value to the field's save queue. Resolves once the widget may close. */
   commit(next: unknown): Promise<void>;
   /** Abandon the edit; the chrome restores the field and returns focus to it. */
@@ -69,7 +75,10 @@ export type StatusKind = "info" | "saving" | "saved" | "error";
 
 export interface EditorApi {
   documents(): ReadonlyMap<string, DocumentState>;
-  /** Publishes now, or with `at` (an ISO datetime with offset) schedules the draft. */
+  /**
+   * Publishes now, or with `at` (an ISO datetime with offset) schedules the draft. Works whatever `scheduling` says.
+   * Sends the version this session knows; rejects with a `conflict` if the document has moved on, and publishes nothing.
+   */
   publish(key: string, options?: { at?: string }): Promise<void>;
   discard(key: string): Promise<void>;
   /** Takes the document off the live site; its content stays as a draft. */
@@ -96,6 +105,11 @@ export interface EditorOptions {
   /** Shown in the bar, e.g. "Editing as Maya (Editor)". */
   actorLabel?: string;
   strings?: Partial<Strings>;
+  /**
+   * Shows "Publish at" in the publish sheet. Default false, because a scheduled draft goes live only when the host runs
+   * `publish-due`: turn it on only if something does, and read `failed` from its response. See docs/chrome.md.
+   */
+  scheduling?: boolean;
   /** Called when the user presses Done. */
   onExit?: () => void;
 }

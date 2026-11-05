@@ -17,9 +17,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `POST discard` honoured no `expectedVersion`; it now accepts it and answers `409 conflict` when stale (`DiscardRequestSchema`).
 - Client: `publish(key, { at?, expectedVersion? })`, `unpublish(key, { expectedVersion? })`, `restoreRevision(key, revisionId, { expectedVersion? })` and `discard(key, { expectedVersion? })` can send `expectedVersion`.
 - `DocumentResponse` is `{ document }` again, as it was before 0.4.0. `GET document` and `client.documentForPublish` use the new `DocumentForPublishResponse`, `{ document, publishedPayload }`.
+- Chrome: a field save queued behind Publish, Discard, Unpublish or Restore no longer conflicts with the editor's own write. The lifecycle result is applied before the document's write chain releases, including when Discard deletes the document.
+- Chrome: Publish can no longer overwrite a change the editor hasn't seen. It sends the version whose diff the sheet showed, moved forward only by the editor's own accepted writes from that version. On a conflict nothing is published, the sheet says so and reloads that document's diff, and there is no overwrite. **Publish now** follows the same rule and opens the sheet on a conflict.
+- Chrome: Unpublish, Restore and Discard send the session's known version. On a conflict a toast says the document changed and the session and page catch up; nothing else happens.
+- Chrome: a document failing in a bulk Publish or Discard no longer stops or misreports the others. Those that failed stay in the sheet with the reason, and a toast counts both.
+- Chrome: reopening a field whose save failed and leaving it resends the value, for text, popover and host widgets. A truly untouched field still writes nothing. Discard and Restore drop failed values.
+- Chrome: Unpublish, and a Restore that leaves the draft as it was, keep the document in the Publish sheet, across a reload too, so it can go live again. The bar counts such a document as one change.
+- Chrome: any widget starts from the newest value committed for its path, so a popover reopened while a save is queued or in flight shows that value, and changing it back is saved rather than dropped.
+- Chrome: a popover waiting on its fetch is cancelled by opening a sheet, panel or the revisions drawer, or by starting a lifecycle action, and doesn't open on a document deleted during the wait.
+- Chrome: a document with an invalid draft stays repairable. The page, bar and revisions drawer load, Restore and Discard work and repaint, the publish sheet says it couldn't load that document only, and publishing it reports the validation error.
+- Chrome: opening a sheet or panel commits a widget still open first, and the default text widget now commits when the chrome closes it (it has `handle.commit`), as popovers already did.
 
 ### Changed
 
+- **Breaking:** the Publish sheet's "Publish at" input is off by default. Pass `mountEditor({ scheduling: true })` to show it, and only if the host runs `publish-due` on a schedule and reads `failed` from the response, because otherwise a scheduled draft silently never publishes. An existing `scheduledAt` still shows in the bar with Publish now, and `api.publish(key, { at })` still schedules.
+- With `scheduling` on, past times are refused: the input has a `min`, the time is checked again at Confirm, and the button is disabled with a line saying why.
+- `WidgetContext` gains `unsaved`, true while `value` failed to save. A host widget that cancels when left untouched should commit instead while it is true. `value` is now the newest committed value rather than always the stored one.
+- Chrome strings: new `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial` and `scheduleInPast`. `firstPublish` and `discardedNeverPublished` are reworded, because a document with nothing live may have been unpublished rather than never published.
 - `POST publish-due` responds `{ documents, failed }`, where `failed` is `{ key, code, message }[]`, and `client.publishDue(now?)` returns that object rather than `WireDocument[]`. This changes a method added in 0.4.0.
 
 ### Added
