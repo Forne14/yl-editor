@@ -584,6 +584,30 @@ export function runContentStoreContract(
       });
     });
 
+    describe("unvalidated reads of a healthy document", () => {
+      test("the draft view and the published view match the validated reads", async () => {
+        await createPublished("first", { title: "Live", tags: [] });
+        await store.writeField("notes/first", "title", "Draft");
+        expect(await store.get("notes/first", { draft: true, unvalidated: true })).toEqual(
+          await store.get("notes/first", { draft: true }),
+        );
+        expect(await store.get("notes/first", { unvalidated: true })).toEqual(await store.get("notes/first"));
+      });
+      test("a draft-only document has no published view, and an unknown key is null", async () => {
+        await store.create("note", "first", { title: "A", tags: [] });
+        expect(await store.get("notes/first", { unvalidated: true })).toBeNull();
+        expect(await store.get("notes/none", { draft: true, unvalidated: true })).toBeNull();
+      });
+      test("a retired document still needs includeRetired", async () => {
+        await createPublished();
+        await store.retire("notes/first");
+        expect(await store.get("notes/first", { draft: true, unvalidated: true })).toBeNull();
+        expect(
+          (await store.get("notes/first", { draft: true, unvalidated: true, includeRetired: true }))?.retiredAt,
+        ).not.toBeNull();
+      });
+    });
+
     describe.skipIf(!options.reopen)("schema evolution", () => {
       const reopen: ReopenStore = (reg, hooks) => (options.reopen as ReopenStore)(reg, hooks);
       const noop = () => undefined;
@@ -635,6 +659,211 @@ export function runContentStoreContract(
         await createPublished();
         const next = await reopen(registryOf(noteTightened), { onReadIssue: noop });
         await expect(next.get("notes/first", { draft: true })).rejects.toThrow(ContentValidationError);
+      });
+
+      describe("a payload failing the current schema", () => {
+        const invalid = { title: "A", tags: [] as string[] };
+        const valid = { title: "A", tags: ["x"] };
+        const tightened = () => reopen(registryOf(noteTightened), { onReadIssue: noop });
+
+        /** Published and failing the schema, with no draft. */
+        const stalePublished = async () => {
+          await createPublished("first", invalid);
+          return tightened();
+        };
+        /** Published and valid, under a draft failing the schema. */
+        const invalidDraft = async () => {
+          await createPublished("first", valid);
+          await store.writeField("notes/first", "tags", []);
+          return tightened();
+        };
+        /** Never published, with a draft failing the schema. */
+        const invalidNeverPublished = async () => {
+          await store.create("note", "first", invalid);
+          return tightened();
+        };
+
+        test("an unvalidated read returns a stale published payload as stored, reporting nothing", async () => {
+          await createPublished("first", invalid);
+          const reported: string[] = [];
+          const next = await reopen(registryOf(noteTightened), { onReadIssue: (key) => reported.push(key) });
+          for (const draft of [true, false])
+            expect(await next.get("notes/first", { draft, unvalidated: true })).toMatchObject({
+              key: "notes/first",
+              type: "note",
+              isDraft: false,
+              payload: invalid,
+            });
+          expect(reported).toEqual([]);
+        });
+
+        test("an unvalidated read returns an invalid draft as stored; the strict read still throws", async () => {
+          const next = await invalidDraft();
+          expect(await next.get("notes/first", { draft: true, unvalidated: true })).toMatchObject({
+            isDraft: true,
+            payload: invalid,
+          });
+          expect(await next.get("notes/first", { unvalidated: true })).toMatchObject({
+            isDraft: false,
+            payload: valid,
+          });
+          await expect(next.get("notes/first", { draft: true })).rejects.toThrow(ContentValidationError);
+        });
+
+        test("an unvalidated read applies migrate, and a migrate that throws returns the stored payload", async () => {
+          await createPublished("first", invalid);
+          const migrating = await reopen(registryOf(noteV2), { onReadIssue: noop });
+          expect((await migrating.get("notes/first", { unvalidated: true }))?.payload).toEqual({
+            ...invalid,
+            subtitle: "",
+          });
+          const throwing: RegistryEntry = {
+            ...noteV2,
+            migrate: () => {
+              throw new Error("migrate blew up");
+            },
+          };
+          const next = await reopen(registryOf(throwing), { onReadIssue: noop });
+          expect((await next.get("notes/first", { draft: true, unvalidated: true }))?.payload).toEqual(invalid);
+          expect((await next.get("notes/first", { unvalidated: true }))?.payload).toEqual(invalid);
+        });
+
+        test("list honours unvalidated", async () => {
+          const next = await invalidNeverPublished();
+          await expect(next.list("note", { draft: true })).rejects.toThrow(ContentValidationError);
+          expect((await next.list("note", { draft: true, unvalidated: true })).map((doc) => doc.payload)).toEqual([
+            invalid,
+          ]);
+        });
+
+        test("a stale published payload can be retired, restored, renamed, discarded and unpublished", async () => {
+          const next = await stalePublished();
+          expect((await next.retire("notes/first")).payload).toEqual(invalid);
+          expect((await next.restore("notes/first")).retiredAt).toBeNull();
+          expect((await next.rename("notes/first", "second")).key).toBe("notes/second");
+          expect(await next.discardDraft("notes/second")).toMatchObject({ isDraft: false, payload: invalid });
+          expect(await next.unpublish("notes/second")).toMatchObject({
+            isDraft: true,
+            publishedAt: null,
+            payload: invalid,
+          });
+          expect(await next.get("notes/second", { includeRetired: true })).toBeNull();
+        });
+
+        test("an invalid draft can be retired, restored, renamed and unpublished, keeping the draft", async () => {
+          const next = await invalidDraft();
+          expect((await next.retire("notes/first")).payload).toEqual(invalid);
+          expect((await next.restore("notes/first")).isDraft).toBe(true);
+          expect((await next.rename("notes/first", "second")).payload).toEqual(invalid);
+          expect(await next.unpublish("notes/second")).toMatchObject({
+            isDraft: true,
+            publishedAt: null,
+            payload: invalid,
+          });
+        });
+
+        test("discarding an invalid draft leaves the valid published document", async () => {
+          const next = await invalidDraft();
+          expect(await next.discardDraft("notes/first")).toMatchObject({ isDraft: false, payload: valid });
+          expect((await next.get("notes/first", { draft: true }))?.payload).toEqual(valid);
+        });
+
+        test("a never-published invalid draft can be retired and discarded, not unpublished", async () => {
+          const next = await invalidNeverPublished();
+          await expect(next.unpublish("notes/first")).rejects.toThrow(DocumentStateError);
+          expect((await next.retire("notes/first")).payload).toEqual(invalid);
+          expect((await next.restore("notes/first")).payload).toEqual(invalid);
+          expect(await next.discardDraft("notes/first")).toBeNull();
+        });
+
+        for (const [state, open] of Object.entries({ stalePublished, invalidDraft, invalidNeverPublished }))
+          test(`a draft write still validates (${state}): invalid throws, valid repairs`, async () => {
+            const next = await open();
+            await expect(next.writeField("notes/first", "title", "B")).rejects.toThrow(ContentValidationError);
+            expect(await next.writeField("notes/first", "tags", ["y"])).toMatchObject({
+              isDraft: true,
+              payload: { title: "A", tags: ["y"] },
+            });
+            expect((await next.get("notes/first", { draft: true }))?.payload).toEqual({ title: "A", tags: ["y"] });
+          });
+
+        test("restoring a valid revision repairs a stale published payload with no draft", async () => {
+          await createPublished("first", valid);
+          await store.writeField("notes/first", "tags", []);
+          await store.publish("notes/first");
+          const [revision] = await store.revisions("notes/first");
+          const next = await tightened();
+          const restored = await next.restoreRevision("notes/first", revision?.id ?? -1);
+          expect(restored).toMatchObject({ isDraft: true, payload: valid });
+          expect((await next.get("notes/first", { draft: true }))?.payload).toEqual(valid);
+        });
+
+        test("restoring a valid revision replaces an invalid draft", async () => {
+          const next = await invalidDraft();
+          const [revision] = await next.revisions("notes/first");
+          const restored = await next.restoreRevision("notes/first", revision?.id ?? -1);
+          expect(restored).toMatchObject({ isDraft: true, payload: valid });
+        });
+
+        test("restoring a revision that fails the current schema throws and changes nothing", async () => {
+          await createPublished("first", invalid);
+          const [revision] = await store.revisions("notes/first");
+          const next = await tightened();
+          const before = await next.get("notes/first", { draft: true, unvalidated: true });
+          await expect(next.restoreRevision("notes/first", revision?.id ?? -1)).rejects.toThrow(ContentValidationError);
+          expect(await next.get("notes/first", { draft: true, unvalidated: true })).toEqual(before);
+        });
+
+        for (const [state, open] of Object.entries({ invalidDraft, invalidNeverPublished }))
+          test(`publish refuses an invalid draft, now and when scheduling (${state})`, async () => {
+            const next = await open();
+            await expect(next.publish("notes/first")).rejects.toThrow(ContentValidationError);
+            await expect(next.publish("notes/first", { at: "2999-01-01T00:00:00.000Z" })).rejects.toThrow(
+              ContentValidationError,
+            );
+          });
+      });
+
+      describe("publishDue with a due document that fails", () => {
+        const first = "2000-01-01T00:00:00.000Z";
+        const second = "2000-01-02T00:00:00.000Z";
+        const scheduleBoth = async () => {
+          await store.create("note", "bad", { title: "Bad", tags: [] });
+          await store.create("note", "good", { title: "Good", tags: ["x"] });
+          await store.publish("notes/bad", { at: first });
+          await store.publish("notes/good", { at: second });
+          return reopen(registryOf(noteTightened), { onReadIssue: noop });
+        };
+
+        test("publishes the others, reports the failure and leaves it scheduled", async () => {
+          const next = await scheduleBoth();
+          const before = await next.get("notes/bad", { draft: true, unvalidated: true });
+          const failures: [string, unknown][] = [];
+          const published = await next.publishDue(undefined, {
+            actor: "cron",
+            onFailure: (key, error) => failures.push([key, error]),
+          });
+          expect(published.map((doc) => doc.key)).toEqual(["notes/good"]);
+          expect(failures).toEqual([["notes/bad", expect.any(ContentValidationError)]]);
+          expect(await next.get("notes/bad", { draft: true, unvalidated: true })).toEqual(before);
+          expect(before?.scheduledAt).toBe(first);
+          expect(await next.get("notes/bad")).toBeNull();
+          expect(await next.revisions("notes/bad")).toEqual([]);
+          expect(await next.revisions("notes/good")).toMatchObject([{ action: "publish", actor: "cron" }]);
+        });
+
+        test("retries it on the next run, and publishes it once repaired", async () => {
+          const next = await scheduleBoth();
+          const failures: string[] = [];
+          const onFailure = (key: string) => failures.push(key);
+          await next.publishDue(undefined, { onFailure });
+          expect(await next.publishDue(undefined, { onFailure })).toEqual([]);
+          expect(failures).toEqual(["notes/bad", "notes/bad"]);
+          await next.writeField("notes/bad", "tags", ["fixed"]);
+          const published = await next.publishDue(undefined, { onFailure });
+          expect(published.map((doc) => doc.key)).toEqual(["notes/bad"]);
+          expect(failures).toHaveLength(2);
+        });
       });
     });
 

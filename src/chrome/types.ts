@@ -1,9 +1,15 @@
 import type { EditFieldType } from "../editable.ts";
-import type { DocumentResponse, DocumentSummary, ErrorCode, WireDocument, WireRevision } from "../http/wire.ts";
+import type {
+  DocumentForPublishResponse,
+  DocumentSummary,
+  ErrorCode,
+  WireDocument,
+  WireRevision,
+} from "../http/wire.ts";
 import type { Strings } from "./strings.ts";
 
 // The wire types live with the HTTP contract in src/http; the chrome re-exports them for host widgets and panels.
-export type { DocumentResponse, DocumentSummary, EditFieldType, ErrorCode, WireDocument, WireRevision };
+export type { DocumentForPublishResponse, DocumentSummary, EditFieldType, ErrorCode, WireDocument, WireRevision };
 
 /**
  * The chrome's view of one document: the summary, plus the draft payload once it has been fetched (`GET document`)

@@ -45,15 +45,29 @@ export interface DocumentsResponse {
   documents: Record<string, DocumentSummary>;
 }
 
+/** Response of the POST routes that return one document. */
 export interface DocumentResponse {
+  document: WireDocument;
+}
+
+/** Response of `GET document`. */
+export interface DocumentForPublishResponse {
   document: WireDocument;
   /** The payload published now, whatever the draft says; null when the document has none. */
   publishedPayload: unknown | null;
 }
 
-/** Response of `publish-due`: every document it published, in the order they were due. */
+/** A due document `publish-due` could not publish. It stays scheduled and is retried on the next run. */
+export interface PublishDueFailure {
+  key: string;
+  code: ErrorCode;
+  message: string;
+}
+
+/** Response of `publish-due`: every document it published, in the order they were due, and those that failed. */
 export interface PublishDueResponse {
   documents: WireDocument[];
+  failed: PublishDueFailure[];
 }
 
 export interface DiscardResponse {
