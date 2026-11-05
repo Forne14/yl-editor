@@ -11,7 +11,7 @@ beforeEach(() => {
   host = document.getElementById("host") as HTMLElement;
 });
 
-function context(type: EditFieldType, value: unknown, options?: string[]) {
+function context(type: EditFieldType, value: unknown, options?: string[], unsaved = false) {
   const commit = vi.fn(async () => {});
   const cancel = vi.fn();
   const announce = vi.fn();
@@ -22,6 +22,7 @@ function context(type: EditFieldType, value: unknown, options?: string[]) {
     commit,
     cancel,
     announce,
+    unsaved,
   };
   return { ctx, commit, cancel, announce };
 }
@@ -126,4 +127,44 @@ test("text paste is reduced to plain text", () => {
   expect(paste.defaultPrevented).toBe(true);
   expect(host.querySelector("b")).toBeNull();
   expect(host.textContent).toContain("<b>bold</b> line");
+});
+
+test.each(["blur", "commit"])("a text widget holding a failed save commits it when left by %s", (exit) => {
+  const { ctx, commit, cancel } = context("text", "Value", undefined, true);
+  const widget = defaultWidgets.text.mount(ctx);
+  if (exit === "blur") host.dispatchEvent(new FocusEvent("blur"));
+  else widget.commit?.();
+  expect(commit).toHaveBeenCalledWith("Value");
+  expect(cancel).not.toHaveBeenCalled();
+});
+
+test("a text widget left untouched through the chrome's commit cancels", () => {
+  const { ctx, commit, cancel } = context("text", "Value");
+  defaultWidgets.text.mount(ctx).commit?.();
+  expect(commit).not.toHaveBeenCalled();
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+test("a text widget's edit is committed when the chrome closes it", () => {
+  const { ctx, commit } = context("text", "Value");
+  const widget = defaultWidgets.text.mount(ctx);
+  host.textContent = "Edited";
+  widget.commit?.();
+  expect(commit).toHaveBeenCalledWith("Edited");
+});
+
+test("a popover holding a failed save commits it when left, and Esc still backs out", () => {
+  const first = context("url", "https://a.test", undefined, true);
+  defaultWidgets.url.mount(first.ctx).commit?.();
+  expect(first.commit).toHaveBeenCalledWith("https://a.test");
+  expect(first.cancel).not.toHaveBeenCalled();
+  document.querySelector(".cms-popover")?.remove();
+
+  const second = context("url", "https://a.test", undefined, true);
+  defaultWidgets.url.mount(second.ctx);
+  popoverControl<HTMLInputElement>("input").dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+  );
+  expect(second.cancel).toHaveBeenCalledOnce();
+  expect(second.commit).not.toHaveBeenCalled();
 });

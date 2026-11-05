@@ -105,11 +105,12 @@ function textWidget(note?: string): Widget {
       const originalNodes = [...target.childNodes].map((node) => node.cloneNode(true));
       const originalEditable = target.getAttribute("contenteditable");
       const outcome = once(ctx);
-      // Leaving untouched must write nothing, even when the starting value is not the text the page renders.
+      // Leaving untouched must write nothing, even when the starting value is not the text the page renders. The one
+      // exception is a value that failed to save, which is what the text on the page now is.
       const untouched = (target.textContent ?? "").trim();
       const finish = () => {
         const text = (target.textContent ?? "").trim();
-        if (text === untouched) outcome.cancel();
+        if (text === untouched && !ctx.unsaved) outcome.cancel();
         else outcome.commit(text);
       };
       const notePopover = note ? openPopover(target, note) : undefined;
@@ -145,6 +146,7 @@ function textWidget(note?: string): Widget {
           target.focus();
           placeCaretAtEnd(target);
         },
+        commit: finish,
         destroy() {
           target.removeEventListener("keydown", handleKeydown);
           target.removeEventListener("paste", handlePaste);
@@ -179,10 +181,11 @@ function formWidget(
       const outcome = once(ctx);
       const parts = build(ctx, outcome);
       // Leaving untouched must write nothing, even when the stored value is missing and the control shows a default.
+      // The one exception is a value that failed to save, which the control starts from.
       const untouched = JSON.stringify(parts.read());
       const finish = () => {
         const value = parts.read();
-        if (JSON.stringify(value) === untouched) outcome.cancel();
+        if (JSON.stringify(value) === untouched && !ctx.unsaved) outcome.cancel();
         else outcome.commit(value);
       };
       const popover = openPopover(ctx.element, fieldLabel(ctx), finish);

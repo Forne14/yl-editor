@@ -1,11 +1,12 @@
 // `mountEditor`: wires the scanned fields, the save queue, the bar, the toast and the sheet together.
 import { diffPayloads, type DiffEntry } from "../diff.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
-import { Disposer, button, element, valueAtPath } from "./dom.ts";
+import { Disposer, button, element, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
-import { Session, type SaveSlot } from "./session.ts";
+import { Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
+  DocumentState,
   EditorApi,
   EditorHandle,
   EditorOptions,
@@ -27,6 +28,10 @@ const TEXT_TYPES = new Set(["text", "richtext"]);
 
 function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isConflict(error: unknown): error is ContentRequestError {
+  return error instanceof ContentRequestError && error.code === "conflict";
 }
 
 function errorMessage(error: unknown, strings: Strings): string {
@@ -85,6 +90,19 @@ function localToIso(value: string): string | undefined {
     `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
     `T${pad(when.getHours())}:${pad(when.getMinutes())}:${pad(when.getSeconds())}${zone}`
   );
+}
+
+/** A `Date` as a `datetime-local` value, to the minute. */
+function localInputValue(when: Date): string {
+  return (
+    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
+    `T${pad(when.getHours())}:${pad(when.getMinutes())}`
+  );
+}
+
+/** A document's share of the change count. An unpublish changes a document without changing a field; it still counts. */
+function changeCount(state: DocumentState): number {
+  return state.touched ? Math.max(state.touchedPaths.size, 1) : 0;
 }
 
 export function mountEditor(options: EditorOptions = {}): EditorHandle {
@@ -189,7 +207,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   function updateBar(): void {
     const touched = touchedDocuments();
-    const fieldCount = touched.reduce((sum, state) => sum + state.touchedPaths.size, 0);
+    const fieldCount = touched.reduce((sum, state) => sum + changeCount(state), 0);
     changesLine.dataset.documents = String(touched.length);
     changesLine.dataset.fields = String(fieldCount);
     changesLine.textContent =
@@ -208,9 +226,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           element("small", {}, [
             format(strings.scheduledFor, { key: state.key, time: formatTime(state.scheduledAt ?? "") }),
           ]),
-          state.access.publish
-            ? button(strings.publishNow, () => void api.publish(state.key).catch(() => undefined), "ghost")
-            : null,
+          state.access.publish ? button(strings.publishNow, () => publishNow(state.key), "ghost") : null,
         ]),
       ),
     );
@@ -241,8 +257,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const { info } = record;
     const registered = widgets[info.type];
     const widget = registered ?? missingWidget(strings, info.type);
+    const slot = session.slot(info.key, info.path);
+    const committed = session.committedValue(info.key, info.path);
     let initial: unknown;
-    if (TEXT_TYPES.has(info.type) || !registered) {
+    if (committed) {
+      initial = committed.value;
+    } else if (TEXT_TYPES.has(info.type) || !registered) {
       initial = textValue(record, session.documents.get(info.key)?.payload);
     } else {
       // Popover widgets start from the stored value, never from the page's text. `data-edit-value` stands in only
@@ -254,7 +274,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       } catch (error) {
         failure = { error };
       }
-      if (ticket !== openTicket || destroyed || !editing) return;
+      if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
       initial = stored === undefined ? editValueAttribute(record) : stored;
       if (failure) {
         const message = errorMessage(failure.error, strings);
@@ -271,11 +291,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       element: record.element,
       field: { ...info, options: info.options ? [...info.options] : undefined },
       value: initial,
+      get unsaved() {
+        return slot.state === "failed";
+      },
       async commit(next) {
         if (opened.closed) return;
         if (active === opened) closeActive(true);
         opened.closed = true;
-        if (!sameValue(next, initial)) await session.save(info.key, info.path, next);
+        if (!sameValue(next, initial) || slot.state === "failed") await session.save(info.key, info.path, next);
       },
       cancel() {
         if (opened.closed) return;
@@ -359,6 +382,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   });
   disposer.listen(window, "scroll", () => badge.hide(), { passive: true });
 
+  /** Every sheet goes through here: it cancels a slow popover, and an open edit lands before the sheet reads anything. */
+  function openSheet(title: string, build: (body: HTMLElement) => (() => void) | void, opener: HTMLElement): void {
+    openTicket += 1;
+    closeActive(false, true);
+    sheet.open(title, build, opener);
+  }
+
   /** `null` is a first publish. Fetched afresh each time, so another editor's change shows. */
   async function changesOf(key: string): Promise<DiffEntry[] | null> {
     const { document, publishedPayload } = await session.documentForPublish(key);
@@ -380,29 +410,39 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     ]);
   }
 
-  function fillChanges(key: string, target: HTMLElement, isOpen: () => boolean): void {
-    target.append(element("p", { class: "cms-muted" }, [strings.loadingChanges]));
+  /** Never rejects: a failure is shown in `target`. */
+  async function fillChanges(key: string, target: HTMLElement, isOpen: () => boolean): Promise<void> {
     const note = (text: string, className = "cms-muted") =>
       target.replaceChildren(element("p", { class: className }, [text]));
-    changesOf(key).then(
-      (changes) => {
-        if (!isOpen()) return;
-        if (changes === null) note(strings.firstPublish);
-        else if (changes.length === 0) note(strings.noDifferences);
-        else target.replaceChildren(element("ul", { class: "cms-list" }, changes.map(changeLine)));
-      },
-      (error: unknown) => {
-        if (isOpen()) note(format(strings.changesFailed, { message: errorMessage(error, strings) }), "cms-error");
-      },
-    );
+    note(strings.loadingChanges);
+    try {
+      const changes = await changesOf(key);
+      if (!isOpen()) return;
+      if (changes === null) note(strings.firstPublish);
+      else if (changes.length === 0) note(strings.noDifferences);
+      else target.replaceChildren(element("ul", { class: "cms-list" }, changes.map(changeLine)));
+    } catch (error) {
+      if (isOpen()) note(format(strings.changesFailed, { message: errorMessage(error, strings) }), "cms-error");
+    }
   }
 
-  // Bulk publish and discard act on touched documents the user may publish, listed before anything happens.
-  function openBulk(kind: "publish" | "discard", opener: HTMLElement): void {
-    const touched = touchedDocuments();
+  interface SheetRow {
+    item: HTMLElement;
+    changes: HTMLElement;
+    notice: HTMLElement | undefined;
+    review: Review | undefined;
+  }
+
+  /**
+   * Bulk publish and discard act on touched documents the user may publish, listed before anything happens. `only`
+   * lists one document instead, touched or not, after a publish of it conflicted.
+   */
+  function openBulk(kind: "publish" | "discard", opener: HTMLElement, only?: string): void {
+    const onlyState = only === undefined ? undefined : session.documents.get(only);
+    const touched = only === undefined ? touchedDocuments() : onlyState ? [onlyState] : [];
     const eligible = touched.filter((state) => (kind === "publish" ? state.access.publish : state.access.edit));
     const title = kind === "publish" ? strings.publishTitle : strings.discardTitle;
-    sheet.open(
+    openSheet(
       title,
       (body) => {
         let isOpen = true;
@@ -410,20 +450,34 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           body.append(element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]));
           return;
         }
+        const stillOpen = () => isOpen;
+        const rows = new Map<string, SheetRow>();
+        const showNotice = (row: SheetRow, text: string) => {
+          row.notice?.remove();
+          row.notice = element("div", { class: "cms-diff" }, [element("p", { class: "cms-error" }, [text])]);
+          if (kind === "publish") row.changes.before(row.notice);
+          else row.item.append(row.notice);
+        };
+        /** Starts the review over: until the diff has loaded again, a publish falls back to the session's version. */
+        const review = (key: string, row: SheetRow) => {
+          if (row.review) session.endReview(key, row.review);
+          row.review = session.startReview(key);
+          return fillChanges(key, row.changes, stillOpen);
+        };
         body.append(
           element(
             "ul",
             { class: "cms-list" },
             eligible.map((state) => {
+              const changes = element("div", { class: "cms-diff" });
               const item = element("li", { "data-key": state.key }, [
                 element("b", {}, [state.key]),
-                ` · ${state.touchedPaths.size}`,
+                ` · ${changeCount(state)}`,
               ]);
-              if (kind === "publish") {
-                const changes = element("div", { class: "cms-diff" });
-                item.append(changes);
-                fillChanges(state.key, changes, () => isOpen);
-              }
+              if (kind === "publish") item.append(changes);
+              const row: SheetRow = { item, changes, notice: undefined, review: undefined };
+              rows.set(state.key, row);
+              if (kind === "publish") void review(state.key, row);
               return item;
             }),
           ),
@@ -436,34 +490,104 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             ]),
           );
         }
-        const publishAt = element("input", { class: "cms-input", type: "datetime-local" });
-        const at = () => localToIso(publishAt.value);
-        const confirm = button(
+        if (only !== undefined && kind === "publish") {
+          for (const row of rows.values()) showNotice(row, format(strings.publishConflict, { key: only }));
+        }
+
+        const pastNote = element("div", { class: "cms-diff", id: uniqueId("cms-publish-at-note"), hidden: true });
+        const publishAt =
+          kind === "publish" && options.scheduling === true
+            ? element("input", { class: "cms-input", type: "datetime-local", "aria-describedby": pastNote.id })
+            : null;
+        const at = () => (publishAt ? localToIso(publishAt.value) : undefined);
+        const inPast = () => {
+          const when = at();
+          return when !== undefined && new Date(when).getTime() <= Date.now();
+        };
+        const syncConfirm = () => {
+          if (!publishAt) {
+            confirm.disabled = false;
+            return;
+          }
+          publishAt.min = localInputValue(new Date());
+          confirm.textContent = at() !== undefined ? strings.schedule : strings.publish;
+          const past = inPast();
+          if (past && pastNote.hidden) toast.announce(strings.scheduleInPast);
+          pastNote.hidden = !past;
+          pastNote.replaceChildren(...(past ? [element("p", { class: "cms-error" }, [strings.scheduleInPast])] : []));
+          // A half-typed date reads as empty; publishing right now would be the wrong guess.
+          confirm.disabled = publishAt.validity.badInput || past;
+        };
+        const confirm: HTMLButtonElement = button(
           kind === "publish" ? strings.publish : strings.discard,
           async () => {
+            // `min` isn't enforced on typed values, and the clock may have passed this time since it was typed.
+            if (inPast()) {
+              syncConfirm();
+              return;
+            }
             confirm.disabled = true;
             const when = at();
-            for (const state of eligible) {
+            const action =
+              kind === "discard" ? strings.discard : when !== undefined ? strings.schedule : strings.publish;
+            const keys = [...rows.keys()];
+            for (const [key, row] of rows) {
+              row.notice?.remove();
+              row.notice = undefined;
+              // Nothing reviewed yet: this goes out on the session's version, even if the diff arrives meanwhile.
+              if (row.review && row.review.version === undefined) session.endReview(key, row.review);
+            }
+            const failed: { key: string; error: unknown }[] = [];
+            for (const key of keys) {
               try {
-                if (kind === "publish") await api.publish(state.key, when !== undefined ? { at: when } : undefined);
-                else await api.discard(state.key);
-              } catch {
-                // Reported through the toast by api.publish / api.discard; carry on with the rest.
+                if (kind === "publish") await publish(key, when);
+                else await discard(key);
+                const row = rows.get(key) as SheetRow;
+                row.item.remove();
+                if (row.review) session.endReview(key, row.review);
+                rows.delete(key);
+              } catch (error) {
+                // Reported below and by `lifecycle`; carry on with the rest.
+                failed.push({ key, error });
               }
             }
-            sheet.close();
+            const total = keys.length;
+            if (failed.length === 0) {
+              if (total > 1) toast.show(format(strings.bulkDone, { action, total }), "saved");
+              if (isOpen) sheet.close();
+              return;
+            }
+            if (total > 1) {
+              toast.show(
+                format(strings.bulkPartial, {
+                  action,
+                  total,
+                  done: total - failed.length,
+                  keys: failed.map(({ key }) => key).join(", "),
+                }),
+                "error",
+              );
+            }
+            if (!isOpen) return;
+            await Promise.all(
+              failed.map(({ key, error }) => {
+                const row = rows.get(key) as SheetRow;
+                const conflict = kind === "publish" ? strings.publishConflict : strings.actionConflict;
+                showNotice(row, failureText(action, key, error, conflict));
+                return kind === "publish" && isConflict(error) ? review(key, row) : undefined;
+              }),
+            );
+            if (!isOpen) return;
+            syncConfirm();
+            confirm.focus();
           },
           kind === "publish" ? "primary" : "danger",
         );
-        if (kind === "publish") {
-          const syncConfirm = () => {
-            confirm.textContent = at() !== undefined ? strings.schedule : strings.publish;
-            // A half-typed date reads as empty; publishing right now would be the wrong guess.
-            confirm.disabled = publishAt.validity.badInput;
-          };
+        if (publishAt) {
+          publishAt.min = localInputValue(new Date());
           publishAt.addEventListener("input", syncConfirm);
           publishAt.addEventListener("change", syncConfirm);
-          body.append(element("label", { class: "cms-field-label" }, [strings.publishAt, publishAt]));
+          body.append(element("label", { class: "cms-field-label" }, [strings.publishAt, publishAt]), pastNote);
         }
         body.append(
           element("div", { class: "cms-sheet__actions" }, [
@@ -473,16 +597,22 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         );
         return () => {
           isOpen = false;
+          for (const [key, row] of rows) if (row.review) session.endReview(key, row.review);
         };
       },
       opener,
     );
   }
 
+  /** After a publish outside the sheet conflicted: the sheet, on that one document's updated diff. */
+  function reviewConflict(key: string): void {
+    openBulk("publish", publishButton, key);
+  }
+
   function openRevisions(opener: HTMLElement): void {
     const keys = [...groupByDocument(fields).keys()];
     const recent = touchedDocuments().at(-1)?.key ?? keys[0];
-    sheet.open(
+    openSheet(
       strings.revisions,
       (body) => {
         const picker = element(
@@ -603,7 +733,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   for (const panel of options.panels ?? []) {
     const opener: HTMLButtonElement = button(panel.label, () =>
-      sheet.open(
+      openSheet(
         panel.label,
         (body) => {
           const mounted = panel.mount(body, api);
@@ -628,89 +758,181 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const publishButton: HTMLButtonElement = button(strings.publish, () => openBulk("publish", publishButton), "primary");
   actions.append(revisionsButton, doneButton, discardButton, publishButton);
 
-  /** A lifecycle write on the document's chain; a failure becomes a toast and is rethrown to the caller. */
-  async function lifecycle<Result>(action: string, key: string, task: () => Promise<Result>): Promise<Result> {
+  function failureText(action: string, key: string, error: unknown, conflict = strings.actionConflict): string {
+    return format(isConflict(error) ? conflict : strings.actionFailed, {
+      action,
+      key,
+      message: errorMessage(error, strings),
+    });
+  }
+
+  /**
+   * A lifecycle write on the document's chain. `task` applies the result itself, so the chain doesn't release until the
+   * session is up to date (see `Session.run`). A failure becomes a toast and is rethrown to the caller. Starting one
+   * cancels a popover still waiting on its fetch.
+   */
+  async function lifecycle<Result>(
+    action: string,
+    key: string,
+    task: () => Promise<Result>,
+    conflict = strings.actionConflict,
+  ): Promise<Result> {
+    openTicket += 1;
     try {
       return await session.run(key, task);
     } catch (error) {
-      toast.show(format(strings.actionFailed, { action, key, message: errorMessage(error, strings) }), "error");
+      toast.show(failureText(action, key, error, conflict), "error");
       throw error;
     }
   }
 
+  /**
+   * Repaints the document's fields from a payload the session just took. A field with a save on its way keeps what the
+   * editor committed. `closeOpen` is for writes that replace the content under an open widget.
+   */
+  function repaint(key: string, payload: unknown, closeOpen: boolean): void {
+    for (const record of fields) {
+      if (record.info.key !== key || session.committedValue(key, record.info.path)) continue;
+      if (active?.record === record) {
+        if (!closeOpen) continue;
+        closeActive(false);
+      }
+      render(record, valueAtPath(payload, record.info.path));
+      showState(record, "idle");
+    }
+  }
+
+  /**
+   * The rule for Unpublish, Restore and Discard: send the version this session knows, and on a conflict do nothing but
+   * catch up, so the page shows what the editor is deciding about. `task` receives the version to send.
+   */
+  function guarded<Result>(key: string, task: (expectedVersion: number | undefined) => Promise<Result>) {
+    return async (): Promise<Result> => {
+      try {
+        return await task(session.documents.get(key)?.version);
+      } catch (error) {
+        if (isConflict(error) && error.current) {
+          session.adopt(error.current);
+          repaint(key, error.current.payload, false);
+          updateBar();
+        }
+        throw error;
+      }
+    };
+  }
+
   async function publish(key: string, at: string | undefined): Promise<void> {
-    const document = await lifecycle(strings.publish, key, () =>
-      client.publish(key, at !== undefined ? { at } : undefined),
+    const document = await lifecycle(
+      strings.publish,
+      key,
+      async () => {
+        const expectedVersion = session.publishVersion(key);
+        const known = session.documents.get(key)?.version;
+        const written = await client.publish(key, { ...(at !== undefined ? { at } : {}), expectedVersion });
+        // Scheduled, not published: the draft is still this session's change until it goes live.
+        if (at !== undefined) session.applyWrite(expectedVersion, written);
+        else session.settle(key, written);
+        // The sheet showed a change this page hasn't: the session is at that version now, so the page must be too.
+        if (expectedVersion !== known) repaint(key, written.payload, false);
+        updateBar();
+        return written;
+      },
+      strings.publishConflict,
     );
     if (at !== undefined) {
-      // Scheduled, not published: the draft is still this session's change until it goes live.
-      session.adopt(document);
-      updateBar();
       toast.show(format(strings.scheduled, { key, time: formatTime(document.scheduledAt ?? at) }), "saved");
       return;
     }
-    session.settle(key, document);
-    updateBar();
     toast.show(format(strings.published, { key }), "saved");
   }
 
+  function publishNow(key: string): void {
+    publish(key, undefined).catch((error: unknown) => {
+      if (isConflict(error)) reviewConflict(key);
+    });
+  }
+
   async function discard(key: string): Promise<void> {
-    const document = await lifecycle(strings.discard, key, () => client.discard(key));
-    session.settle(key, document);
-    for (const record of fields) {
-      if (record.info.key !== key) continue;
-      if (document) {
-        render(record, valueAtPath(document.payload, record.info.path));
-        showState(record, "idle");
-      } else {
-        // Never published: the store deleted it, so there is nothing left to edit.
-        if (active?.record === record) closeActive(false);
-        record.detach?.();
-        record.editable = false;
-        record.reason = strings.unknownDocument;
-      }
-    }
-    if (!document) session.documents.delete(key);
-    updateBar();
+    const document = await lifecycle(
+      strings.discard,
+      key,
+      guarded(key, async (expectedVersion) => {
+        const written = await client.discard(key, { expectedVersion });
+        session.clearFailed(key);
+        session.settle(key, written);
+        if (written) repaint(key, written.payload, true);
+        else {
+          // Never published: the store deleted it, so there is nothing left to edit.
+          for (const record of fields) {
+            if (record.info.key !== key) continue;
+            if (active?.record === record) closeActive(false);
+            record.detach?.();
+            record.editable = false;
+            record.reason = strings.unknownDocument;
+          }
+          session.documents.delete(key);
+        }
+        updateBar();
+        return written;
+      }),
+    );
     toast.show(format(document ? strings.discarded : strings.discardedNeverPublished, { key }), "saved");
   }
 
   async function unpublish(key: string): Promise<void> {
-    const document = await lifecycle(strings.unpublish, key, () => client.unpublish(key));
-    session.adopt(document);
-    updateBar();
+    await lifecycle(
+      strings.unpublish,
+      key,
+      guarded(key, async (expectedVersion) => {
+        session.applyWrite(expectedVersion, await client.unpublish(key, { expectedVersion }));
+        // Nothing changed in the draft, but it is no longer live: that is something to publish.
+        session.touch(key);
+        updateBar();
+      }),
+    );
     toast.show(format(strings.unpublished, { key }), "saved");
   }
 
   async function restoreRevision(key: string, revisionId: number): Promise<void> {
     // An edit still open goes onto the chain first, so the restore lands after it rather than under it.
     closeActive(false, true);
-    let before: unknown;
-    const document = await lifecycle(strings.restore, key, async () => {
-      before = await session.document(key).then(
-        (current) => current.payload,
-        () => undefined,
-      );
-      return client.restoreRevision(key, revisionId);
-    });
-    session.adopt(document);
-    session.touch(
+    await lifecycle(
+      strings.restore,
       key,
-      diffPayloads(before, document.payload).map((entry) => entry.path),
+      guarded(key, async (expectedVersion) => {
+        const before = await session.document(key).then(
+          (current) => current.payload,
+          () => undefined,
+        );
+        const written = await client.restoreRevision(key, revisionId, { expectedVersion });
+        session.applyWrite(expectedVersion, written);
+        session.clearFailed(key);
+        session.touch(
+          key,
+          diffPayloads(before, written.payload).map((entry) => entry.path),
+        );
+        repaint(key, written.payload, true);
+        updateBar();
+      }),
     );
-    for (const record of fields) {
-      if (record.info.key !== key) continue;
-      if (active?.record === record) closeActive(false);
-      render(record, valueAtPath(document.payload, record.info.path));
-      showState(record, "idle");
-    }
-    updateBar();
     toast.show(format(strings.restored, { key }), "saved");
   }
 
   const api: EditorApi = {
     documents: () => session.documents,
-    publish: (key, options) => publish(key, options?.at),
+    async publish(key, publishOptions) {
+      try {
+        await publish(key, publishOptions?.at);
+      } catch (error) {
+        // A host panel has no sheet to show the updated diff in, so the toast leads to one.
+        if (isConflict(error)) {
+          toast.show(failureText(strings.publish, key, error, strings.publishConflict), "error", [
+            { label: strings.reviewChanges, onClick: () => reviewConflict(key), variant: "primary" },
+          ]);
+        }
+        throw error;
+      }
+    },
     discard,
     unpublish,
     restoreRevision,
