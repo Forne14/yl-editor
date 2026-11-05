@@ -1,0 +1,457 @@
+/*
+ * @yl/editor/chrome stylesheet.
+ *
+ * TOKENS. Every visual value is a --cms-* custom property declared in the token blocks below, on the chrome's
+ * surfaces (.cms-root) and on each highlighted host element (.cms-field), which lives in the host page outside
+ * .cms-root. A host restyles the chrome from its own stylesheet:
+ *
+ *   .cms-root, .cms-field { --cms-accent: #c2410c; --cms-font: "Inter", sans-serif; }
+ *
+ * Every rule is wrapped in :where(), so it has zero specificity and any host selector wins without a fight.
+ * Outside the token blocks there are no raw colours, pixel sizes or radii.
+ */
+
+:where(.cms-root, .cms-field) {
+  --cms-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --cms-size-sm: 0.8125rem;
+  --cms-size-md: 0.9375rem;
+  --cms-line: 1.4;
+  --cms-bg: #ffffff;
+  --cms-fg: #16181d;
+  --cms-muted: #5b6170;
+  --cms-border: #d5d8e0;
+  --cms-accent: #2557d6;
+  --cms-accent-fg: #ffffff;
+  --cms-danger: #b42318;
+  --cms-success: #1f7a45;
+  --cms-warning: #a15c07;
+  --cms-outline: 2px dashed #2557d6;
+  --cms-radius: 6px;
+  --cms-space-1: 4px;
+  --cms-space-2: 8px;
+  --cms-space-3: 12px;
+  --cms-space-4: 16px;
+  --cms-space-5: 24px;
+  --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+  --cms-z: 1000;
+  --cms-control-h: 44px;
+  --cms-sheet-max-h: 70vh;
+}
+
+@media (prefers-color-scheme: dark) {
+  :where(.cms-root, .cms-field) {
+    --cms-bg: #1b1d24;
+    --cms-fg: #f3f4f8;
+    --cms-muted: #aab0bf;
+    --cms-border: #3a3e4a;
+    --cms-accent: #6b9bff;
+    --cms-accent-fg: #0b1020;
+    --cms-danger: #ff8a7a;
+    --cms-success: #5fd394;
+    --cms-warning: #f0b429;
+    --cms-outline: 2px dashed #6b9bff;
+    --cms-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+  }
+}
+
+/* ---------- Fields: the host's own elements while editing ---------- */
+
+:where(.cms-field) {
+  outline: var(--cms-outline);
+  outline-offset: var(--cms-space-1);
+  border-radius: var(--cms-radius);
+  cursor: text;
+}
+
+:where(.cms-field:hover, .cms-field:focus-visible) {
+  outline-color: var(--cms-fg);
+}
+
+:where(.cms-field--editing) {
+  outline-style: solid;
+  outline-color: var(--cms-accent);
+}
+
+:where(.cms-field--locked) {
+  outline-color: var(--cms-muted);
+  cursor: not-allowed;
+}
+
+:where(.cms-field--saving) {
+  outline-color: var(--cms-warning);
+}
+
+:where(.cms-field--failed) {
+  outline-style: solid;
+  outline-color: var(--cms-danger);
+}
+
+/* ---------- Shared surfaces ---------- */
+
+:where(.cms-root) {
+  font-family: var(--cms-font);
+  font-size: var(--cms-size-md);
+  line-height: var(--cms-line);
+  color: var(--cms-fg);
+}
+
+/* The one rule with real specificity: a hidden surface stays hidden whatever display a host gives it. */
+.cms-root [hidden] {
+  display: none;
+}
+
+:where(.cms-root *, .cms-root *::before, .cms-root *::after) {
+  box-sizing: border-box;
+}
+
+:where(.cms-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cms-space-1);
+  min-height: var(--cms-control-h);
+  min-width: var(--cms-control-h);
+  padding: 0 var(--cms-space-3);
+  border: thin solid var(--cms-border);
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  color: var(--cms-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+:where(.cms-btn--primary) {
+  border-color: var(--cms-accent);
+  background: var(--cms-accent);
+  color: var(--cms-accent-fg);
+}
+
+:where(.cms-btn--danger) {
+  border-color: var(--cms-danger);
+  color: var(--cms-danger);
+}
+
+:where(.cms-btn--ghost) {
+  background: transparent;
+}
+
+:where(.cms-btn:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:where(.cms-root :focus-visible, .cms-field:focus-visible) {
+  outline: medium solid var(--cms-accent);
+  outline-offset: var(--cms-space-1);
+}
+
+:where(.cms-input) {
+  min-height: var(--cms-control-h);
+  width: 100%;
+  padding: 0 var(--cms-space-2);
+  border: thin solid var(--cms-border);
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  color: var(--cms-fg);
+  font: inherit;
+}
+
+:where(.cms-muted) {
+  color: var(--cms-muted);
+}
+
+:where(.cms-error) {
+  color: var(--cms-danger);
+}
+
+:where(.cms-visually-hidden, .cms-live) {
+  position: absolute;
+  inline-size: 1em;
+  block-size: 1em;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- Bar ---------- */
+
+:where(.cms-bar) {
+  position: fixed;
+  inset-inline: var(--cms-space-4);
+  bottom: var(--cms-space-4);
+  z-index: var(--cms-z);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-2) var(--cms-space-4);
+  padding: var(--cms-space-2) var(--cms-space-4);
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  box-shadow: var(--cms-shadow);
+}
+
+:where(.cms-bar__state) {
+  display: grid;
+  flex: 1 1 18em;
+  min-width: 0;
+}
+
+:where(.cms-bar__changes) {
+  color: var(--cms-muted);
+  font-size: var(--cms-size-sm);
+}
+
+:where(.cms-bar__scheduled) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-2);
+  margin: 0;
+  color: var(--cms-warning);
+}
+
+:where(.cms-bar__actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cms-space-2);
+}
+
+:where(.cms-enter) {
+  position: fixed;
+  right: var(--cms-space-4);
+  bottom: var(--cms-space-4);
+  z-index: var(--cms-z);
+  box-shadow: var(--cms-shadow);
+}
+
+/* ---------- Badge ---------- */
+
+:where(.cms-badge) {
+  position: fixed;
+  top: var(--cms-badge-top, 0);
+  left: var(--cms-badge-left, 0);
+  z-index: var(--cms-z);
+  transform: translateY(calc(-100% - var(--cms-space-1)));
+  padding: var(--cms-space-1) var(--cms-space-2);
+  border-radius: var(--cms-radius);
+  background: var(--cms-accent);
+  color: var(--cms-accent-fg);
+  font-size: var(--cms-size-sm);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+:where(.cms-badge--locked) {
+  background: var(--cms-muted);
+  color: var(--cms-bg);
+}
+
+/* ---------- Toast ---------- */
+
+:where(.cms-toast) {
+  position: fixed;
+  top: var(--cms-space-4);
+  left: 50%;
+  z-index: var(--cms-z);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-2) var(--cms-space-3);
+  max-width: calc(100vw - 2 * var(--cms-space-4));
+  padding: var(--cms-space-2) var(--cms-space-4);
+  transform: translateX(-50%);
+  border-radius: var(--cms-radius);
+  border-inline-start: medium solid var(--cms-accent);
+  background: var(--cms-bg);
+  box-shadow: var(--cms-shadow);
+}
+
+:where(.cms-toast[data-kind="saving"]) {
+  border-inline-start-color: var(--cms-warning);
+}
+
+:where(.cms-toast[data-kind="saved"]) {
+  border-inline-start-color: var(--cms-success);
+}
+
+:where(.cms-toast[data-kind="error"]) {
+  border-inline-start-color: var(--cms-danger);
+}
+
+:where(.cms-toast__message) {
+  margin: 0;
+}
+
+:where(.cms-toast__actions, .cms-popover__actions, .cms-sheet__actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cms-space-2);
+}
+
+/* ---------- Sheet and panels ---------- */
+
+:where(.cms-sheet) {
+  position: fixed;
+  right: var(--cms-space-4);
+  bottom: calc(var(--cms-control-h) * 2 + var(--cms-space-5));
+  z-index: var(--cms-z);
+  width: min(28em, calc(100vw - 2 * var(--cms-space-4)));
+  max-height: var(--cms-sheet-max-h);
+  overflow: auto;
+  padding: var(--cms-space-4);
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  box-shadow: var(--cms-shadow);
+}
+
+:where(.cms-sheet__header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cms-space-3);
+  margin-bottom: var(--cms-space-3);
+}
+
+:where(.cms-sheet__title) {
+  margin: 0;
+  font-size: var(--cms-size-md);
+}
+
+:where(.cms-sheet__body) {
+  display: grid;
+  gap: var(--cms-space-3);
+}
+
+:where(.cms-list) {
+  display: grid;
+  gap: var(--cms-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.cms-diff) {
+  margin-block-start: var(--cms-space-1);
+  font-size: var(--cms-size-sm);
+  overflow-wrap: anywhere;
+}
+
+:where(.cms-diff p) {
+  margin: 0;
+}
+
+:where(.cms-field-label) {
+  display: grid;
+  gap: var(--cms-space-1);
+  margin-block: var(--cms-space-3);
+  font-size: var(--cms-size-sm);
+}
+
+:where(.cms-revisions time) {
+  color: var(--cms-muted);
+  font-size: var(--cms-size-sm);
+}
+
+/* ---------- Widgets ---------- */
+
+:where(.cms-popover) {
+  position: absolute;
+  top: calc(var(--cms-popover-top, 0) + var(--cms-space-2));
+  left: var(--cms-popover-left, 0);
+  z-index: var(--cms-z);
+  display: grid;
+  gap: var(--cms-space-2);
+  width: min(22em, calc(100vw - 2 * var(--cms-space-4)));
+  padding: var(--cms-space-3);
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  box-shadow: var(--cms-shadow);
+}
+
+:where(.cms-popover--note) {
+  color: var(--cms-muted);
+  font-size: var(--cms-size-sm);
+}
+
+:where(.cms-popover__title) {
+  margin: 0;
+  font-size: var(--cms-size-sm);
+  font-weight: 600;
+}
+
+:where(.cms-toggle) {
+  display: flex;
+  align-items: center;
+  gap: var(--cms-space-2);
+  min-height: var(--cms-control-h);
+}
+
+:where(.cms-switch) {
+  inline-size: var(--cms-space-5);
+  block-size: var(--cms-space-5);
+  accent-color: var(--cms-accent);
+}
+
+:where(.cms-tags) {
+  display: grid;
+  gap: var(--cms-space-2);
+}
+
+:where(.cms-chips) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cms-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.cms-chip) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cms-space-1);
+  padding-inline-start: var(--cms-space-2);
+  border: thin solid var(--cms-border);
+  border-radius: var(--cms-radius);
+}
+
+/* ---------- Motion ---------- */
+
+:where(.cms-toast, .cms-sheet, .cms-popover, .cms-badge) {
+  transition:
+    opacity 160ms ease,
+    transform 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(.cms-toast, .cms-sheet, .cms-popover, .cms-badge) {
+    transition: opacity 120ms linear;
+  }
+}
+
+/* ---------- Under 40em the bar and every panel become bottom sheets ---------- */
+
+@media (max-width: 40em) {
+  :where(.cms-bar, .cms-sheet, .cms-popover) {
+    position: fixed;
+    inset-inline: 0;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: var(--cms-sheet-max-h);
+    overflow: auto;
+    border-radius: var(--cms-radius) var(--cms-radius) 0 0;
+    padding-bottom: calc(var(--cms-space-3) + env(safe-area-inset-bottom));
+  }
+
+  :where(.cms-bar__actions) {
+    width: 100%;
+  }
+
+  :where(.cms-bar__actions .cms-btn) {
+    flex: 1 1 auto;
+  }
+}
