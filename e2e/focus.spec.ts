@@ -128,6 +128,7 @@ test.describe("popover widgets", () => {
   test("Cancel writes nothing although the control was changed", async ({ page, demo }) => {
     await demo.openEditor();
     await page.locator("#home-tags").click();
+    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
     await page.keyboard.type("rye");
     await popover(page).getByRole("button", { name: "Cancel" }).click();
     await expect(popover(page)).toHaveCount(0);
@@ -140,6 +141,7 @@ test.describe("popover widgets", () => {
   test("Done commits and returns focus to the field", async ({ page, demo }) => {
     await demo.openEditor();
     await page.locator("#home-tags").click();
+    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
     await page.keyboard.type("rye");
     await popover(page).getByRole("button", { name: "Done" }).click();
     await expect(popover(page)).toHaveCount(0);
@@ -193,6 +195,8 @@ test.describe("popover widgets", () => {
   test("clicking elsewhere on the page commits the open popover", async ({ page, demo }) => {
     await demo.openEditor();
     await page.locator("#home-tags").click();
+    // The popover opens once its document has loaded; keys pressed before that go nowhere, as they would for a user.
+    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
     await page.keyboard.type("rye");
     await plainText(page).click();
     await expect(popover(page)).toHaveCount(0);
