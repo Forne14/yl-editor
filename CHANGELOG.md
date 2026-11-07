@@ -11,8 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Chrome: the number and date widgets commit on Enter, on leaving the popover, or when the chrome closes it, no longer
   on `change`. A number committed after one arrow step and a date after one segment in Chromium and Firefox, and
-  pressing Cancel after typing committed through the blur's `change`. Url already worked this way; select and toggle
-  still commit on change.
+  pressing Cancel after typing committed through the blur's `change`. A date picked from the browser's date picker,
+  with no keystroke, still commits at once. Url already worked this way; select and toggle still commit on change.
 
 ### Fixed
 

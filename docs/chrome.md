@@ -100,7 +100,7 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   untouched writes nothing, wherever the starting value came from.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select and toggle
   commit on change; number, date and url commit on Enter, not on change (arrow keys and date segments fire change at
-  every step); tags commit on Enter in an empty input or Done. Esc and Cancel back out and write nothing. Every popover
+  every step), except that a date picked from the browser's date picker commits at once; tags commit on Enter in an empty input or Done. Esc and Cancel back out and write nothing. Every popover
   also commits when it is left: a press anywhere outside it and its field, or focus moving out of it. A press inside the
   popover off its controls keeps it open. A popover edit still open when another field is opened, a sheet or panel is
   opened, the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Text is too, and its
