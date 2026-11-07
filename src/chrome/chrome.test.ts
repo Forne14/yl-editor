@@ -985,7 +985,7 @@ test("a failed restore shows a toast, leaves the fields alone and does not stall
   handlers["GET /api/content/document"] = () => ({ json: { document: wireDocument("pages/home", 3, {}) } });
   handlers["POST /api/content/restore-revision"] = () => ({
     status: 409,
-    json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, {}) } },
+    json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { title: "Hello" }) } },
   });
   const { api } = await mount();
   await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
@@ -1904,7 +1904,7 @@ describe("reopening a field whose save failed", () => {
     failOnce();
     const input = popoverControl<HTMLInputElement>("input");
     input.value = "2";
-    input.dispatchEvent(new Event("change"));
+    press(input, "Enter");
     await settle();
     expect(spaces.dataset.cmsState).toBe("failed");
     spaces.click();
@@ -1926,7 +1926,7 @@ describe("reopening a field whose save failed", () => {
     failOnce();
     const input = popoverControl<HTMLInputElement>("input");
     input.value = "2";
-    input.dispatchEvent(new Event("change"));
+    press(input, "Enter");
     await settle();
     spaces.click();
     await settle();
@@ -2042,7 +2042,7 @@ describe("a popover opened while a save is on its way", () => {
   function setValue(value: string): void {
     const input = popoverControl<HTMLInputElement>("input");
     input.value = value;
-    input.dispatchEvent(new Event("change"));
+    press(input, "Enter");
   }
 
   async function opened(): Promise<HTMLElement> {
@@ -2953,5 +2953,90 @@ describe("the Discard sheet on a document with nothing published", () => {
     confirm.click();
     await settle();
     expect(posts("discard").map((call) => call.body?.key)).toEqual(["pages/home", "artists/finn"]);
+  });
+});
+
+describe("Publish and Discard opened with an edit still open", () => {
+  const listedKeys = () =>
+    [...theSheet().querySelectorAll("li[data-key]")].map((item) => item.getAttribute("data-key"));
+
+  test.each(["Publish", "Discard"])("%s commits the open text edit and lists its document", async (action) => {
+    serve({ "pages/home": { payload: { title: "Hello" }, publishedPayload: { title: "Hello" } } });
+    await mount();
+    const { release } = hold("POST /api/content/field");
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Hello today";
+    buttonNamed(action).click();
+    // The first save of the document is still on the wire: nothing is touched yet, but the sheet must list it.
+    expect(title.hasAttribute("contenteditable")).toBe(false);
+    expect(listedKeys()).toEqual(["pages/home"]);
+    release();
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual(["Hello today"]);
+    expect(listedKeys()).toEqual(["pages/home"]);
+  });
+
+  test("Publish commits an open popover and lists its document", async () => {
+    addEditValueField("spaces", "number");
+    serve({ "pages/home": { payload: { spaces: 1 }, publishedPayload: { spaces: 1 } } });
+    await mount();
+    field("pages/home:spaces").click();
+    await settle();
+    popoverControl<HTMLInputElement>("input").value = "2";
+    buttonNamed("Publish").click();
+    expect(document.querySelector(".cms-popover")).toBeNull();
+    expect(listedKeys()).toEqual(["pages/home"]);
+    await settle();
+    expect(fieldWrites().map((call) => call.body?.value)).toEqual([2]);
+  });
+});
+
+describe("the load failure toast", () => {
+  const failingThenOk = () => {
+    const ok = handlers["GET /api/content/documents"] as Handler;
+    handlers["GET /api/content/documents"] = [() => serverError(), ok];
+  };
+
+  test("goes once Retry loads the documents", async () => {
+    failingThenOk();
+    await mount();
+    expect(visibleToast().textContent).toContain("Boom");
+    buttonNamed("Retry", visibleToast()).click();
+    await settle();
+    expect(field("pages/home:title").classList.contains("cms-field--locked")).toBe(false);
+    expect(document.querySelector<HTMLElement>(".cms-toast")?.hidden).toBe(true);
+  });
+
+  test("a newer toast stays when a later load succeeds", async () => {
+    failingThenOk();
+    const { api } = await mount();
+    api.status("Something else", "error");
+    await api.refresh();
+    expect(visibleToast().textContent).toContain("Something else");
+  });
+});
+
+describe("content replaced underneath a field", () => {
+  test("Discard empties a field whose path the published payload lacks, and cms:change carries undefined", async () => {
+    serve({ "pages/home": { payload: { title: "Draft title" }, publishedPayload: {} } });
+    const { api } = await mount();
+    const title = field("pages/home:title");
+    const changes: unknown[] = [];
+    title.addEventListener("cms:change", (event) => changes.push((event as CustomEvent).detail));
+    await api.discard("pages/home");
+    await settle();
+    expect(title.textContent).toBe("");
+    expect(changes).toEqual([{ key: "pages/home", path: "title", value: undefined }]);
+  });
+
+  test("a conflict catch-up empties a field the server's copy lacks", async () => {
+    handlers["POST /api/content/restore-revision"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, {}) } },
+    });
+    const { api } = await mount();
+    await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
+    expect(field("pages/home:title").textContent).toBe("");
   });
 });
