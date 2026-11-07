@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Internal
+
+- Real-browser test harness (#19). `npm run test:e2e` builds the package and runs Playwright specs in `e2e/` against a
+  demo site in `examples/demo/` on Chromium, Firefox and WebKit. The demo serves the built chrome from `dist/` under a
+  strict CSP, on the real SQLite store, content handlers and document access, with one in-memory database per test.
+  Every spec fails on a console error, page error or CSP violation. CI runs it in a new `e2e` job. Neither directory
+  ships in the package, and a unit test checks that.
+
 ## [0.4.1] - 2026-11-05
 
 ### Fixed

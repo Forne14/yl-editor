@@ -1,0 +1,17 @@
+{
+  // Type checks the demo site, the Playwright specs and their config. At runtime the demo's `@yl/editor/*` self-imports
+  // resolve to dist/; for type checking they map to src/, so `npm run check` needs no build. Nothing here emits.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@yl/editor": ["./src/index.ts"],
+      "@yl/editor/sqlite": ["./src/sqlite-store.ts"],
+      "@yl/editor/contract": ["./src/contract.ts"],
+      "@yl/editor/access": ["./src/access/index.ts"],
+      "@yl/editor/http": ["./src/http/index.ts"],
+      "@yl/editor/chrome": ["./src/chrome/index.ts"]
+    }
+  },
+  "include": ["examples/**/*.ts", "e2e/**/*.ts", "playwright.config.ts"]
+}

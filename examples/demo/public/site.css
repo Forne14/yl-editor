@@ -1,0 +1,41 @@
+/* The demo site's own look. Nothing here is the editor's; the chrome brings chrome.css. */
+:root {
+  color-scheme: light dark;
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  padding: 2rem 1rem 8rem;
+}
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.lede {
+  font-size: 1.25rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.5rem;
+  margin: 2rem 0;
+}
+
+.facts dt {
+  font-weight: bold;
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.footer {
+  max-width: 40rem;
+  margin: 3rem auto 0;
+  font-size: 0.875rem;
+}

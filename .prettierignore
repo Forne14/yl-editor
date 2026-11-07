@@ -4,3 +4,5 @@ package-lock.json
 CHANGELOG.md
 coverage
 .claude
+playwright-report
+test-results
