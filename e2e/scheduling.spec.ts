@@ -4,6 +4,10 @@
 import { expect, test, type Demo } from "./fixtures.ts";
 import type { Page } from "@playwright/test";
 
+// Each test walks a whole flow of twenty-odd steps across two or three pages. On a machine shared with other suites a
+// single step has taken 3-4s, so the default 30s is too tight for the flow, not for any one assertion.
+test.describe.configure({ timeout: 60_000 });
+
 /** Edits a text field in place and waits for the save. Clicks near the left edge, clear of the sheet on the right. */
 async function editText(page: Page, selector: string, value: string): Promise<void> {
   const field = page.locator(selector);
