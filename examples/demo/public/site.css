@@ -6,6 +6,9 @@
 }
 
 body {
+  /* Explicit, so tools that read computed colours (axe) see the dark canvas a browser paints in dark mode. */
+  background: Canvas;
+  color: CanvasText;
   margin: 0;
   padding: 2rem 1rem 8rem;
 }
