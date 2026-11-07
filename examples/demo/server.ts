@@ -129,6 +129,12 @@ const server = createServer((message, out) => {
     });
 });
 
+// Node closes an idle keep-alive socket after 5s by default. A browser or Playwright request that reuses the socket just
+// as it closes fails with ECONNRESET, and POSTs aren't retried: a pause of a few seconds mid-test (a slow step on a
+// loaded machine) turned into a failed save. Outlast any one test's idle gaps instead.
+server.keepAliveTimeout = 120_000;
+server.headersTimeout = 121_000;
+
 server.listen(PORT, HOST, () => {
   console.log(`Demo on http://${HOST}:${PORT}/${TEST_HOOKS ? " (test hooks on)" : ""}`);
 });
