@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Chrome: the number and date widgets commit on Enter, on leaving the popover, or when the chrome closes it, no longer
+  on `change`. A number committed after one arrow step and a date after one segment in Chromium and Firefox, and
+  pressing Cancel after typing committed through the blur's `change`. Url already worked this way; select and toggle
+  still commit on change.
+
+### Fixed
+
+- Chrome: Publish and Discard opened with a text edit or popover still open, or while a document's first save was on
+  its way, listed nothing. The open edit is committed before the list is built, and a document with a save queued or
+  in flight is listed.
+- Chrome: clicking elsewhere on the page never committed an open popover when the click moved focus nowhere (plain
+  content, and any button in Safari). A press outside the popover and its field now commits it, as does focus leaving
+  to nowhere once it settles; a press inside the popover off its controls keeps it open.
+- Chrome: Firefox stored a no-break space typed in a text field. Text widgets store plain spaces.
+- Chrome: a pasted trailing space was lost when typing after it in Firefox and Safari. Paste uses the browser's
+  `insertText`, with the old range insertion as a fallback.
+- Chrome: the "Couldn't load the documents" toast stayed after Retry succeeded. A successful load hides it, unless
+  another toast replaced it.
+- Chrome: Discard, Restore and the conflict catch-up left the old text in a field whose path the new content lacks. The
+  field is emptied, and its `cms:change` carries `value: undefined`.
+
 ### Internal
 
 - Real-browser test harness (#19). `npm run test:e2e` builds the package and runs Playwright specs in `e2e/` against a
