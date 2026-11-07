@@ -231,7 +231,7 @@ test.describe("every widget by keyboard", () => {
     expect((await draftOf(demo, "pages/home"))["price"]).toBe(15);
   });
 
-  test("date: Enter opens on the input, an arrow key changes it and it commits, focus returns", async ({
+  test("date: Enter opens on the input, an arrow key changes it, Enter commits, focus returns", async ({
     page,
     demo,
     browserName,
@@ -243,15 +243,12 @@ test.describe("every widget by keyboard", () => {
     const input = page.locator(".cms-popover input[type=date]");
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("2026-11-14");
-    // Steps whichever date segment has focus (browsers differ on which one that is).
+    // Steps whichever date segment has focus (browsers differ on which one that is). A step changes the value without
+    // committing ("number, date and url commit on Enter, not on change"); Enter commits.
     await page.keyboard.press("ArrowUp");
-    // Chromium and Firefox fire `change` on the step. WebKit fires it only when focus leaves the input, and Tab first
-    // walks its month, day and year segments, so a WebKit user commits by tabbing on until focus leaves the input.
-    if (browserName === "webkit") {
-      for (let presses = 0; presses < 4 && (await page.locator(".cms-popover").count()) > 0; presses++) {
-        await page.keyboard.press(tabKey(browserName));
-      }
-    }
+    await expect(input).not.toHaveValue("2026-11-14");
+    await expect(page.locator(".cms-popover")).toHaveCount(1);
+    await page.keyboard.press("Enter");
     await expect(page.locator(".cms-popover")).toHaveCount(0);
     await expect(field).toBeFocused();
     await expect(field).toHaveAttribute("data-cms-state", "saved");
@@ -335,7 +332,7 @@ test.describe("every widget by keyboard", () => {
     expect((await draftOf(demo, "pages/home"))["price"]).toBe(12);
   });
 
-  test("Tab out of a changed number input commits it, focus returns to the field and Tab moves on: no trap", async ({
+  test("Tab out of a changed number popover commits it, focus returns to the field and Tab moves on: no trap", async ({
     page,
     demo,
     browserName,
@@ -346,8 +343,13 @@ test.describe("every widget by keyboard", () => {
     await page.keyboard.press("Enter");
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.type("20");
-    // Leaving the input fires `change`, which commits ("number commits on change"), and focus goes back to the field.
+    // Tab first reaches the popover's Cancel button. Tabbing on out of the popover is leaving it, which commits, and
+    // focus goes back to the field.
     await page.keyboard.press(tabKey(browserName));
+    await expect(page.locator(".cms-popover")).toHaveCount(1);
+    for (let presses = 0; presses < 3 && (await page.locator(".cms-popover").count()) > 0; presses++) {
+      await page.keyboard.press(tabKey(browserName));
+    }
     await expect(page.locator(".cms-popover")).toHaveCount(0);
     await expect(field).toBeFocused();
     await expect(field).toHaveAttribute("data-cms-state", "saved");
