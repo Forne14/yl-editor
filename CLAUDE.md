@@ -8,6 +8,9 @@ In-place editing core: draft/publish `ContentStore`, schema registry, path ops, 
 - `npm run build` builds `dist/`. CI runs it too.
 - `npm run format` applies Prettier.
 - `npx vitest run <file>` runs one test file.
+- `npm run test:e2e` builds, then runs the Playwright specs in `e2e/` on Chromium, Firefox and WebKit against the demo
+  site in `examples/demo/` (see its README). Install browsers once with `npx playwright install`. `verify` stays
+  browser-free.
 - Node >=24.
 
 ## Design changes need a prototype first

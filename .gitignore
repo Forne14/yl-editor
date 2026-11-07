@@ -3,3 +3,5 @@ dist
 coverage
 .scratch
 .claude/
+playwright-report/
+test-results/
