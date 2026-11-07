@@ -26,16 +26,55 @@ export function openPopover(anchor: HTMLElement, label: string, onLeave?: () => 
   const view = anchor.ownerDocument.defaultView;
   root.style.setProperty("--cms-popover-top", `${rect.bottom + (view?.scrollY ?? 0)}px`);
   root.style.setProperty("--cms-popover-left", `${rect.left + (view?.scrollX ?? 0)}px`);
+  const doc = anchor.ownerDocument;
+  let closed = false;
+  // Whether the latest press landed inside the popover. A press there off its controls blurs the control with no
+  // `relatedTarget`, exactly like a click on the page outside; this tells the two apart. A key press clears it.
+  let pressInside = false;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  const leave = () => {
+    if (!closed) onLeave?.();
+  };
+  // Clicking content that cannot take focus, and any button in Safari, moves focus nowhere, so `focusout` alone misses
+  // it. A press outside the popover and its field commits on its own.
+  const handlePointerDown = (event: Event) => {
+    const target = event.target instanceof Node ? event.target : null;
+    pressInside = target !== null && root.contains(target);
+    if (!pressInside && !(target && anchor.contains(target))) leave();
+  };
+  const handleKeyDown = () => {
+    pressInside = false;
+  };
   const handleFocusOut = (event: FocusEvent) => {
     const next = event.relatedTarget;
-    if (onLeave && next instanceof Node && !root.contains(next)) onLeave();
+    if (next instanceof Node) {
+      if (!root.contains(next)) leave();
+      return;
+    }
+    // Focus went nowhere. Once it settles, it left unless it is back inside or the press was inside. A window switch
+    // keeps `activeElement` on the control, so it commits nothing.
+    if (settleTimer !== undefined) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      const current = doc.activeElement;
+      if (pressInside || (current && root.contains(current))) return;
+      leave();
+    }, 0);
   };
-  root.addEventListener("focusout", handleFocusOut);
-  anchor.ownerDocument.body.append(root);
+  if (onLeave) {
+    root.addEventListener("focusout", handleFocusOut);
+    doc.addEventListener("pointerdown", handlePointerDown, true);
+    doc.addEventListener("keydown", handleKeyDown, true);
+  }
+  doc.body.append(root);
   return {
     root,
     close() {
+      closed = true;
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
       root.removeEventListener("focusout", handleFocusOut);
+      doc.removeEventListener("pointerdown", handlePointerDown, true);
+      doc.removeEventListener("keydown", handleKeyDown, true);
       root.remove();
     },
   };
@@ -72,11 +111,15 @@ function setPlainTextEditable(target: HTMLElement): void {
 }
 
 function insertPlainText(target: HTMLElement, text: string): void {
-  const selection = target.ownerDocument.getSelection();
+  const doc = target.ownerDocument;
+  const selection = doc.getSelection();
   if (!selection || selection.rangeCount === 0 || !target.contains(selection.anchorNode)) {
     target.append(text);
     return;
   }
+  // The browser's own insertion keeps a trailing space alive for the next keystroke and joins the undo stack; a bare
+  // text node from a Range loses that space in Firefox and Safari. The Range stays as the fallback.
+  if (typeof doc.execCommand === "function" && doc.execCommand("insertText", false, text)) return;
   const range = selection.getRangeAt(0);
   range.deleteContents();
   const node = target.ownerDocument.createTextNode(text);
@@ -85,6 +128,14 @@ function insertPlainText(target: HTMLElement, text: string): void {
   range.collapse(true);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+/**
+ * The text a plain-text edit holds. Firefox types a space next to another space, or at the end, as a no-break space;
+ * the stored value never wants one.
+ */
+function plainText(target: HTMLElement): string {
+  return (target.textContent ?? "").replace(/\u00a0/g, " ").trim();
 }
 
 function placeCaretAtEnd(target: HTMLElement): void {
@@ -107,9 +158,9 @@ function textWidget(note?: string): Widget {
       const outcome = once(ctx);
       // Leaving untouched must write nothing, even when the starting value is not the text the page renders. The one
       // exception is a value that failed to save, which is what the text on the page now is.
-      const untouched = (target.textContent ?? "").trim();
+      const untouched = plainText(target);
       const finish = () => {
-        const text = (target.textContent ?? "").trim();
+        const text = plainText(target);
         if (text === untouched && !ctx.unsaved) outcome.cancel();
         else outcome.commit(text);
       };
@@ -225,15 +276,37 @@ function inputWidget(strings: Strings, inputType: "number" | "url" | "date"): Wi
       if (inputType === "number") return input.value === "" ? null : Number(input.value);
       return input.value.trim();
     };
-    if (inputType === "url") {
-      input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          outcome.commit(read());
-        }
+    // Enter commits, and so does leaving the popover (see `formWidget`). A number never commits on `change`: it fires
+    // on every arrow step and on the blur that pressing Cancel causes. A date fires it on every segment typed or
+    // stepped in Chromium and Firefox, so a `change` during a keystroke waits for Enter; one from the date picker
+    // commits, because picking a day is the whole edit.
+    let keying = false;
+    let keyingTimer: ReturnType<typeof setTimeout> | undefined;
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        outcome.commit(read());
+        return;
+      }
+      keying = true;
+      if (keyingTimer !== undefined) clearTimeout(keyingTimer);
+    });
+    // A key that moves focus away (Tab) has its keyup elsewhere.
+    input.addEventListener("blur", () => {
+      keying = false;
+    });
+    input.addEventListener("keyup", () => {
+      if (keyingTimer !== undefined) clearTimeout(keyingTimer);
+      // After the key's own events have fired: a `change` it causes can follow the keyup.
+      keyingTimer = setTimeout(() => {
+        keying = false;
+        keyingTimer = undefined;
+      }, 0);
+    });
+    if (inputType === "date") {
+      input.addEventListener("change", () => {
+        if (!keying) outcome.commit(read());
       });
-    } else {
-      input.addEventListener("change", () => outcome.commit(read()));
     }
     return { control: input, read };
   });
