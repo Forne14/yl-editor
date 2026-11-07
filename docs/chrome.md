@@ -98,10 +98,14 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   read. If the fetch failed, a toast says the field started from the page's value; with no `data-edit-value` the widget
   stays closed and a toast says why. A failed fetch is not cached, so the next opening tries again. Leaving the widget
   untouched writes nothing, wherever the starting value came from.
-- Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select, toggle,
-  date and number commit on change; Esc cancels and restores. A popover edit still open when another field is opened,
-  a sheet or panel is opened, the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Text
-  is too. Focus returns to the field when the widget closes.
+- Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select and toggle
+  commit on change; number, date and url commit on Enter, not on change (arrow keys and date segments fire change at
+  every step), except that a date picked from the browser's date picker commits at once; tags commit on Enter in an empty input or Done. Esc and Cancel back out and write nothing. Every popover
+  also commits when it is left: a press anywhere outside it and its field, or focus moving out of it. A press inside the
+  popover off its controls keeps it open. A popover edit still open when another field is opened, a sheet or panel is
+  opened, the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Text is too, and its
+  no-break spaces are stored as plain spaces. Paste goes in through the browser's own text insertion when it allows it.
+  Focus returns to the field when the widget closes.
 - A popover still waiting on its fetch is cancelled by opening any sheet, panel or the revisions drawer and by starting
   any lifecycle action, and it doesn't open on a document deleted during the wait.
 - Commits go through a save queue. Each field moves idle → saving → saved, or → failed with a Retry button in the
@@ -112,8 +116,8 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - The bar shows the actor label, the number of changes and documents changed this session (kept in session storage,
   so a reload does not forget), and Revisions, Done, Discard and Publish. A change is a field, or one for a document
   changed with no field to name: Unpublish, or a Restore that left the draft as it was. Both leave the document in the
-  Publish sheet, so it can go live again. Publish and Discard list the touched
-  documents the editor may act on before acting: `access.publish` for Publish, `access.edit` for Discard (the server
+  Publish sheet, so it can go live again. Publish and Discard commit an open edit first, then list the
+  touched documents the editor may act on before acting (a document whose first save is still on its way counts): `access.publish` for Publish, `access.edit` for Discard (the server
   gates discard by edit access). The endpoint is called once per document, after that document's pending field
   writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document with nothing
   live deletes it, whether it was never published or was unpublished, so its fields stop being editable until the page
@@ -166,7 +170,10 @@ node, class, attribute and listener the chrome added and leaves the host's marku
     stays as a draft.
 - After a non-text field saves, the chrome replaces the element's text only when it holds no child elements, and
   always dispatches a bubbling `cms:change` event (`detail: { key, path, value }`) so a host can re-render richer
-  markup itself.
+  markup itself. Discard, Restore and a conflict catch-up repaint the same way; when the new content lacks the field's
+  path, the text is emptied (same child-element rule) and `detail.value` is `undefined`.
+- When the page's documents fail to load, a toast offers Retry. A later load that succeeds hides it, unless another
+  toast has replaced it.
 
 ### Scheduling
 

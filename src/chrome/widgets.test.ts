@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { EditFieldType } from "../editable.ts";
 import type { WidgetContext } from "./types.ts";
 import { defaultWidgets } from "./widgets.ts";
@@ -45,14 +45,139 @@ test("select is a native select built from the options, committing on change", (
   expect(document.querySelector(".cms-popover")).toBeNull();
 });
 
-test("number commits a number on change and null when emptied", () => {
+function pressKey(target: HTMLElement, key: string): void {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+}
+
+function pointerDown(target: Element): void {
+  target.dispatchEvent(new Event("pointerdown", { bubbles: true, cancelable: true }));
+}
+
+test("number commits a number on Enter and null when emptied, not on change", () => {
   const { ctx, commit } = context("number", 4);
   defaultWidgets.number.mount(ctx);
   const input = popoverControl<HTMLInputElement>("input[type=number]");
   expect(input.value).toBe("4");
   input.value = "7.5";
+  // An arrow step fires change in every browser: it must not commit.
   input.dispatchEvent(new Event("change"));
+  expect(commit).not.toHaveBeenCalled();
+  pressKey(input, "Enter");
   expect(commit).toHaveBeenCalledWith(7.5);
+
+  document.querySelector(".cms-popover")?.remove();
+  const emptied = context("number", 4);
+  defaultWidgets.number.mount(emptied.ctx);
+  const second = popoverControl<HTMLInputElement>("input[type=number]");
+  second.value = "";
+  pressKey(second, "Enter");
+  expect(emptied.commit).toHaveBeenCalledWith(null);
+});
+
+test("date commits on Enter, not on the change a keystroke fires on each segment", () => {
+  const { ctx, commit } = context("date", "2026-11-14");
+  const widget = defaultWidgets.date.mount(ctx);
+  const input = popoverControl<HTMLInputElement>("input[type=date]");
+  pressKey(input, "ArrowUp");
+  input.value = "2026-12-14";
+  input.dispatchEvent(new Event("change"));
+  input.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true }));
+  expect(commit).not.toHaveBeenCalled();
+  pressKey(input, "Enter");
+  expect(commit).toHaveBeenCalledWith("2026-12-14");
+  widget.destroy();
+});
+
+test("a date picked without a keystroke commits on change", async () => {
+  const { ctx, commit } = context("date", "2026-11-14");
+  const widget = defaultWidgets.date.mount(ctx);
+  const input = popoverControl<HTMLInputElement>("input[type=date]");
+  pressKey(input, "ArrowUp");
+  input.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  input.value = "2026-12-24";
+  input.dispatchEvent(new Event("change"));
+  expect(commit).toHaveBeenCalledWith("2026-12-24");
+  widget.destroy();
+});
+
+test("Cancel after typing a number writes nothing, although the blur fires change", () => {
+  const { ctx, commit, cancel } = context("number", 12);
+  const widget = defaultWidgets.number.mount(ctx);
+  const input = popoverControl<HTMLInputElement>("input[type=number]");
+  input.value = "30";
+  const cancelButton = [...document.querySelectorAll<HTMLButtonElement>(".cms-popover button")].find(
+    (node) => node.textContent === "Cancel",
+  );
+  if (!cancelButton) throw new Error("no Cancel");
+  pointerDown(cancelButton);
+  input.dispatchEvent(new Event("change"));
+  input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: cancelButton }));
+  cancelButton.click();
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(commit).not.toHaveBeenCalled();
+  widget.destroy();
+});
+
+test("a press outside the popover and its field commits once; one inside or on the field doesn't", () => {
+  document.body.insertAdjacentHTML("beforeend", "<p id='elsewhere'>Plain</p>");
+  const { ctx, commit } = context("url", "https://a.test");
+  const widget = defaultWidgets.url.mount(ctx);
+  const input = popoverControl<HTMLInputElement>("input");
+  input.value = "https://b.test";
+  pointerDown(popoverControl(".cms-popover__title"));
+  pointerDown(host);
+  expect(commit).not.toHaveBeenCalled();
+  pointerDown(document.getElementById("elsewhere") as HTMLElement);
+  input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+  expect(commit).toHaveBeenCalledOnce();
+  expect(commit).toHaveBeenCalledWith("https://b.test");
+  widget.destroy();
+});
+
+test("a closed popover no longer listens for presses", () => {
+  const { ctx, commit, cancel } = context("url", "https://a.test");
+  const widget = defaultWidgets.url.mount(ctx);
+  popoverControl<HTMLInputElement>("input").value = "https://b.test";
+  widget.destroy();
+  pointerDown(document.body);
+  expect(commit).not.toHaveBeenCalled();
+  expect(cancel).not.toHaveBeenCalled();
+});
+
+test("focus leaving to nowhere commits once it settles, unless the press was inside the popover", async () => {
+  const { ctx, commit } = context("url", "https://a.test");
+  const widget = defaultWidgets.url.mount(ctx);
+  const input = popoverControl<HTMLInputElement>("input");
+  input.value = "https://b.test";
+  input.focus();
+  pointerDown(popoverControl(".cms-popover__title"));
+  input.blur();
+  input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(commit).not.toHaveBeenCalled();
+
+  // Keyboard focus moving off to nowhere (no press) is a real leave.
+  input.focus();
+  pressKey(input, "Tab");
+  input.blur();
+  input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(commit).toHaveBeenCalledWith("https://b.test");
+  widget.destroy();
+});
+
+test("focus leaving to nowhere while it stays on the control (a window switch) commits nothing", async () => {
+  const { ctx, commit, cancel } = context("url", "https://a.test");
+  const widget = defaultWidgets.url.mount(ctx);
+  const input = popoverControl<HTMLInputElement>("input");
+  input.value = "https://b.test";
+  input.focus();
+  input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(commit).not.toHaveBeenCalled();
+  expect(cancel).not.toHaveBeenCalled();
+  widget.destroy();
 });
 
 test("toggle commits the checked state on change", () => {
@@ -167,4 +292,56 @@ test("a popover holding a failed save commits it when left, and Esc still backs 
   );
   expect(second.cancel).toHaveBeenCalledOnce();
   expect(second.commit).not.toHaveBeenCalled();
+});
+
+test("a text widget stores no-break spaces as plain spaces, and an untouched one with them cancels", () => {
+  host.textContent = "Value\u00a0";
+  const untouched = context("text", "Value");
+  defaultWidgets.text.mount(untouched.ctx).commit?.();
+  expect(untouched.cancel).toHaveBeenCalledOnce();
+
+  const { ctx, commit } = context("text", "Value");
+  const widget = defaultWidgets.text.mount(ctx);
+  host.textContent = "Value\u00a0and\u00a0more";
+  widget.commit?.();
+  expect(commit).toHaveBeenCalledWith("Value and more");
+});
+
+describe("paste inserts through the browser's insertText when it can", () => {
+  const original = Object.getOwnPropertyDescriptor(document, "execCommand");
+  afterEach(() => {
+    if (original) Object.defineProperty(document, "execCommand", original);
+    else delete (document as { execCommand?: unknown }).execCommand;
+  });
+
+  function pasteInto(text: string): ClipboardEvent {
+    const range = document.createRange();
+    range.selectNodeContents(host);
+    range.collapse(false);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const paste = new Event("paste", { cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, "clipboardData", { value: { getData: () => text } });
+    host.dispatchEvent(paste);
+    return paste;
+  }
+
+  test("insertText takes the text, trailing space and all", () => {
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
+    defaultWidgets.text.mount(context("text", "Value").ctx);
+    pasteInto(" and ");
+    expect(execCommand).toHaveBeenCalledWith("insertText", false, " and ");
+    expect(host.textContent).toBe("Value");
+  });
+
+  test("when insertText is refused the text goes in through the selection", () => {
+    const execCommand = vi.fn(() => false);
+    Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
+    defaultWidgets.text.mount(context("text", "Value").ctx);
+    pasteInto(" and ");
+    expect(execCommand).toHaveBeenCalled();
+    expect(host.textContent).toBe("Value and ");
+  });
 });

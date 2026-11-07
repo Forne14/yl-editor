@@ -344,6 +344,12 @@ export class Session {
     this.adopt(document);
   }
 
+  /** Whether a field save of the document is queued or on the wire. Its document may not be `touched` yet. */
+  isSaving(key: string): boolean {
+    for (const slot of this.slots.values()) if (slot.key === key && (slot.pending || slot.sending)) return true;
+    return false;
+  }
+
   /** Resolves once every write queued so far for the document has finished. */
   pending(key: string): Promise<void> {
     return this.chains.get(key) ?? Promise.resolve();

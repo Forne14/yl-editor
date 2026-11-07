@@ -148,6 +148,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let editing = true;
   let destroyed = false;
   let openTicket = 0;
+  /** The toast that reported the last failed load, hidden once a load succeeds. */
+  let loadFailureToast: number | undefined;
 
   const session = new Session(
     client,
@@ -180,10 +182,17 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return fields.filter((record) => record.id === slot.id);
   }
 
-  /** Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. */
-  function render(record: FieldRecord, value: unknown): void {
+  /**
+   * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. A save never
+   * passes `undefined`, but content replaced by Discard, Restore or a conflict can lack the path: `clearMissing` then
+   * empties the text, so the page stops showing a value that is gone. `cms:change` carries `undefined` either way.
+   */
+  function render(record: FieldRecord, value: unknown, clearMissing = false): void {
     const target = record.element;
-    if (target.children.length === 0 && record.info.type !== "toggle" && value !== undefined) {
+    const plain = target.children.length === 0 && record.info.type !== "toggle";
+    if (plain && value === undefined && clearMissing) {
+      target.textContent = "";
+    } else if (plain && value !== undefined) {
       target.textContent = Array.isArray(value)
         ? value.join(", ")
         : value === null || typeof value === "object"
@@ -203,6 +212,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   function touchedDocuments() {
     return [...session.documents.values()].filter((state) => state.touched);
+  }
+
+  /** What Publish and Discard list: touched documents, plus any whose first save is still queued or on the wire. */
+  function bulkDocuments() {
+    return [...session.documents.values()].filter((state) => state.touched || session.isSaving(state.key));
   }
 
   function updateBar(): void {
@@ -442,13 +456,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * lists one document instead, touched or not, after a publish of it conflicted.
    */
   function openBulk(kind: "publish" | "discard", opener: HTMLElement, only?: string): void {
-    const onlyState = only === undefined ? undefined : session.documents.get(only);
-    const touched = only === undefined ? touchedDocuments() : onlyState ? [onlyState] : [];
-    const eligible = touched.filter((state) => (kind === "publish" ? state.access.publish : state.access.edit));
     const title = kind === "publish" ? strings.publishTitle : strings.discardTitle;
     openSheet(
       title,
       (body) => {
+        // Built here, not before `openSheet`: it commits the open edit first, and that save must be listed.
+        const onlyState = only === undefined ? undefined : session.documents.get(only);
+        const touched = only === undefined ? bulkDocuments() : onlyState ? [onlyState] : [];
+        const eligible = touched.filter((state) => (kind === "publish" ? state.access.publish : state.access.edit));
         let isOpen = true;
         if (eligible.length === 0) {
           body.append(element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]));
@@ -858,7 +873,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (!closeOpen) continue;
         closeActive(false);
       }
-      render(record, valueAtPath(payload, record.info.path));
+      render(record, valueAtPath(payload, record.info.path), true);
       showState(record, "idle");
     }
   }
@@ -1006,9 +1021,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       let loadError: string | undefined;
       try {
         await session.load([...groupByDocument(fields).keys()]);
+        // The failure is resolved; its toast goes, unless something newer has replaced it.
+        if (loadFailureToast !== undefined) toast.hideIf(loadFailureToast);
+        loadFailureToast = undefined;
       } catch (error) {
         loadError = `${strings.loadFailed}: ${errorMessage(error, strings)}`;
-        toast.show(loadError, "error", [{ label: strings.retry, onClick: () => void api.refresh() }]);
+        loadFailureToast = toast.show(loadError, "error", [
+          { label: strings.retry, onClick: () => void api.refresh() },
+        ]);
       }
       if (destroyed) return;
       for (const record of fields) {
@@ -1025,7 +1045,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       }
       updateBar();
     },
-    status: (message: string, kind: StatusKind = "info") => toast.show(message, kind),
+    status: (message: string, kind: StatusKind = "info") => {
+      toast.show(message, kind);
+    },
   };
 
   scanRoot.ownerDocument.body.append(chrome);
