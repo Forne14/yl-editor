@@ -353,10 +353,9 @@ test.describe("every widget by keyboard", () => {
     // Tab first reaches the popover's Cancel button. Tabbing on out of the popover is leaving it, which commits, and
     // focus goes back to the field.
     await page.keyboard.press(tabKey(browserName));
-    await expect(page.locator(".cms-popover")).toHaveCount(1);
-    for (let presses = 0; presses < 3 && (await page.locator(".cms-popover").count()) > 0; presses++) {
-      await page.keyboard.press(tabKey(browserName));
-    }
+    await expect(page.locator(".cms-popover").getByRole("button", { name: "Cancel" })).toBeFocused();
+    // One press only: the popover closes once focus settles, so a second would land on the field and move past it.
+    await page.keyboard.press(tabKey(browserName));
     await expect(page.locator(".cms-popover")).toHaveCount(0);
     await expect(field).toBeFocused();
     await expect(field).toHaveAttribute("data-cms-state", "saved");
