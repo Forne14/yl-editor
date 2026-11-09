@@ -3040,3 +3040,257 @@ describe("content replaced underneath a field", () => {
     expect(field("pages/home:title").textContent).toBe("");
   });
 });
+
+describe("Take theirs", () => {
+  const conflictWith = (payload: unknown) => {
+    handlers["POST /api/content/field"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, payload) } },
+    });
+  };
+
+  test("empties a field the other editor's content lacks", async () => {
+    conflictWith({});
+    await mount();
+    await editText("pages/home:title", "Mine");
+    const changes: unknown[] = [];
+    field("pages/home:title").addEventListener("cms:change", (event) => changes.push((event as CustomEvent).detail));
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    expect(field("pages/home:title").textContent).toBe("");
+    expect(changes).toEqual([{ key: "pages/home", path: "title", value: undefined }]);
+  });
+
+  test("with no conflict payload left, clears nothing", async () => {
+    conflictWith({ title: "Theirs" });
+    await mount();
+    await editText("pages/home:title", "Mine");
+    const takeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    takeTheirs.click();
+    expect(field("pages/home:title").textContent).toBe("Theirs");
+    // A second press, as a stale toast button could send: the conflict went with the first.
+    takeTheirs.click();
+    expect(field("pages/home:title").textContent).toBe("Theirs");
+  });
+});
+
+describe("a document listed only because its save was on its way", () => {
+  const listedKeys = () =>
+    [...theSheet().querySelectorAll("li[data-key]")].map((item) => item.getAttribute("data-key"));
+  const liveText = () => document.querySelector(".cms-live")?.textContent ?? "";
+  const leftOut = "Left out, with no saved change from this session: pages/home.";
+
+  /** Saves to pages/home, which holds another editor's draft, fail. Saves to artists/finn work. All wait for `save`. */
+  const failingHomeSaves = () => {
+    const server = serve({
+      "pages/home": { publishedPayload: { title: "Live" }, payload: { title: "Their draft" } },
+      "artists/finn": { publishedPayload: { name: "Finn" }, payload: { name: "Finn" } },
+    });
+    const write = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = (body, url) =>
+      body?.key === "pages/home" ? serverError() : write(body, url);
+    return { server, save: hold("POST /api/content/field") };
+  };
+  const savingHome = () => {
+    serve({ "pages/home": { publishedPayload: { title: "Live" }, payload: { title: "Live" } } });
+    return hold("POST /api/content/field");
+  };
+
+  describe.each(["Publish", "Discard"])("in the %s sheet", (action) => {
+    const route = action.toLowerCase();
+
+    test("goes when the save fails, and the sheet says why", async () => {
+      const { server, save } = failingHomeSaves();
+      await mount();
+      commitText("pages/home:title", "Mine");
+      buttonNamed(action).click();
+      await settle();
+      expect(listedKeys()).toEqual(["pages/home"]);
+      save.release();
+      await settle();
+      expect(listedKeys()).toEqual([]);
+      expect(theSheet().textContent).toContain(`Nothing you can ${route} has changed this session.`);
+      expect(theSheet().textContent).toContain(leftOut);
+      expect(liveText()).toBe(leftOut);
+      expect(theSheet().querySelector(".cms-sheet__actions")).toBeNull();
+      expect(posts(route)).toEqual([]);
+      expect(server.stored.get("pages/home")?.payload).toEqual({ title: "Their draft" });
+    });
+
+    test("Confirm pressed while the save is on the wire acts on nothing if it fails", async () => {
+      const { server, save } = failingHomeSaves();
+      await mount();
+      commitText("pages/home:title", "Mine");
+      buttonNamed(action).click();
+      await settle();
+      buttonNamed(action, theSheet()).click();
+      await settle();
+      expect(posts(route)).toEqual([]);
+      save.release();
+      await settle();
+      expect(posts(route)).toEqual([]);
+      expect(theSheet().hidden).toBe(false);
+      expect(theSheet().textContent).toContain(leftOut);
+      expect(document.activeElement).toBe(buttonNamed("Close", theSheet()));
+      expect(server.stored.get("pages/home")?.payload).toEqual({ title: "Their draft" });
+    });
+
+    test("Confirm pressed while the save is on the wire goes ahead once it lands", async () => {
+      const save = savingHome();
+      await mount();
+      commitText("pages/home:title", "Mine");
+      buttonNamed(action).click();
+      await settle();
+      buttonNamed(action, theSheet()).click();
+      await settle();
+      expect(posts(route)).toEqual([]);
+      save.release();
+      await settle();
+      expect(posts(route).map((call) => call.body?.key)).toEqual(["pages/home"]);
+      expect(theSheet().hidden).toBe(true);
+    });
+
+    test("Cancel while Confirm waits acts on nothing", async () => {
+      const save = savingHome();
+      await mount();
+      commitText("pages/home:title", "Mine");
+      buttonNamed(action).click();
+      await settle();
+      buttonNamed(action, theSheet()).click();
+      await settle();
+      buttonNamed("Cancel", theSheet()).click();
+      save.release();
+      await settle();
+      expect(posts(route)).toEqual([]);
+    });
+
+    test("a document whose save lands still goes when another's fails", async () => {
+      const { save } = failingHomeSaves();
+      await mount();
+      commitText("artists/finn:name", "Changed");
+      commitText("pages/home:title", "Mine");
+      buttonNamed(action).click();
+      await settle();
+      expect(listedKeys().sort()).toEqual(["artists/finn", "pages/home"]);
+      buttonNamed(action, theSheet()).click();
+      await settle();
+      save.release();
+      await settle();
+      expect(posts(route).map((call) => call.body?.key)).toEqual(["artists/finn"]);
+    });
+  });
+
+  test("a document this session changed stays listed when a later save fails", async () => {
+    serve({ "pages/home": { publishedPayload: { title: "Live" }, payload: { title: "Live" } } });
+    await mount();
+    await editText("pages/home:title", "One");
+    handlers["POST /api/content/field"] = serverError;
+    const save = hold("POST /api/content/field");
+    commitText("pages/home:lede", "Two");
+    buttonNamed("Discard").click();
+    await settle();
+    save.release();
+    await settle();
+    expect(listedKeys()).toEqual(["pages/home"]);
+    expect(theSheet().textContent).not.toContain("Left out");
+  });
+
+  test("a failed save of a document the user may not publish stops counting among the others", async () => {
+    handlers["GET /api/content/document"] = () => ({
+      json: { document: wireDocument("pages/home", 4), publishedPayload: {} },
+    });
+    await mount();
+    await editText("pages/home:title", "One");
+    handlers["POST /api/content/field"] = serverError;
+    const save = hold("POST /api/content/field");
+    commitText("artists/finn:name", "Two");
+    buttonNamed("Publish").click();
+    await settle();
+    expect(theSheet().textContent).toContain("1 other changed documents need someone with publish access.");
+    save.release();
+    await settle();
+    expect(theSheet().textContent).not.toContain("other changed documents");
+  });
+
+  test("a row's count is refreshed when its writes settle", async () => {
+    const save = savingHome();
+    await mount();
+    commitText("pages/home:title", "Mine");
+    buttonNamed("Discard").click();
+    await settle();
+    const row = () => theSheet().querySelector("li[data-key='pages/home']")?.textContent;
+    expect(row()).toBe("pages/home · 0");
+    save.release();
+    await settle();
+    expect(row()).toBe("pages/home · 1");
+  });
+});
+
+describe("a field emptied because its value is gone", () => {
+  const discarded = async () => {
+    const spaces = addEditValueField("spaces", "number", "12");
+    serve({ "pages/home": { publishedPayload: {}, payload: { spaces: 12 } } });
+    const mounted = await mount();
+    await mounted.api.discard("pages/home");
+    await settle();
+    expect(spaces.textContent).toBe("");
+    return { spaces, mounted };
+  };
+  const open = async (target: HTMLElement) => {
+    target.click();
+    await settle();
+    return popoverControl<HTMLInputElement>("input");
+  };
+
+  test("doesn't reopen on its stale data-edit-value, and the attribute stays for destroy", async () => {
+    const { spaces, mounted } = await discarded();
+    const input = await open(spaces);
+    expect(input.value).toBe("");
+    press(input, "Escape");
+    expect(spaces.dataset.editValue).toBe("12");
+    mounted.destroy();
+    handle = undefined;
+    expect(spaces.dataset.editValue).toBe("12");
+  });
+
+  test("still ignores it after a refresh", async () => {
+    const { spaces, mounted } = await discarded();
+    await mounted.api.refresh();
+    expect((await open(spaces)).value).toBe("");
+  });
+
+  test("a new data-edit-value from the host counts", async () => {
+    const { spaces } = await discarded();
+    spaces.dataset.editValue = "34";
+    expect((await open(spaces)).value).toBe("34");
+  });
+
+  test("a new value reopens on that value", async () => {
+    const { spaces } = await discarded();
+    const input = await open(spaces);
+    input.value = "5";
+    press(input, "Enter");
+    await settle();
+    expect((await open(spaces)).value).toBe("5");
+  });
+
+  test("a text field's widget starts from the emptied page, not the attribute", async () => {
+    const seen: unknown[] = [];
+    const note = addEditValueField("note", "text", '"Gone"');
+    serve({ "pages/home": { publishedPayload: {}, payload: { note: "Gone" } } });
+    const mounted = await mount({
+      widgets: {
+        text: {
+          mount(ctx) {
+            seen.push(ctx.value);
+            return { destroy: () => undefined };
+          },
+        },
+      },
+    });
+    await mounted.api.discard("pages/home");
+    await settle();
+    note.click();
+    await settle();
+    expect(seen).toEqual([""]);
+  });
+});
