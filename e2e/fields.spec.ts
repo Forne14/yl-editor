@@ -274,11 +274,17 @@ test.describe("the plain-text contenteditable", () => {
 });
 
 test.describe("the tags widget", () => {
-  test("commas split the input into chips, skipping blanks and duplicates", async ({ page, demo }) => {
-    await demo.openEditor();
+  /** The popover opens once its document has loaded; keys pressed before that go nowhere, as they would for a user. */
+  async function openTags(page: Page): Promise<Locator> {
     await page.locator("#home-tags").click();
     const input = popover(page).getByRole("textbox", { name: "Add tag" });
     await expect(input).toBeFocused();
+    return input;
+  }
+
+  test("commas split the input into chips, skipping blanks and duplicates", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openTags(page);
     await page.keyboard.type("rye, , local,spelt,");
     await expect(popover(page).locator(".cms-chip")).toHaveText(["bakery×", "local×", "rye×", "spelt×"]);
     await expect(input).toHaveValue("");
@@ -288,8 +294,7 @@ test.describe("the tags widget", () => {
 
   test("Enter adds the typed tag, and Enter on an empty input commits", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
-    const input = popover(page).getByRole("textbox", { name: "Add tag" });
+    const input = await openTags(page);
     await page.keyboard.type("sourdough");
     await page.keyboard.press("Enter");
     await expect(popover(page).locator(".cms-chip")).toHaveText(["bakery×", "local×", "sourdough×"]);
@@ -326,5 +331,45 @@ test.describe("the tags widget", () => {
     await widget.getByRole("button", { name: "Done" }).click();
     await expect(widget).toHaveCount(0);
     await expectDraft(demo, "tags", ["rye"]);
+  });
+});
+
+test.describe("no-break spaces in a text edit", () => {
+  test("one the text already had stays when another part is edited, and a typed space is stored plain", async ({
+    page,
+    demo,
+  }) => {
+    await demo.seed({ key: HOME, published: { title: "Run 10\u00a0km" }, draft: { title: "Run 10\u00a0km" } });
+    await demo.openEditor();
+    const field = page.locator("#home-title");
+    await field.click();
+    await expect(field).toHaveAttribute("contenteditable", /^(plaintext-only|true)$/);
+    await page.keyboard.type(" today");
+    await page.keyboard.press("Enter");
+    await expectDraft(demo, "title", "Run 10\u00a0km today");
+  });
+
+  test("a space typed at the end and then after it is stored plain", async ({ page, demo }) => {
+    await demo.openEditor();
+    const field = page.locator("#home-title");
+    await field.click();
+    await expect(field).toHaveAttribute("contenteditable", /^(plaintext-only|true)$/);
+    await page.keyboard.type(" and  more");
+    await page.keyboard.press("Enter");
+    await expectDraft(demo, "title", "Welcome to the demo and  more");
+  });
+
+  test("a second edit doesn't keep what the first typed", async ({ page, demo }) => {
+    await demo.openEditor();
+    const field = page.locator("#home-title");
+    await field.click();
+    await page.keyboard.type(" today");
+    await page.keyboard.press("Enter");
+    await expectDraft(demo, "title", "Welcome to the demo today");
+    await field.click();
+    await expect(field).toHaveAttribute("contenteditable", /^(plaintext-only|true)$/);
+    await page.keyboard.type("!");
+    await page.keyboard.press("Enter");
+    await expectDraft(demo, "title", "Welcome to the demo today!");
   });
 });

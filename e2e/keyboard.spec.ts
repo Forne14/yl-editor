@@ -2,7 +2,7 @@
 // lands against what docs/chrome.md promises: back on the field when a widget closes, back on the opener when a sheet
 // closes, Cancel when a confirm prompt appears, and never trapped inside a surface.
 //
-// WebKit, like Safari with its default settings, moves plain Tab only between form controls and `tabindex` elements,
+// On macOS's default keyboard setting, WebKit moves plain Tab only between form controls and `tabindex` elements,
 // skipping buttons; Option+Tab reaches everything. So these specs press Alt+Tab in WebKit, as a Safari keyboard user
 // would, and one test pins down what plain Tab reaches there.
 import { expect, test } from "./fixtures.ts";
@@ -18,6 +18,10 @@ const focusedName = (page: Page): Promise<string> =>
     if (active.id) return `#${active.id}`;
     return `${active.tagName.toLowerCase()}:${(active.getAttribute("aria-label") ?? active.textContent ?? "").trim()}`;
   });
+
+/** The popover opens once its document has loaded; keys pressed before that go nowhere, as they would for a user. */
+const expectPriceFocused = (page: Page): Promise<void> =>
+  expect(page.locator(".cms-popover").getByRole("spinbutton", { name: "Price" })).toBeFocused();
 
 const isFocused = async (locator: Locator): Promise<boolean> =>
   (await locator.count()) > 0 && (await locator.evaluate((node) => node === node.ownerDocument.activeElement));
@@ -106,7 +110,7 @@ test.describe("Tab order", () => {
     expect(order).toEqual(["button:Discard", "button:Done", "button:Revisions", "#site-footer", "#about-body"]);
   });
 
-  test("in WebKit, plain Tab reaches every field but skips the bar's buttons, as Safari does by default", async ({
+  test("in WebKit, plain Tab reaches every field, skipping the bar's buttons on macOS's default setting", async ({
     page,
     demo,
     browserName,
@@ -119,7 +123,8 @@ test.describe("Tab order", () => {
       order.push(await focusedName(page));
     }
     expect(order.slice(0, 11)).toContain("#site-footer");
-    expect(order.every((name) => !name.startsWith("button:"))).toBe(true);
+    // A macOS keyboard setting, not WebKit: on Linux, plain Tab goes on to the buttons.
+    if (process.platform === "darwin") expect(order.every((name) => !name.startsWith("button:"))).toBe(true);
   });
 
   test("a locked field is reachable and Enter explains why it can't be edited", async ({ page, demo, browserName }) => {
@@ -323,6 +328,7 @@ test.describe("every widget by keyboard", () => {
     const field = page.locator("#home-price");
     await tabTo(page, browserName, field);
     await page.keyboard.press("Enter");
+    await expectPriceFocused(page);
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.type("99");
     await page.keyboard.press("Escape");
@@ -341,6 +347,7 @@ test.describe("every widget by keyboard", () => {
     const field = page.locator("#home-price");
     await tabTo(page, browserName, field);
     await page.keyboard.press("Enter");
+    await expectPriceFocused(page);
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.type("20");
     // Tab first reaches the popover's Cancel button. Tabbing on out of the popover is leaving it, which commits, and
