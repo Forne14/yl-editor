@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `insertText`, with the old range insertion as a fallback.
 - Chrome: the "Couldn't load the documents" toast stayed after Retry succeeded. A successful load hides it, unless
   another toast replaced it.
+- Chrome: date and date-time inputs had no focus ring in Chromium and Safari (WCAG 2.4.7). They now show the accent ring
+  the other controls use, on a mouse click as well as by keyboard.
+- Chrome: a `select` was 23px tall in Safari, under the documented 44px and WCAG 2.5.8's 24px. It now takes its height
+  from `--cms-control-h`, so a host with a much larger font should raise that token. Other browsers don't change.
 - Chrome: Discard, Restore and the conflict catch-up left the old text in a field whose path the new content lacks. The
   field is emptied, and its `cms:change` carries `value: undefined`.
 

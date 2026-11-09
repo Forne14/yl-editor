@@ -21,27 +21,11 @@
       }
 
       /*
-       * 2. A select that honours --cms-control-h in WebKit. WebKit ignores min-height on a native menulist, so the
-       * select is drawn without native appearance and gets a chevron in the muted token colour. Forced-colours mode
-       * drops background images, so it keeps the native control there.
+       * 2. A select that honours --cms-control-h in WebKit, which ignores min-height on a native select but honours
+       * height. Native appearance and arrow stay in every browser. Approved over an earlier appearance: none version.
        */
       :where(.proposed select.cms-input) {
-        appearance: none;
-        padding-inline-end: calc(var(--cms-space-2) + 1.5em);
-        background-image:
-          linear-gradient(45deg, transparent 50%, var(--cms-muted) 50%),
-          linear-gradient(135deg, var(--cms-muted) 50%, transparent 50%);
-        background-position:
-          calc(100% - var(--cms-space-3) - 0.35em) 50%,
-          calc(100% - var(--cms-space-3)) 50%;
-        background-size: 0.35em 0.35em;
-        background-repeat: no-repeat;
-      }
-      @media (forced-colors: active) {
-        :where(.proposed select.cms-input) {
-          appearance: auto;
-          background-image: none;
-        }
+        height: var(--cms-control-h);
       }
 
       /* ---------- Prototype page only: layout, and a forced dark scheme beside the light one ---------- */
@@ -155,6 +139,11 @@
     <main>
       <h1>Date focus ring and select height</h1>
       <p class="lead">
+        <strong>Approved and built.</strong> This page loads the live <code>chrome.css</code>, which now holds both
+        rules, so the “Current” columns also show the fix. Compare with the stylesheet from before #19 to see the old
+        state.
+      </p>
+      <p class="lead">
         Two chrome changes the real-browser accessibility specs found (#19). Each section shows what ships now beside
         the proposal, in light and dark. The first row in each section is a still picture of the focused state. The
         second row is live: Tab or click into the controls in Chrome, Firefox and Safari to compare.
@@ -250,10 +239,8 @@
       <p class="note">
         In Safari the Status select and the Revisions drawer's document picker are 23px tall. The chrome promises 44px
         controls, and 23px is also under the 24px WCAG 2.5.8 minimum. Safari ignores the height on a native select, so
-        the proposal draws the select without native styling. It then honours the control height in every browser and
-        gets a chevron in the muted colour. This changes the select's look in Chrome and Firefox too, which today show
-        their native arrow. The native menu of options still opens, and Windows high-contrast mode keeps the native
-        control.
+        the approved rule sets <code>height</code> from the control-height token. Chrome and Firefox don't change, and
+        every browser keeps its native arrow.
       </p>
 
       <div class="grid">
@@ -281,7 +268,7 @@
             </select>
             <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
           </div>
-          <p class="caption">44px in every browser, chevron from <code>--cms-muted</code>.</p>
+          <p class="caption">44px in every browser, with the native arrow.</p>
         </div>
         <div class="cell dark">
           <h3>Current · dark</h3>

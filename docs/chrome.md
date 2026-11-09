@@ -379,7 +379,7 @@ Outside the token block the stylesheet has no raw colours, pixel sizes or radii.
 | `--cms-space-5`     | `24px`                                                            | same                           |
 | `--cms-shadow`      | `0 8px 28px rgb(15 18 30 / 18%)`                                  | `0 10px 30px rgb(0 0 0 / 45%)` |
 | `--cms-z`           | `1000`                                                            | same                           |
-| `--cms-control-h`   | `44px` (minimum touch target)                                     | same                           |
+| `--cms-control-h`   | `44px` (minimum touch target; the fixed height of a `select`)     | same                           |
 | `--cms-sheet-max-h` | `70vh`                                                            | same                           |
 
 Stable class names, all prefixed `cms-`: `cms-root`, `cms-bar`, `cms-bar__state`, `cms-bar__actions`, `cms-enter`,
@@ -391,7 +391,8 @@ also on `data-cms-state`, and the toast's kind on `data-kind`.
 ## Accessibility
 
 - Every control is a real `<button>`, `<input>` or `<select>`, reachable by Tab, with a visible `:focus-visible`
-  ring. Fields get `tabindex="0"` while editing and an `aria-describedby` naming the field, its type and either
+  ring. Date and date-time inputs use `:focus-within`, because Chromium and WebKit don't match `:focus-visible` on them,
+  so they also show the ring on a mouse click. Fields get `tabindex="0"` while editing and an `aria-describedby` naming the field, its type and either
   "Press Enter to edit" or the reason it is locked.
 - Esc closes the open widget or panel; focus returns to the field or to the button that opened the panel.
 - Status goes to one `aria-live="polite"` region; only one toast shows at a time. Errors stay until dismissed or
