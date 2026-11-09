@@ -249,6 +249,7 @@ interface FocusStop {
   name: string;
   chrome: boolean;
   focusVisible: boolean;
+  dateInput: boolean;
   /** Whether plain `:focus` matches, to tell a missing ring apart from focus that isn't on the element at all. */
   focus: boolean;
   focusWithin: boolean;
@@ -345,6 +346,7 @@ const measureFocus = (page: Page): Promise<FocusStop | null> =>
       name,
       chrome,
       focusVisible: active.matches(":focus-visible"),
+      dateInput: active.matches('input:is([type="date"], [type="datetime-local"])'),
       focus: active.matches(":focus"),
       focusWithin: active.matches(":focus-within"),
       outlineStyle: style.outlineStyle,
@@ -378,7 +380,9 @@ const hex = ([r, g, b]: Rgba): string =>
 function focusProblems(stop: FocusStop): string[] {
   const problems: string[] = [];
   const at = stop.name;
-  if (!stop.focusVisible)
+  // Chromium and WebKit never match :focus-visible on a date input, so chrome.css rings these on :focus-within. The
+  // outline and contrast checks below apply to them like any other control.
+  if (!stop.focusVisible && !(stop.dateInput && stop.focusWithin))
     problems.push(
       `${at}: keyboard focus does not match :focus-visible (:focus ${stop.focus}, :focus-within ${stop.focusWithin}) (2.4.7)`,
     );
