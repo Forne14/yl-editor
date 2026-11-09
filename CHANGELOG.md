@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Breaking:** `openPopover(anchor, label, onLeave?)` fires `onLeave` on a primary press or completed tap outside the
+  popover and `anchor` as well as on focus leaving, and at most once per popover. A host's own dropdown appended to
+  `body` counts as outside. See `docs/chrome.md`.
+- Chrome: new `defaultStrings` keys `bulkLeftOut`, `invalidValue` and `invalidValueKept`.
 - Chrome: the number and date widgets commit on Enter, on leaving the popover, or when the chrome closes it, no longer
   on `change`. A number committed after one arrow step and a date after one segment in Chromium and Firefox, and
   pressing Cancel after typing committed through the blur's `change`. A date picked from the browser's date picker,
@@ -16,6 +20,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Chrome: Publish and Discard could act on a document this session never changed. A document listed only because its
+  save was on its way stayed listed when that save failed, so Confirm could discard or publish another editor's draft,
+  or delete a never-published document with its revisions. The row now goes once the save settles, the sheet and the
+  live region say so, and Confirm waits for such a document's saves and checks again before acting.
+- Chrome: a row in the Publish or Discard sheet read "· 0" while its save was queued. The count updates when the row's
+  writes settle.
+- Chrome: a half-typed date or invalid number read as empty, so leaving the popover or pressing Enter erased the stored
+  value. Leaving cancels and keeps it; Enter keeps the popover open and announces why. A deliberately emptied input
+  still commits empty.
+- Chrome: Enter on an unchanged number, date or url wrote it. It now writes nothing, unless its last save failed.
+- Chrome: Take theirs left stale text when the other editor's content lacks the path. The field is emptied.
+- Chrome: a field emptied because its value is gone reopened on its stale `data-edit-value`. The chrome ignores that
+  value until the next one arrives, and leaves the host's attribute alone.
+- Chrome: after a press inside a popover off its controls, focus fell to the body and Esc and Enter stopped working.
+  Focus stays on the control.
+- Chrome: a right-click, a press on the page's scrollbar or a touch that became a scroll committed and closed the open
+  popover. Those no longer do; on touch, the completed tap commits.
+- Chrome: a text edit turned every no-break space into a plain one, losing deliberate ones ("10 km"). Only the changed
+  part of the text is normalised, so Firefox's typed spaces are still stored plain.
+- Chrome: the date widget's keystroke tracking could stick if a keyboard-opened date picker swallowed the keyup, so a day
+  picked next didn't commit at once. It now expires, and a number or url no longer runs it.
 - Chrome: Publish and Discard opened with a text edit or popover still open, or while a document's first save was on
   its way, listed nothing. The open edit is committed before the list is built, and a document with a save queued or
   in flight is listed.

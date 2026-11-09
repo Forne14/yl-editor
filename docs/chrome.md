@@ -98,14 +98,27 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   read. If the fetch failed, a toast says the field started from the page's value; with no `data-edit-value` the widget
   stays closed and a toast says why. A failed fetch is not cached, so the next opening tries again. Leaving the widget
   untouched writes nothing, wherever the starting value came from.
+- Discard, Restore, a conflict catch-up or Take theirs can remove a field's value. The field is emptied, and until the
+  next value arrives the chrome ignores the `data-edit-value` that held it, so the widget doesn't reopen on the value
+  just removed. The attribute itself stays as the host wrote it, and a different one written by the host counts.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select and toggle
   commit on change; number, date and url commit on Enter, not on change (arrow keys and date segments fire change at
-  every step), except that a date picked from the browser's date picker commits at once; tags commit on Enter in an empty input or Done. Esc and Cancel back out and write nothing. Every popover
-  also commits when it is left: a press anywhere outside it and its field, or focus moving out of it. A press inside the
-  popover off its controls keeps it open. A popover edit still open when another field is opened, a sheet or panel is
-  opened, the page is refreshed, or the editor is exited or destroyed is committed, not dropped. Text is too, and its
-  no-break spaces are stored as plain spaces. Paste goes in through the browser's own text insertion when it allows it.
-  Focus returns to the field when the widget closes.
+  every step), except that a date picked from the browser's date picker commits at once; tags commit on Enter in an
+  empty input or Done. Esc and Cancel back out and write nothing. Every popover also commits when it is left: a primary
+  press outside it and its field, a completed tap there, or focus moving out of it. A right-click, a Ctrl+click, a press
+  on the page's scrollbar and a touch that becomes a scroll aren't leaving: the popover stays open with focus on its
+  control. A press inside the popover off its controls keeps it open and focus where it was, so Esc and Enter go on
+  working. A popover edit still open when another field is opened, a sheet or panel is opened, the page is refreshed, or
+  the editor is exited or destroyed is committed, not dropped. Text is too. Paste goes in through the browser's own text
+  insertion when it allows it. Focus returns to the field when the widget closes.
+- Enter or leaving with nothing changed writes nothing, for every popover input (a failed save still resends).
+- A half-typed date or an invalid number (`validity.badInput`) reads as empty, but it isn't the editor emptying the
+  field. Enter keeps the popover open and announces why through the live region. Leaving, or the chrome closing the
+  popover, cancels, keeps the stored value and announces that. An input emptied on purpose still commits empty.
+- A text edit normalises only what it changed. Firefox types a space next to another space, or at the end, as a no-break
+  space, and those are stored as plain spaces. A no-break space outside the changed stretch, the part between what is
+  the same at the start and at the end of the text, stays: "10\u00a0km" keeps it when the edit is elsewhere. An edit on
+  both sides of it makes the whole stretch between them changed, so that one is normalised too.
 - A popover still waiting on its fetch is cancelled by opening any sheet, panel or the revisions drawer and by starting
   any lifecycle action, and it doesn't open on a document deleted during the wait.
 - Commits go through a save queue. Each field moves idle → saving → saved, or → failed with a Retry button in the
@@ -273,7 +286,17 @@ The defaults: `text` (plain-text contenteditable; paste and drop are reduced to 
 (`<input type="date">`), `toggle`, `select` (a native `<select>` from `data-edit-options`) and `tags` (chips and a
 text input; commas split). `richtext` falls back to the text widget with a visible note asking the host to register
 a rich widget. `media` has no default. A type with nothing registered shows "No editor registered for <type>"; it
-never throws. `openPopover(anchor, label, onLeave?)` is exported for host widgets that want the same themed popover.
+never throws.
+
+`openPopover(anchor, label, onLeave?)` is exported for host widgets that want the same themed popover. `onLeave` fires at
+most once per popover, and never after `close()`, when the editor leaves it: a primary press or a completed tap outside
+the popover's element and `anchor`, or focus moving out of the popover's element. Right-clicks, Ctrl+clicks, presses on
+the page's scrollbar and touch scrolls don't count. Outside means outside the DOM subtree, so a host's own dropdown or
+date picker appended to `body` counts as outside and fires `onLeave` when pressed: render it inside `popover.root`, or
+ignore the call and reopen. Since it fires only once, a host that keeps the popover open after it gets no second call.
+A press inside the popover that isn't on an `input`, `select`, `textarea`, `button`, link, `label`, `summary`,
+`[contenteditable]` or `[tabindex]` has its `mousedown` default prevented, so focus stays on the control, with or without
+`onLeave`.
 
 A rich text widget built on TipTap, as a sketch:
 
