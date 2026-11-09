@@ -11,6 +11,8 @@ export interface FieldRecord {
   id: string;
   editable: boolean;
   reason?: string;
+  /** The `data-edit-value` of a value since removed from the content. It stays on the host's element, but it's stale. */
+  staleEditValue?: string | undefined;
   description: HTMLElement;
   detach?: () => void;
 }

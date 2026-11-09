@@ -13,9 +13,16 @@ export interface Popover {
   close(): void;
 }
 
+/** What a press can land on in a popover and still mean something: these keep their own focus and text selection. */
+const POPOVER_CONTROLS = "input, select, textarea, button, a[href], label, summary, [contenteditable], [tabindex]";
+
 /**
  * A small dialog anchored under a field, themed by `.cms-root` so it picks up the tokens wherever it is appended.
  * Under 40em the stylesheet turns it into a bottom sheet. Exported so host widgets can reuse it.
+ *
+ * `onLeave` fires at most once per popover, when the editor leaves it: a primary press or a completed tap outside the
+ * popover and `anchor`, or focus moving out of the popover. Anything of the host's outside the popover's own element
+ * counts as outside, including a dropdown it appends to `body`. It never fires after `close()`.
  */
 export function openPopover(anchor: HTMLElement, label: string, onLeave?: () => void): Popover {
   const titleId = uniqueId("cms-popover-title");
@@ -28,42 +35,95 @@ export function openPopover(anchor: HTMLElement, label: string, onLeave?: () => 
   root.style.setProperty("--cms-popover-left", `${rect.left + (view?.scrollX ?? 0)}px`);
   const doc = anchor.ownerDocument;
   let closed = false;
-  // Whether the latest press landed inside the popover. A press there off its controls blurs the control with no
-  // `relatedTarget`, exactly like a click on the page outside; this tells the two apart. A key press clears it.
+  let left = false;
+  // Whether the latest press landed inside the popover. Safari doesn't focus a button or checkbox on a click, so a
+  // press on one blurs the control with no `relatedTarget`, exactly like a click on the page outside; this tells the
+  // two apart. A key press clears it.
   let pressInside = false;
+  // The latest press wasn't a leave (a right-click), though it can still take focus with it.
+  let pressIgnored = false;
+  // A touch outside may turn into a scroll, so it only counts once it completes as a tap.
+  let touchOutside = false;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   const leave = () => {
-    if (!closed) onLeave?.();
+    if (closed || left) return;
+    left = true;
+    onLeave?.();
+  };
+  const afterFocusSettles = (check: () => void) => {
+    if (settleTimer !== undefined) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      check();
+    }, 0);
+  };
+  // A press off the controls would drop focus to the body with the popover still open, and Esc and Enter with it.
+  const handleMouseDown = (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const control = target?.closest(POPOVER_CONTROLS);
+    if (!control || !root.contains(control)) event.preventDefault();
   };
   // Clicking content that cannot take focus, and any button in Safari, moves focus nowhere, so `focusout` alone misses
-  // it. A press outside the popover and its field commits on its own.
-  const handlePointerDown = (event: Event) => {
+  // it. A press outside the popover and its field commits on its own, unless it is not the editor leaving: a right-click
+  // or a Mac's Ctrl+click opens a menu, and the root scrollbar's press has the root as its target. An empty stretch of
+  // the root has that target too, but a click there drops focus, which `handleFocusOut` catches.
+  const handlePointerDown = (event: PointerEvent) => {
     const target = event.target instanceof Node ? event.target : null;
     pressInside = target !== null && root.contains(target);
-    if (!pressInside && !(target && anchor.contains(target))) leave();
+    pressIgnored = false;
+    touchOutside = false;
+    if (pressInside) return;
+    if (event.button !== 0 || event.ctrlKey) {
+      pressIgnored = true;
+      return;
+    }
+    if ((target && anchor.contains(target)) || target === doc.documentElement) return;
+    if (event.pointerType === "touch" || event.pointerType === "pen") touchOutside = true;
+    else leave();
+  };
+  const handlePointerCancel = () => {
+    touchOutside = false;
+  };
+  const handleClick = (event: Event) => {
+    if (!touchOutside) return;
+    touchOutside = false;
+    const target = event.target instanceof Node ? event.target : null;
+    if (!(target && (root.contains(target) || anchor.contains(target)))) leave();
   };
   const handleKeyDown = () => {
     pressInside = false;
+    pressIgnored = false;
+    touchOutside = false;
   };
   const handleFocusOut = (event: FocusEvent) => {
     const next = event.relatedTarget;
+    if (pressIgnored) {
+      // The popover stays, so focus comes back with it, or Esc and Enter would stop working.
+      const control = event.target;
+      afterFocusSettles(() => {
+        const current = doc.activeElement;
+        if (!(current && root.contains(current)) && control instanceof HTMLElement) control.focus();
+      });
+      return;
+    }
     if (next instanceof Node) {
       if (!root.contains(next)) leave();
       return;
     }
     // Focus went nowhere. Once it settles, it left unless it is back inside or the press was inside. A window switch
     // keeps `activeElement` on the control, so it commits nothing.
-    if (settleTimer !== undefined) clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => {
-      settleTimer = undefined;
+    afterFocusSettles(() => {
       const current = doc.activeElement;
       if (pressInside || (current && root.contains(current))) return;
       leave();
-    }, 0);
+    });
   };
+  root.addEventListener("mousedown", handleMouseDown);
   if (onLeave) {
     root.addEventListener("focusout", handleFocusOut);
     doc.addEventListener("pointerdown", handlePointerDown, true);
+    doc.addEventListener("pointercancel", handlePointerCancel, true);
+    doc.addEventListener("click", handleClick, true);
     doc.addEventListener("keydown", handleKeyDown, true);
   }
   doc.body.append(root);
@@ -72,8 +132,11 @@ export function openPopover(anchor: HTMLElement, label: string, onLeave?: () => 
     close() {
       closed = true;
       if (settleTimer !== undefined) clearTimeout(settleTimer);
+      root.removeEventListener("mousedown", handleMouseDown);
       root.removeEventListener("focusout", handleFocusOut);
       doc.removeEventListener("pointerdown", handlePointerDown, true);
+      doc.removeEventListener("pointercancel", handlePointerCancel, true);
+      doc.removeEventListener("click", handleClick, true);
       doc.removeEventListener("keydown", handleKeyDown, true);
       root.remove();
     },
@@ -130,12 +193,22 @@ function insertPlainText(target: HTMLElement, text: string): void {
   selection.addRange(range);
 }
 
+const withPlainSpaces = (text: string): string => text.replace(/\u00a0/g, " ");
+
 /**
- * The text a plain-text edit holds. Firefox types a space next to another space, or at the end, as a no-break space;
- * the stored value never wants one.
+ * The text a plain-text edit holds. Firefox types a space next to another space, or at the end, as a no-break space,
+ * which the stored value doesn't want; one the text already had is deliberate ("10 km"). So only what changed since
+ * `start`, the stretch between the common prefix and suffix, is normalised.
  */
-function plainText(target: HTMLElement): string {
-  return (target.textContent ?? "").replace(/\u00a0/g, " ").trim();
+function plainText(target: HTMLElement, start: string): string {
+  const text = (target.textContent ?? "").trim();
+  const limit = Math.min(text.length, start.length);
+  let prefix = 0;
+  while (prefix < limit && text[prefix] === start[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < limit - prefix && text[text.length - 1 - suffix] === start[start.length - 1 - suffix]) suffix += 1;
+  const end = text.length - suffix;
+  return text.slice(0, prefix) + withPlainSpaces(text.slice(prefix, end)) + text.slice(end);
 }
 
 function placeCaretAtEnd(target: HTMLElement): void {
@@ -158,9 +231,16 @@ function textWidget(note?: string): Widget {
       const outcome = once(ctx);
       // Leaving untouched must write nothing, even when the starting value is not the text the page renders. The one
       // exception is a value that failed to save, which is what the text on the page now is.
-      const untouched = plainText(target);
+      const rendered = (target.textContent ?? "").trim();
+      // An earlier edit this session can leave Firefox's no-break space on the page after storing a plain one. The
+      // stored value says which spaces are meant, as long as it is this text.
+      const start =
+        typeof ctx.value === "string" && withPlainSpaces(ctx.value).trim() === withPlainSpaces(rendered)
+          ? ctx.value.trim()
+          : rendered;
+      const untouched = plainText(target, start);
       const finish = () => {
-        const text = plainText(target);
+        const text = plainText(target, start);
         if (text === untouched && !ctx.unsaved) outcome.cancel();
         else outcome.commit(text);
       };
@@ -217,6 +297,8 @@ interface FormWidgetParts {
   read(): unknown;
   /** Focus target; defaults to `control`. */
   focusTarget?: HTMLElement;
+  /** The control holds something `read` can't represent, such as a half-typed date. */
+  unreadable?(): boolean;
 }
 
 /**
@@ -225,20 +307,26 @@ interface FormWidgetParts {
  */
 function formWidget(
   strings: Strings,
-  build: (ctx: WidgetContext, outcome: ReturnType<typeof once>) => FormWidgetParts,
+  build: (ctx: WidgetContext, outcome: ReturnType<typeof once>, finish: () => void) => FormWidgetParts,
 ): Widget {
   return {
     mount(ctx): WidgetHandle {
       const outcome = once(ctx);
-      const parts = build(ctx, outcome);
-      // Leaving untouched must write nothing, even when the stored value is missing and the control shows a default.
-      // The one exception is a value that failed to save, which the control starts from.
-      const untouched = JSON.stringify(parts.read());
       const finish = () => {
+        // It reads as empty, but the editor didn't empty it: erasing the stored value would be the wrong guess.
+        if (parts.unreadable?.()) {
+          ctx.announce(format(strings.invalidValueKept, { label: fieldLabel(ctx) }));
+          outcome.cancel();
+          return;
+        }
         const value = parts.read();
         if (JSON.stringify(value) === untouched && !ctx.unsaved) outcome.cancel();
         else outcome.commit(value);
       };
+      const parts = build(ctx, outcome, finish);
+      // Leaving untouched must write nothing, even when the stored value is missing and the control shows a default.
+      // The one exception is a value that failed to save, which the control starts from.
+      const untouched = JSON.stringify(parts.read());
       const popover = openPopover(ctx.element, fieldLabel(ctx), finish);
       const handleKeydown = (event: KeyboardEvent) => {
         if (event.key !== "Escape") return;
@@ -263,8 +351,11 @@ function formWidget(
   };
 }
 
+/** How long a key can stay down with no repeat before a date stops counting it as being typed. */
+const KEY_HELD_MS = 1000;
+
 function inputWidget(strings: Strings, inputType: "number" | "url" | "date"): Widget {
-  return formWidget(strings, (ctx, outcome) => {
+  return formWidget(strings, (ctx, _outcome, finish) => {
     const input = element("input", {
       class: "cms-input",
       type: inputType,
@@ -277,38 +368,41 @@ function inputWidget(strings: Strings, inputType: "number" | "url" | "date"): Wi
       return input.value.trim();
     };
     // Enter commits, and so does leaving the popover (see `formWidget`). A number never commits on `change`: it fires
-    // on every arrow step and on the blur that pressing Cancel causes. A date fires it on every segment typed or
-    // stepped in Chromium and Firefox, so a `change` during a keystroke waits for Enter; one from the date picker
-    // commits, because picking a day is the whole edit.
-    let keying = false;
-    let keyingTimer: ReturnType<typeof setTimeout> | undefined;
+    // on every arrow step and on the blur that pressing Cancel causes.
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        outcome.commit(read());
-        return;
-      }
-      keying = true;
-      if (keyingTimer !== undefined) clearTimeout(keyingTimer);
-    });
-    // A key that moves focus away (Tab) has its keyup elsewhere.
-    input.addEventListener("blur", () => {
-      keying = false;
-    });
-    input.addEventListener("keyup", () => {
-      if (keyingTimer !== undefined) clearTimeout(keyingTimer);
-      // After the key's own events have fired: a `change` it causes can follow the keyup.
-      keyingTimer = setTimeout(() => {
-        keying = false;
-        keyingTimer = undefined;
-      }, 0);
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (input.validity.badInput) ctx.announce(format(strings.invalidValue, { label: fieldLabel(ctx) }));
+      else finish();
     });
     if (inputType === "date") {
+      // A date fires `change` on every segment typed or stepped in Chromium and Firefox, so a `change` during a
+      // keystroke waits for Enter; one from the date picker commits, because picking a day is the whole edit.
+      let keying = false;
+      let keyingTimer: ReturnType<typeof setTimeout> | undefined;
+      const stopKeyingAfter = (delay: number) => {
+        if (keyingTimer !== undefined) clearTimeout(keyingTimer);
+        keyingTimer = setTimeout(() => {
+          keying = false;
+          keyingTimer = undefined;
+        }, delay);
+      };
+      input.addEventListener("keydown", () => {
+        keying = true;
+        // A key that opens the date picker can have its keyup swallowed by the picker.
+        stopKeyingAfter(KEY_HELD_MS);
+      });
+      // A key that moves focus away (Tab) has its keyup elsewhere.
+      input.addEventListener("blur", () => {
+        keying = false;
+      });
+      // After the key's own events have fired: a `change` it causes can follow the keyup.
+      input.addEventListener("keyup", () => stopKeyingAfter(0));
       input.addEventListener("change", () => {
-        if (!keying) outcome.commit(read());
+        if (!keying) finish();
       });
     }
-    return { control: input, read };
+    return { control: input, read, unreadable: () => input.validity.badInput };
   });
 }
 

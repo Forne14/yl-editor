@@ -3,7 +3,7 @@
 // null and only paths that don't depend on it commit. Also keyboard-only operation of every widget, the visible focus
 // ring, and popovers as bottom sheets under 40em.
 import { expect, test, type Demo } from "./fixtures.ts";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 const HOME = "pages/home";
 
@@ -23,6 +23,22 @@ const popover = (page: Page) => page.locator(".cms-popover:not(.cms-popover--not
 const bar = (page: Page) => page.locator(".cms-bar");
 /** Somewhere on the page that is neither a field nor focusable. */
 const plainText = (page: Page) => page.locator(".facts dt").first();
+
+/** The popover opens once its document has loaded; keys pressed before that go nowhere, as they would for a user. */
+async function openTags(page: Page): Promise<void> {
+  await page.locator("#home-tags").click();
+  await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
+}
+
+/** Clicks a field whose popover widget has an input, and waits until the input has focus. */
+async function openInput(page: Page, selector: string): Promise<Locator> {
+  await page.locator(selector).click();
+  const input = popover(page).locator("input");
+  await expect(input).toBeFocused();
+  return input;
+}
+
+const liveRegion = (page: Page) => page.locator(".cms-live");
 
 test.describe("text fields", () => {
   test("commit on blur when the user clicks elsewhere on the page", async ({ page, demo }) => {
@@ -127,8 +143,7 @@ test.describe("popover widgets", () => {
 
   test("Cancel writes nothing although the control was changed", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
-    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
+    await openTags(page);
     await page.keyboard.type("rye");
     await popover(page).getByRole("button", { name: "Cancel" }).click();
     await expect(popover(page)).toHaveCount(0);
@@ -140,8 +155,7 @@ test.describe("popover widgets", () => {
 
   test("Done commits and returns focus to the field", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
-    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
+    await openTags(page);
     await page.keyboard.type("rye");
     await popover(page).getByRole("button", { name: "Done" }).click();
     await expect(popover(page)).toHaveCount(0);
@@ -152,7 +166,7 @@ test.describe("popover widgets", () => {
 
   test("clicking inside the popover, off its controls, keeps it open and commits nothing", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
+    await openTags(page);
     await page.keyboard.type("rye");
     await popover(page).locator(".cms-popover__title").click();
     await expect(popover(page)).toBeVisible();
@@ -163,7 +177,7 @@ test.describe("popover widgets", () => {
 
   test("opening another field commits the open popover", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
+    await openTags(page);
     await page.keyboard.type("rye");
     await page.locator("#home-price").click();
     await expect(popover(page).getByRole("spinbutton", { name: "Price" })).toBeFocused();
@@ -173,7 +187,7 @@ test.describe("popover widgets", () => {
 
   test("opening a text field commits the open popover", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
+    await openTags(page);
     await page.keyboard.type("rye");
     await page.locator("#home-title").click();
     await expect(page.locator("#home-title")).toHaveAttribute("contenteditable", /^(plaintext-only|true)$/);
@@ -183,7 +197,7 @@ test.describe("popover widgets", () => {
 
   test("clicking a bar button commits the open popover", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
+    await openTags(page);
     await page.keyboard.type("rye");
     await bar(page).getByRole("button", { name: "Publish" }).click();
     await expect(page.locator(".cms-sheet")).toBeVisible();
@@ -194,9 +208,7 @@ test.describe("popover widgets", () => {
 
   test("clicking elsewhere on the page commits the open popover", async ({ page, demo }) => {
     await demo.openEditor();
-    await page.locator("#home-tags").click();
-    // The popover opens once its document has loaded; keys pressed before that go nowhere, as they would for a user.
-    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
+    await openTags(page);
     await page.keyboard.type("rye");
     await plainText(page).click();
     await expect(popover(page)).toHaveCount(0);
@@ -221,6 +233,207 @@ test.describe("popover widgets", () => {
     await plainText(page).click();
     await expect(popover(page)).toHaveCount(0);
     await expectDraft(demo, "price", 20);
+  });
+
+  test("after a click on the popover's title, focus stays on the control and Esc cancels", async ({ page, demo }) => {
+    await demo.openEditor();
+    await openTags(page);
+    await page.keyboard.type("rye");
+    await popover(page).locator(".cms-popover__title").click();
+    await expect(popover(page).getByRole("textbox", { name: "Add tag" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(popover(page)).toHaveCount(0);
+    await expect(page.locator("#home-tags")).toBeFocused();
+    await expectNoWrites(demo);
+  });
+
+  test("after a click on the popover's title, Enter still works on the control", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-price");
+    await input.fill("20");
+    await popover(page).locator(".cms-popover__title").click();
+    await page.keyboard.press("Enter");
+    await expect(popover(page)).toHaveCount(0);
+    await expectDraft(demo, "price", 20);
+  });
+
+  test("text can still be selected with the mouse in a popover's input", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-link");
+    const box = await input.boundingBox();
+    if (!box) throw new Error("input has no box");
+    await page.mouse.move(box.x + 8, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.up();
+    const selected = await input.evaluate(
+      (node: HTMLInputElement) => (node.selectionEnd ?? 0) - (node.selectionStart ?? 0),
+    );
+    expect(selected).toBeGreaterThan(0);
+    await expect(input).toBeFocused();
+  });
+
+  test("Enter on an input left as it was writes nothing", async ({ page, demo }) => {
+    await demo.openEditor();
+    for (const selector of ["#home-price", "#home-date", "#home-link"]) {
+      await openInput(page, selector);
+      await page.keyboard.press("Enter");
+      await expect(popover(page)).toHaveCount(0);
+      await expect(page.locator(selector)).toBeFocused();
+    }
+    await expectNoWrites(demo);
+  });
+
+  test("a number deliberately emptied is saved as empty", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-price");
+    await input.fill("");
+    await page.keyboard.press("Enter");
+    await expect(popover(page)).toHaveCount(0);
+    await expectDraft(demo, "price", null);
+  });
+
+  test("a right-click elsewhere leaves the popover open, focus on its control, and commits nothing", async ({
+    page,
+    demo,
+  }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-price");
+    await input.fill("20");
+    await plainText(page).click({ button: "right" });
+    await expect(popover(page)).toBeVisible();
+    await expect(input).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(popover(page)).toHaveCount(0);
+    await expectNoWrites(demo);
+  });
+
+  test("a click on the page's empty margin still commits, though it has the root as its target", async ({
+    page,
+    demo,
+  }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-price");
+    await input.fill("20");
+    // The margin beside the centred page: nothing there but `html` or `body`.
+    const isRoot = await page.evaluate(() => {
+      const target = document.elementFromPoint(2, 2);
+      return target === document.documentElement || target === document.body;
+    });
+    expect(isRoot).toBe(true);
+    await page.mouse.click(2, 2);
+    await expect(popover(page)).toHaveCount(0);
+    await expectDraft(demo, "price", 20);
+  });
+});
+
+test.describe("half-typed values", () => {
+  /** Types what the number input can't read: `value` stays empty and `validity.badInput` is true. */
+  async function holdBadNumber(page: Page): Promise<Locator> {
+    const input = await openInput(page, "#home-price");
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.type("1e");
+    expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(true);
+    return input;
+  }
+
+  /** Empties one segment of the date, leaving the others: `value` is empty and `validity.badInput` is true. */
+  async function holdHalfDate(page: Page): Promise<Locator> {
+    const input = await openInput(page, "#home-date");
+    await page.keyboard.press("Backspace");
+    expect(await input.evaluate((node: HTMLInputElement) => node.value)).toBe("");
+    expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(true);
+    return input;
+  }
+
+  const cases = [
+    { name: "number", selector: "#home-price", path: "price", shown: "12", hold: holdBadNumber },
+    { name: "date", selector: "#home-date", path: "date", shown: "14 Nov 2026", hold: holdHalfDate },
+  ];
+
+  for (const { name, selector, shown, hold } of cases) {
+    test(`${name}: leaving by a click elsewhere cancels and keeps the stored value`, async ({ page, demo }) => {
+      await demo.openEditor();
+      await hold(page);
+      await plainText(page).click();
+      await expect(popover(page)).toHaveCount(0);
+      await expect(page.locator(selector)).toHaveText(shown);
+      await expect(liveRegion(page)).toContainText("keeps the saved value");
+      await expectNoWrites(demo);
+    });
+
+    test(`${name}: Enter keeps the popover open and says why`, async ({ page, demo }) => {
+      await demo.openEditor();
+      const input = await hold(page);
+      await page.keyboard.press("Enter");
+      await expect(liveRegion(page)).toContainText("isn’t complete or valid");
+      await expect(popover(page)).toBeVisible();
+      await expect(input).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(popover(page)).toHaveCount(0);
+      await expect(page.locator(selector)).toHaveText(shown);
+      await expectNoWrites(demo);
+    });
+
+    test(`${name}: opening a sheet cancels and keeps the stored value`, async ({ page, demo }) => {
+      await demo.openEditor();
+      await hold(page);
+      await bar(page).getByRole("button", { name: "Publish" }).click();
+      await expect(page.locator(".cms-sheet")).toBeVisible();
+      await expect(popover(page)).toHaveCount(0);
+      await expect(page.locator(selector)).toHaveText(shown);
+      await expectNoWrites(demo);
+    });
+  }
+});
+
+test.describe("touch", () => {
+  test.use({ hasTouch: true, viewport: { width: 800, height: 360 } });
+
+  test("a tap elsewhere commits the open popover", async ({ page, demo }) => {
+    await demo.openEditor();
+    await page.locator("#home-price").tap();
+    const input = popover(page).getByRole("spinbutton", { name: "Price" });
+    await expect(input).toBeFocused();
+    await input.fill("20");
+    await plainText(page).tap();
+    await expect(popover(page)).toHaveCount(0);
+    await expectDraft(demo, "price", 20);
+  });
+
+  test("a scroll gesture starting outside the popover commits nothing", async ({ page, demo, browserName }) => {
+    // Only CDP can send a touch scroll: Playwright's touchscreen has `tap` alone. A scroll in Firefox and WebKit has no
+    // honest way to be driven from here, so the unit tests stand in for them.
+    test.skip(browserName !== "chromium", "only Chromium can drive a real touch scroll");
+    await demo.openEditor();
+    await page.locator("#home-price").tap();
+    const input = popover(page).getByRole("spinbutton", { name: "Price" });
+    await expect(input).toBeFocused();
+    await input.fill("20");
+    await page.evaluate(() => {
+      document.addEventListener(
+        "pointerdown",
+        (event) => {
+          document.documentElement.dataset.lastPointer = event.pointerType;
+        },
+        true,
+      );
+    });
+    const { x, y } = (await plainText(page).boundingBox()) ?? { x: 100, y: 200 };
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.synthesizeScrollGesture", {
+      x: x + 4,
+      y: y + 4,
+      yDistance: -120,
+      gestureSourceType: "touch",
+      speed: 1200,
+    });
+    // Proves the gesture was a real touch reaching the document, and that it scrolled.
+    await expect(page.locator("html")).toHaveAttribute("data-last-pointer", "touch");
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await expect(popover(page)).toBeVisible();
+    await expect(input).toHaveValue("20");
+    await expectNoWrites(demo);
   });
 });
 

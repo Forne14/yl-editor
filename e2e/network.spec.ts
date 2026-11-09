@@ -51,6 +51,18 @@ class Gate {
     await expect.poll(() => this.held.length).toBe(count);
   }
 
+  /** Answers every held request with a 500, and new ones from now on. */
+  async failHeld(): Promise<void> {
+    this.mode = "fail";
+    for (const route of this.held.splice(0)) {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "internal", message: FAILURE_MESSAGE } }),
+      });
+    }
+  }
+
   /** Lets every held request through, and new ones from now on. Resolves once their responses have arrived. */
   async release(): Promise<void> {
     this.mode = "pass";
@@ -387,4 +399,84 @@ test.describe("loading the page's documents", () => {
       await expect(page.locator(".cms-popover select")).toHaveValue("live");
     });
   }
+});
+
+test.describe("a document in the Discard sheet only for a save that then fails", () => {
+  const THEIR_DRAFT = "Their draft";
+  const LEFT_OUT = "Left out, with no saved change from this session: pages/about.";
+  const row = (page: Page) => sheet(page).locator('li[data-key="pages/about"]');
+  const confirm = (page: Page) => sheet(page).locator(".cms-sheet__actions").getByRole("button", { name: "Discard" });
+
+  test.beforeEach(({ guard }) => {
+    guard.allowFailedRequests();
+  });
+
+  /** Another editor has a draft of pages/about. This session's first save of it is held, with the Discard sheet open. */
+  async function discardSheetOverAHeldSave(page: Page, demo: Demo): Promise<Gate> {
+    const written = await demo.content("POST", "field", { key: "pages/about", path: "title", value: THEIR_DRAFT });
+    expect(written.status).toBe(200);
+    await demo.openEditor();
+    const gate = await Gate.on(page, "POST", "field", "hold");
+    await editText(page, "#about-title", "Mine");
+    await gate.waitHeld();
+    await bar(page).getByRole("button", { name: "Discard", exact: true }).click();
+    await expect(row(page)).toBeVisible();
+    return gate;
+  }
+
+  test("the row goes when the save fails, and another editor's draft survives", async ({ page, demo }) => {
+    const gate = await discardSheetOverAHeldSave(page, demo);
+    await gate.failHeld();
+    await expect(row(page)).toHaveCount(0);
+    await expect(sheet(page)).toContainText("Nothing you can discard has changed this session.");
+    await expect(sheet(page)).toContainText(LEFT_OUT);
+    await expect(page.locator(".cms-live")).toHaveText(LEFT_OUT);
+    await expect(confirm(page)).toHaveCount(0);
+    expect((await storedDraft(demo, "pages/about"))["title"]).toBe(THEIR_DRAFT);
+  });
+
+  test("Confirm pressed while the save is held acts on nothing once it fails", async ({ page, demo }) => {
+    const gate = await discardSheetOverAHeldSave(page, demo);
+    const discards: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/content/discard") discards.push(request.url());
+    });
+    await confirm(page).click();
+    await expect(sheet(page).locator(".cms-sheet__actions").getByRole("button", { name: "Cancel" })).toBeFocused();
+    await gate.failHeld();
+    await expect(sheet(page)).toContainText(LEFT_OUT);
+    await expect(sheet(page).locator(".cms-sheet__header").getByRole("button", { name: "Close" })).toBeFocused();
+    expect(discards).toEqual([]);
+    expect((await storedDraft(demo, "pages/about"))["title"]).toBe(THEIR_DRAFT);
+    expect((await demo.changes()).filter((change) => change.action === "discard")).toEqual([]);
+  });
+
+  test("a never-published document keeps its row in the database and its revisions", async ({ page, demo }) => {
+    await demo.seed({ key: "pages/about", draft: { title: "Never live", body: "Theirs." } });
+    await demo.openEditor();
+    const gate = await Gate.on(page, "POST", "field", "hold");
+    await editText(page, "#about-title", "Mine");
+    await gate.waitHeld();
+    await bar(page).getByRole("button", { name: "Discard", exact: true }).click();
+    await expect(row(page)).toContainText("deletes pages/about");
+    await confirm(page).click();
+    await gate.failHeld();
+    await expect(sheet(page)).toContainText(LEFT_OUT);
+    const stored = await demo.readDoc("pages/about");
+    expect((stored?.draft as Record<string, unknown>)["title"]).toBe("Never live");
+  });
+
+  test("when the save lands, the count follows it and Confirm discards the document", async ({ page, demo }) => {
+    await demo.openEditor();
+    const gate = await Gate.on(page, "POST", "field", "hold");
+    await editText(page, "#about-title", "Mine");
+    await gate.waitHeld();
+    await bar(page).getByRole("button", { name: "Discard", exact: true }).click();
+    await expect(row(page)).toHaveText("pages/about · 0");
+    await gate.release();
+    await expect(row(page)).toHaveText("pages/about · 1");
+    await confirm(page).click();
+    await expect(sheet(page)).toBeHidden();
+    await expect.poll(async () => (await demo.changes()).map((change) => change.action)).toContain("discard");
+  });
 });
