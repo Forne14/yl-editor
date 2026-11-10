@@ -52,9 +52,9 @@ through `e2e/fixtures.ts` rather than directly.
 
 ## Timeouts
 
-Tests use Playwright's default 30s timeout; the slowest takes about 6s on CI. On a machine busy with other work, raise
-it for a local run rather than in the specs, so a hang still fails fast in CI:
+Tests use Playwright's default 30s timeout, which leaves CI plenty of headroom. On a machine busy with other work,
+raise it for a local run rather than in the specs, so a hung test still fails at 30s in CI:
 
 ```sh
-npm run build && npx playwright test --timeout=60000
+npm run test:e2e -- --timeout=60000
 ```
