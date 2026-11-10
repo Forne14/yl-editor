@@ -32,6 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Chrome: a half-typed date or invalid number read as empty, so leaving the popover or pressing Enter erased the stored
   value. Leaving cancels and keeps it; Enter keeps the popover open and announces why. A deliberately emptied input
   still commits empty.
+- Chrome: the reason a half-typed date or invalid number wasn't saved was only announced, so a sighted editor saw
+  nothing happen (WCAG 3.3.1, Error Identification). Enter now also shows it on a line under the input, which the input
+  references with `aria-describedby` and marks with `aria-invalid="true"` until the value is readable or empty again.
+  Leaving the popover with such a value shows that it keeps the saved value in an info toast. Esc still cancels
+  silently.
 - Chrome: Enter on an unchanged number, date or url wrote it. It now writes nothing, unless its last save failed.
 - Chrome: Take theirs left stale text when the other editor's content lacks the path. The field is emptied.
 - Chrome: a field emptied because its value is gone reopened on its stale `data-edit-value`. The chrome ignores the

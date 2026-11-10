@@ -121,8 +121,13 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   browser's own text insertion when it allows it. Focus returns to the field when the widget closes.
 - Enter or leaving with nothing changed writes nothing, for every popover input (a failed save still resends).
 - A half-typed date or an invalid number (`validity.badInput`) reads as empty, but it isn't the editor emptying the
-  field. Enter keeps the popover open and announces why through the live region. Leaving, or the chrome closing the
-  popover, cancels, keeps the stored value and announces that. An input emptied on purpose still commits empty.
+  field. Enter keeps the popover open and shows why on a line under the input (the `invalidValue` string, in
+  `.cms-diff` > `.cms-error`), which the input points at with `aria-describedby` alongside `aria-invalid="true"`. Each
+  refused Enter also announces it through the live region; a second one adds no second line. The line and both
+  attributes go as soon as the value is readable or empty again, and with the popover. Leaving, or the chrome closing
+  the popover, cancels, keeps the stored value and says so in an info toast (`invalidValueKept`) that hides itself.
+  Esc cancels silently, as always. An input emptied on purpose still commits empty. Url and the other widgets are
+  unaffected.
 - A text edit normalises only what it changed. Firefox types a space next to another space, or at the end, as a no-break
   space, and those are stored as plain spaces. A no-break space outside the changed stretch, the part between what is
   the same at the start and at the end of the text, stays: "10\u00a0km" keeps it when the edit is elsewhere. The stored
@@ -456,6 +461,8 @@ also on `data-cms-state`, and the toast's kind on `data-kind`.
 - Esc closes the open widget or panel; focus returns to the field or to the button that opened the panel.
 - Status goes to one `aria-live="polite"` region; only one toast shows at a time. Errors stay until dismissed or
   resolved; "saved" and "info" toasts hide themselves.
+- An error is shown in text, not only announced (WCAG 3.3.1): a number or date the browser can't read, refused on Enter,
+  gets a line under its input that the input names with `aria-describedby` and marks with `aria-invalid="true"`.
 - Touch targets are at least `--cms-control-h` (44px). Under 40em the bar, panels and popovers become bottom
   sheets that respect the safe-area inset.
 - With `prefers-reduced-motion: reduce` transitions are opacity-only and at most 120ms.
