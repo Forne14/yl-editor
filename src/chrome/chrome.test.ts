@@ -3179,6 +3179,44 @@ describe("a document listed only because its save was on its way", () => {
     });
   });
 
+  test("each document left out is announced once, however many settle", async () => {
+    serve({
+      "pages/home": { publishedPayload: { title: "Live" }, payload: { title: "Their draft" } },
+      "artists/finn": { publishedPayload: { name: "Finn" }, payload: { name: "Their Finn" } },
+    });
+    // One gate per document, so their saves settle apart.
+    const gates = new Map<string, () => void>();
+    handlers["POST /api/content/field"] = async (body) => {
+      await new Promise<void>((resolve) => gates.set(String(body?.key), resolve));
+      return serverError();
+    };
+    await mount();
+    const live = document.querySelector(".cms-live") as HTMLElement;
+    const announced: string[] = [];
+    new MutationObserver(() => announced.push(live.textContent ?? "")).observe(live, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    commitText("pages/home:title", "Mine");
+    commitText("artists/finn:name", "Mine");
+    buttonNamed("Discard").click();
+    await settle();
+    gates.get("pages/home")?.();
+    await settle();
+    expect(listedKeys()).toEqual(["artists/finn"]);
+    gates.get("artists/finn")?.();
+    await settle();
+    expect(listedKeys()).toEqual([]);
+    const leftOutAnnouncements = announced.filter((text) => text.startsWith("Left out"));
+    const named = leftOutAnnouncements.flatMap((text) => text.replace(/^.*: |\.$/g, "").split(", "));
+    expect(named.sort()).toEqual(["artists/finn", "pages/home"]);
+    expect(theSheet().textContent).toContain(
+      "Left out, with no saved change from this session: pages/home, artists/finn.",
+    );
+    expect(posts("discard")).toEqual([]);
+  });
+
   test("a document this session changed stays listed when a later save fails", async () => {
     serve({ "pages/home": { publishedPayload: { title: "Live" }, payload: { title: "Live" } } });
     await mount();
@@ -3262,6 +3300,31 @@ describe("a field emptied because its value is gone", () => {
     const { spaces } = await discarded();
     spaces.dataset.editValue = "34";
     expect((await open(spaces)).value).toBe("34");
+  });
+
+  test("a value the host writes after it was emptied still counts when the field is emptied again", async () => {
+    const { spaces, mounted } = await discarded();
+    spaces.dataset.editValue = "34";
+    await mounted.api.discard("pages/home");
+    await settle();
+    expect((await open(spaces)).value).toBe("34");
+  });
+
+  test.each([
+    ["child elements", "number", "<b>12</b>", "12"],
+    ["a toggle", "toggle", "Live", "true"],
+  ])("one with %s isn't emptied, so its data-edit-value still counts", async (_kind, type, markup, editValue) => {
+    const kept = addEditValueField("kept", type, editValue);
+    kept.innerHTML = markup;
+    serve({ "pages/home": { publishedPayload: {}, payload: { kept: JSON.parse(editValue) as unknown } } });
+    const mounted = await mount();
+    await mounted.api.discard("pages/home");
+    await settle();
+    expect(kept.innerHTML).toBe(markup);
+    kept.click();
+    await settle();
+    if (type === "toggle") expect(popoverControl<HTMLInputElement>("input").checked).toBe(true);
+    else expect(popoverControl<HTMLInputElement>("input").value).toBe("12");
   });
 
   test("a new value reopens on that value", async () => {
