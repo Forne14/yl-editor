@@ -46,7 +46,7 @@ function errorMessage(error: unknown, strings: Strings): string {
 /** A field's `data-edit-value`: parsed as JSON, or the attribute as written when it is not JSON. */
 function editValueAttribute(record: FieldRecord): unknown {
   const attribute = record.element.dataset.editValue;
-  if (attribute === undefined) return undefined;
+  if (attribute === undefined || (record.cleared && attribute === record.cleared.editValue)) return undefined;
   try {
     return JSON.parse(attribute) as unknown;
   } catch {
@@ -148,6 +148,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let editing = true;
   let destroyed = false;
   let openTicket = 0;
+  /** The toast that reported the last failed load, hidden once a load succeeds. */
+  let loadFailureToast: number | undefined;
 
   const session = new Session(
     client,
@@ -158,7 +160,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         updateBar();
       },
       saved(slot, value) {
-        for (const record of recordsFor(slot)) if (!TEXT_TYPES.has(record.info.type)) render(record, value);
+        for (const record of recordsFor(slot)) {
+          record.cleared = undefined;
+          if (!TEXT_TYPES.has(record.info.type)) render(record, value);
+        }
         if (slot.state === "saved") toast.show(strings.saved, "saved");
       },
       failed(slot, error) {
@@ -180,10 +185,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return fields.filter((record) => record.id === slot.id);
   }
 
-  /** Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. */
-  function render(record: FieldRecord, value: unknown): void {
+  /**
+   * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. A save never
+   * passes `undefined`, but content replaced by Discard, Restore or a conflict can lack the path: `clearMissing` then
+   * empties plain text, so the page stops showing a value that is gone, and sets aside the `data-edit-value` it had at
+   * that moment. A field already emptied keeps the one set aside then: a later one is the host's. A field it can't
+   * empty still shows its content, so its attribute stands. `cms:change` carries `undefined` either way.
+   */
+  function render(record: FieldRecord, value: unknown, clearMissing = false): void {
     const target = record.element;
-    if (target.children.length === 0 && record.info.type !== "toggle" && value !== undefined) {
+    const plain = target.children.length === 0 && record.info.type !== "toggle";
+    if (value !== undefined) record.cleared = undefined;
+    if (plain && value === undefined && clearMissing) {
+      record.cleared ??= { editValue: target.dataset.editValue };
+      target.textContent = "";
+    } else if (plain && value !== undefined) {
       target.textContent = Array.isArray(value)
         ? value.join(", ")
         : value === null || typeof value === "object"
@@ -197,12 +213,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   function takeTheirs(slot: SaveSlot): void {
     const payload = session.takeTheirs(slot);
-    for (const record of recordsFor(slot)) render(record, valueAtPath(payload, slot.path));
+    // No payload means no conflict was held, so nothing says the value is gone.
+    const clearMissing = payload !== undefined;
+    for (const record of recordsFor(slot)) render(record, valueAtPath(payload, slot.path), clearMissing);
     toast.hide();
   }
 
   function touchedDocuments() {
     return [...session.documents.values()].filter((state) => state.touched);
+  }
+
+  /** What Publish and Discard list: touched documents, plus any whose first save is still queued or on the wire. */
+  function bulkDocuments() {
+    return [...session.documents.values()].filter((state) => state.touched || session.isSaving(state.key));
   }
 
   function updateBar(): void {
@@ -428,6 +451,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   interface SheetRow {
     item: HTMLElement;
+    /** The " · 3" after the key. */
+    count: Text;
     changes: HTMLElement;
     notice: HTMLElement | undefined;
     /** The Discard sheet's warning that this document would be deleted. */
@@ -442,16 +467,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * lists one document instead, touched or not, after a publish of it conflicted.
    */
   function openBulk(kind: "publish" | "discard", opener: HTMLElement, only?: string): void {
-    const onlyState = only === undefined ? undefined : session.documents.get(only);
-    const touched = only === undefined ? touchedDocuments() : onlyState ? [onlyState] : [];
-    const eligible = touched.filter((state) => (kind === "publish" ? state.access.publish : state.access.edit));
     const title = kind === "publish" ? strings.publishTitle : strings.discardTitle;
     openSheet(
       title,
       (body) => {
+        // Built here, not before `openSheet`: it commits the open edit first, and that save must be listed.
+        const onlyState = only === undefined ? undefined : session.documents.get(only);
+        const touched = only === undefined ? bulkDocuments() : onlyState ? [onlyState] : [];
+        const eligible = touched.filter((state) => (kind === "publish" ? state.access.publish : state.access.edit));
         let isOpen = true;
+        const nothing = () =>
+          element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]);
         if (eligible.length === 0) {
-          body.append(element("p", {}, [kind === "publish" ? strings.nothingToPublish : strings.nothingToDiscard]));
+          body.append(nothing());
           return;
         }
         // A run is going: Confirm stays off whatever else tries to enable it. Only the sheet closing ends it early.
@@ -459,6 +487,63 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         // The document a run has handed to `publish` or `discard`: it keeps its review if the sheet closes.
         let inFlight: string | undefined;
         const rows = new Map<string, SheetRow>();
+        const leftOut: string[] = [];
+        const leftOutNote = element("p", { class: "cms-muted", hidden: true });
+        const othersNote = element("p", { class: "cms-muted", hidden: true });
+        const otherKeys = touched.filter((state) => !eligible.includes(state)).map((state) => state.key);
+        const syncOthers = () => {
+          const count = otherKeys.filter(
+            (key) => session.documents.get(key)?.touched === true || session.isSaving(key),
+          ).length;
+          const template = kind === "publish" ? strings.othersNeedPublisher : strings.othersNeedEditor;
+          othersNote.hidden = count === 0;
+          othersNote.textContent = count === 0 ? "" : format(template, { count });
+        };
+        /**
+         * Resolves once none of the document's writes is queued or on the wire, however many arrive meanwhile. One wait
+         * per document at a time, shared by the sheet and Confirm, so each settling rechecks the rows once.
+         */
+        const settling = new Map<string, Promise<void>>();
+        const writesSettled = (key: string): Promise<void> => {
+          const waiting = settling.get(key);
+          if (waiting) return waiting;
+          const wait = (async () => {
+            do {
+              await session.pending(key);
+            } while (session.isSaving(key));
+          })().finally(() => settling.delete(key));
+          settling.set(key, wait);
+          return wait;
+        };
+        /**
+         * Brings the rows up to date with the writes that have settled. A document listed only because its save was on
+         * its way, and which that save never changed, is another editor's to publish or discard, or to lose: it goes.
+         * `only` listed its document on purpose, touched or not.
+         */
+        const recheckRows = () => {
+          syncOthers();
+          const gone: string[] = [];
+          for (const [key, row] of rows) {
+            const state = session.documents.get(key);
+            if (state) row.count.data = ` · ${changeCount(state)}`;
+            if (only !== undefined || state?.touched === true || session.isSaving(key)) continue;
+            row.item.remove();
+            row.ticket += 1;
+            if (row.review) session.endReview(key, row.review);
+            rows.delete(key);
+            gone.push(key);
+          }
+          if (gone.length === 0) return;
+          leftOut.push(...gone);
+          // The note lists every document left out; the live region says only what is new.
+          toast.announce(format(strings.bulkLeftOut, { keys: gone.join(", ") }));
+          leftOutNote.textContent = format(strings.bulkLeftOut, { keys: leftOut.join(", ") });
+          leftOutNote.hidden = false;
+          if (rows.size > 0) return;
+          const focusWasInside = body.contains(document.activeElement);
+          body.replaceChildren(nothing(), leftOutNote, othersNote);
+          if (focusWasInside) sheet.node.querySelector("button")?.focus();
+        };
         const showNotice = (row: SheetRow, text: string) => {
           row.notice?.remove();
           row.notice = element("div", { class: "cms-diff" }, [element("p", { class: "cms-error" }, [text])]);
@@ -499,13 +584,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             { class: "cms-list" },
             eligible.map((state) => {
               const changes = element("div", { class: "cms-diff" });
-              const item = element("li", { "data-key": state.key }, [
-                element("b", {}, [state.key]),
-                ` · ${changeCount(state)}`,
-              ]);
+              const count = document.createTextNode(` · ${changeCount(state)}`);
+              const item = element("li", { "data-key": state.key }, [element("b", {}, [state.key]), count]);
               if (kind === "publish") item.append(changes);
               const row: SheetRow = {
                 item,
+                count,
                 changes,
                 notice: undefined,
                 deletes: undefined,
@@ -519,13 +603,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           ),
         );
         syncDeleteWarnings();
-        const others = touched.length - eligible.length;
-        if (others > 0) {
-          body.append(
-            element("p", { class: "cms-muted" }, [
-              format(kind === "publish" ? strings.othersNeedPublisher : strings.othersNeedEditor, { count: others }),
-            ]),
-          );
+        syncOthers();
+        body.append(othersNote, leftOutNote);
+        for (const { key } of touched) {
+          if (!session.isSaving(key)) continue;
+          void writesSettled(key).then(() => {
+            // A run rechecks for itself.
+            if (isOpen && !running) recheckRows();
+          });
         }
         if (only !== undefined && kind === "publish") {
           for (const row of rows.values()) showNotice(row, format(strings.publishConflict, { key: only }));
@@ -556,6 +641,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           // A half-typed date reads as empty; publishing right now would be the wrong guess.
           confirm.disabled = publishAt.validity.badInput || past;
         };
+        /** Back to a sheet that can be confirmed, after a run that left something to do. */
+        const resume = () => {
+          running = false;
+          if (publishAt) publishAt.disabled = false;
+          syncConfirm();
+          confirm.focus();
+        };
         const confirm: HTMLButtonElement = button(
           kind === "publish" ? strings.publish : strings.discard,
           async () => {
@@ -565,17 +657,27 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
               syncConfirm();
               return;
             }
-            // A document can lose its published version while the sheet is open. Say so before acting on it.
-            const newWarnings = syncDeleteWarnings();
-            if (newWarnings.length > 0) {
-              toast.announce(newWarnings.join(" "));
-              return;
-            }
             running = true;
             confirm.disabled = true;
             if (publishAt) publishAt.disabled = true;
             // Focus can't stay on a disabled button, and Cancel is what a run still offers.
             cancel.focus();
+            // A document listed only for a save on its way waits to see whether that save changed it. One already
+            // changed needs no wait: its write goes on the chain behind its saves.
+            const unconfirmed = [...rows.keys()].filter(
+              (key) => only === undefined && session.documents.get(key)?.touched !== true,
+            );
+            await Promise.all(unconfirmed.map(writesSettled));
+            if (!isOpen) return;
+            recheckRows();
+            if (rows.size === 0) return;
+            // A document can lose its published version while the sheet is open. Say so before acting on it.
+            const newWarnings = syncDeleteWarnings();
+            if (newWarnings.length > 0) toast.announce(newWarnings.join(" "));
+            if (newWarnings.length > 0 || inPast()) {
+              resume();
+              return;
+            }
             const when = at();
             const action =
               kind === "discard" ? strings.discard : when !== undefined ? strings.schedule : strings.publish;
@@ -641,10 +743,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
               }),
             );
             if (!isOpen) return;
-            running = false;
-            if (publishAt) publishAt.disabled = false;
-            syncConfirm();
-            confirm.focus();
+            resume();
           },
           kind === "publish" ? "primary" : "danger",
         );
@@ -858,7 +957,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (!closeOpen) continue;
         closeActive(false);
       }
-      render(record, valueAtPath(payload, record.info.path));
+      render(record, valueAtPath(payload, record.info.path), true);
       showState(record, "idle");
     }
   }
@@ -1001,14 +1100,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       openTicket += 1;
       closeActive(false, true);
       for (const record of fields) record.detach?.();
+      const previous = byElement;
       fields = scanFields(scanRoot);
       byElement = new Map(fields.map((record) => [record.element, record]));
+      for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
       let loadError: string | undefined;
       try {
         await session.load([...groupByDocument(fields).keys()]);
+        // The failure is resolved; its toast goes, unless something newer has replaced it.
+        if (loadFailureToast !== undefined) toast.hideIf(loadFailureToast);
+        loadFailureToast = undefined;
       } catch (error) {
         loadError = `${strings.loadFailed}: ${errorMessage(error, strings)}`;
-        toast.show(loadError, "error", [{ label: strings.retry, onClick: () => void api.refresh() }]);
+        loadFailureToast = toast.show(loadError, "error", [
+          { label: strings.retry, onClick: () => void api.refresh() },
+        ]);
       }
       if (destroyed) return;
       for (const record of fields) {
@@ -1025,7 +1131,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       }
       updateBar();
     },
-    status: (message: string, kind: StatusKind = "info") => toast.show(message, kind),
+    status: (message: string, kind: StatusKind = "info") => {
+      toast.show(message, kind);
+    },
   };
 
   scanRoot.ownerDocument.body.append(chrome);

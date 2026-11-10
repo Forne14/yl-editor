@@ -7,6 +7,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `openPopover(anchor, label, onLeave?)` fires `onLeave` on a completed primary click or tap outside the
+  popover and `anchor` as well as on focus leaving, and at most once per popover. A host's own dropdown appended to
+  `body` counts as outside. A press that opens a context menu (a right-click, or a Mac's Ctrl+click) doesn't fire it,
+  and focus such a press dropped goes back to the popover's control. Presses inside the popover are still left to the
+  browser. See `docs/chrome.md`.
+- Chrome: new `defaultStrings` keys `bulkLeftOut`, `invalidValue` and `invalidValueKept`.
+- Chrome: the number and date widgets commit on Enter, on leaving the popover, or when the chrome closes it, no longer
+  on `change`. A number committed after one arrow step and a date after one segment in Chromium and Firefox, and
+  pressing Cancel after typing committed through the blur's `change`. A date picked from the browser's date picker,
+  with no keystroke, still commits at once. Url already worked this way; select and toggle still commit on change.
+
+### Fixed
+
+- Chrome: Publish and Discard could act on a document this session never changed. A document listed only because its
+  save was on its way stayed listed when that save failed, so Confirm could discard or publish another editor's draft,
+  or delete a never-published document with its revisions. The row now goes once the save settles, the sheet and the
+  live region say so, once per document, and Confirm waits for such a document's saves and checks again before
+  acting.
+- Chrome: a row in the Publish or Discard sheet read "· 0" while its save was queued. The count updates when the row's
+  writes settle.
+- Chrome: a half-typed date or invalid number read as empty, so leaving the popover or pressing Enter erased the stored
+  value. Leaving cancels and keeps it; Enter keeps the popover open and announces why. A deliberately emptied input
+  still commits empty.
+- Chrome: Enter on an unchanged number, date or url wrote it. It now writes nothing, unless its last save failed.
+- Chrome: Take theirs left stale text when the other editor's content lacks the path. The field is emptied.
+- Chrome: a field emptied because its value is gone reopened on its stale `data-edit-value`. The chrome ignores the
+  attribute value the field had when it was emptied until the next value arrives, and leaves the host's attribute
+  alone. One the host writes later counts. A field the chrome doesn't empty (one with child elements, or a toggle)
+  still uses its attribute.
+- Chrome: after a press inside one of the chrome's popovers off its controls, focus fell to the body and Esc and Enter
+  stopped working. Focus stays on the control.
+- Chrome: a right-click, a Mac's Ctrl+click, a press on the page's scrollbar or a touch that became a scroll committed and
+  closed the open popover. Those no longer do; on touch, the completed tap commits, and a Ctrl+click on Windows or Linux
+  is a click and commits. Focus such a press dropped goes back to the control; focus it gave to something, such as a
+  host input right-clicked for its Paste, stays there. Focus moved later by a script still counts as leaving.
+- Chrome: a text edit turned every no-break space into a plain one, losing deliberate ones ("10 km"), including one the
+  page renders as a plain space. Only the changed part of the text is normalised, so Firefox's typed spaces are still
+  stored plain.
+- Chrome: a day picked from the date picker right after the key that opened it (Space, Alt+ArrowDown, F4) didn't commit
+  at once, as any key held a date's `change` back. Only keys that type or step a segment do now, and a number or url
+  doesn't track keys.
+- Chrome: Publish and Discard opened with a text edit or popover still open, or while a document's first save was on
+  its way, listed nothing. The open edit is committed before the list is built, and a document with a save queued or
+  in flight is listed.
+- Chrome: clicking elsewhere on the page never committed an open popover when the click moved focus nowhere (plain
+  content, and any button in Safari). A press outside the popover and its field now commits it, as does focus leaving
+  to nowhere once it settles; a press inside the popover off its controls keeps it open.
+- Chrome: Firefox stored a no-break space typed in a text field. Text widgets store plain spaces.
+- Chrome: a pasted trailing space was lost when typing after it in Firefox and Safari. Paste uses the browser's
+  `insertText`, with the old range insertion as a fallback.
+- Chrome: the "Couldn't load the documents" toast stayed after Retry succeeded. A successful load hides it, unless
+  another toast replaced it.
+- Chrome: date and date-time inputs had no focus ring in Chromium and Safari (WCAG 2.4.7). They now show the accent ring
+  the other controls use, on a mouse click as well as by keyboard.
+- Chrome: a `select` was 23px tall in Safari, under the documented 44px and WCAG 2.5.8's 24px. It now takes its height
+  from `--cms-control-h`, so a host with a much larger font should raise that token. Other browsers don't change.
+- Chrome: Discard, Restore and the conflict catch-up left the old text in a field whose path the new content lacks. The
+  field is emptied, and its `cms:change` carries `value: undefined`.
+
+### Internal
+
+- Real-browser test harness (#19). `npm run test:e2e` builds the package and runs Playwright specs in `e2e/` against a
+  demo site in `examples/demo/` on Chromium, Firefox and WebKit. The demo serves the built chrome from `dist/` under a
+  strict CSP, on the real SQLite store, content handlers and document access, with one in-memory database per test.
+  Every spec fails on a console error, page error or CSP violation. CI runs it in a new `e2e` job. Neither directory
+  ships in the package, and a unit test checks that.
+
 ## [0.4.1] - 2026-11-05
 
 ### Fixed

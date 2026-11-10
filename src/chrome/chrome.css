@@ -141,7 +141,15 @@
   cursor: not-allowed;
 }
 
-:where(.cms-root :focus-visible, .cms-field:focus-visible) {
+/*
+ * Date inputs need :focus-within: Chromium focuses a segment inside the input's shadow tree and WebKit doesn't match
+ * :focus-visible on them, so neither would draw a ring otherwise.
+ */
+:where(
+  .cms-root :focus-visible,
+  .cms-field:focus-visible,
+  .cms-root input:is([type="date"], [type="datetime-local"]):focus-within
+) {
   outline: medium solid var(--cms-accent);
   outline-offset: var(--cms-space-1);
 }
@@ -155,6 +163,11 @@
   background: var(--cms-bg);
   color: var(--cms-fg);
   font: inherit;
+}
+
+/* WebKit ignores min-height on a native select but honours height. */
+:where(select.cms-input) {
+  height: var(--cms-control-h);
 }
 
 :where(.cms-muted) {

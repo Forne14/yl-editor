@@ -15,6 +15,7 @@ const AUTO_HIDE_MS = 2600;
 export class Toast {
   readonly node: HTMLElement;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private shown = 0;
 
   constructor(
     private readonly live: HTMLElement,
@@ -23,9 +24,13 @@ export class Toast {
     this.node = element("div", { class: "cms-toast", hidden: true });
   }
 
-  /** Replaces whatever toast is showing. Info and saved toasts without actions hide themselves. */
-  show(message: string, kind: StatusKind = "info", actions: readonly ToastAction[] = []): void {
+  /**
+   * Replaces whatever toast is showing. Info and saved toasts without actions hide themselves. Returns a token for
+   * `hideIf`.
+   */
+  show(message: string, kind: StatusKind = "info", actions: readonly ToastAction[] = []): number {
     this.clearTimer();
+    this.shown += 1;
     this.node.dataset.kind = kind;
     const buttons = actions.map((action) => button(action.label, action.onClick, action.variant));
     if (kind === "error") buttons.push(button(this.strings.close, () => this.hide(), "ghost"));
@@ -38,6 +43,12 @@ export class Toast {
     if (actions.length === 0 && (kind === "info" || kind === "saved")) {
       this.timer = setTimeout(() => this.hide(), AUTO_HIDE_MS);
     }
+    return this.shown;
+  }
+
+  /** Hides the toast `show` returned `token` for, if it is still the one showing. */
+  hideIf(token: number): void {
+    if (token === this.shown && !this.node.hidden) this.hide();
   }
 
   announce(message: string): void {

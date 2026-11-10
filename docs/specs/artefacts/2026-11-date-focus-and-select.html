@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Date focus and select</title>
+    <!-- The real chrome stylesheet, so "Current" is exactly what ships. Open this file straight from the repo. -->
+    <link rel="stylesheet" href="../../../src/chrome/chrome.css" />
+    <style>
+      /* ---------- The proposal: exactly what would be added to chrome.css, scoped to .proposed here ---------- */
+
+      /*
+       * 1. A focus ring on date and datetime-local inputs. Chromium puts focus on a segment inside the input's shadow
+       * tree and WebKit never matches :focus-visible on them, so the existing :focus-visible ring never shows.
+       * :focus-within matches in all three engines. In chrome.css: `:where(.cms-root input:is([type="date"],
+       * [type="datetime-local"]):focus-within)`.
+       */
+      :where(.proposed input:is([type="date"], [type="datetime-local"]):focus-within, .proposed .sim-focus) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+
+      /*
+       * 2. A select that honours --cms-control-h in WebKit, which ignores min-height on a native select but honours
+       * height. Native appearance and arrow stay in every browser. Approved over an earlier appearance: none version.
+       */
+      :where(.proposed select.cms-input) {
+        height: var(--cms-control-h);
+      }
+
+      /* ---------- Prototype page only: layout, and a forced dark scheme beside the light one ---------- */
+
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 48px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 68ch;
+        margin: 4px 0 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 16px;
+      }
+      .cell {
+        border-radius: 10px;
+        padding: 16px;
+        background: #ffffff;
+        border: 1px solid #e3e5eb;
+      }
+      .cell.dark {
+        background: #0f1116;
+        border-color: #2a2d36;
+        color: #f3f4f8;
+      }
+      .cell h3 {
+        margin: 0 0 12px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .cell.dark h3 {
+        color: #aab0bf;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .cell.dark .tag {
+        background: #1f2a44;
+        color: #9dbbff;
+      }
+      /* Popovers and sheets are positioned surfaces in the chrome; here they sit in the flow. */
+      .cell .cms-popover,
+      .cell .cms-sheet {
+        position: static;
+        width: auto;
+        max-height: none;
+        box-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+      }
+      .cell.dark .cms-root {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        color-scheme: dark;
+      }
+      .cell:not(.dark) .cms-root {
+        color-scheme: light;
+      }
+      .caption {
+        margin: 10px 0 0;
+        font-size: 0.8rem;
+        color: #5b6170;
+      }
+      .cell.dark .caption {
+        color: #aab0bf;
+      }
+      code {
+        font-size: 0.85em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Date focus ring and select height</h1>
+      <p class="lead">
+        <strong>Approved and built.</strong> This page loads the live <code>chrome.css</code>, which now holds both
+        rules, so the “Current” columns also show the fix. Compare with the stylesheet from before #19 to see the old
+        state.
+      </p>
+      <p class="lead">
+        Two chrome changes the real-browser accessibility specs found (#19). Each section shows what ships now beside
+        the proposal, in light and dark. The first row in each section is a still picture of the focused state. The
+        second row is live: Tab or click into the controls in Chrome, Firefox and Safari to compare.
+      </p>
+
+      <h2>1. A focus ring on date and date-time inputs (WCAG 2.4.7)</h2>
+      <p class="note">
+        Today the date popover's input and the Publish sheet's “Publish at” input show no focus ring in Chrome or
+        Safari. Only the browser's own segment highlight remains. Firefox already shows the ring. The proposal gives
+        these inputs the same accent ring every other control has. One difference: it also shows when the input is
+        clicked, not only when it is reached by keyboard, because the browsers give no keyboard-only signal for these
+        inputs.
+      </p>
+
+      <div class="grid">
+        <div class="cell">
+          <h3>Current · focused, Chrome/Safari</h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Next bake</p>
+            <input class="cms-input" type="date" value="2026-11-14" aria-label="Next bake (current)" />
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">No ring: focus is inside the input, and nothing in the chrome draws it.</p>
+        </div>
+        <div class="cell proposed">
+          <h3>Proposed · focused <span class="tag">new</span></h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Next bake</p>
+            <input class="cms-input sim-focus" type="date" value="2026-11-14" aria-label="Next bake (proposed)" />
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">The accent ring the other controls use.</p>
+        </div>
+        <div class="cell dark">
+          <h3>Current · dark</h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Next bake</p>
+            <input class="cms-input" type="date" value="2026-11-14" aria-label="Next bake (current, dark)" />
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+        </div>
+        <div class="cell dark proposed">
+          <h3>Proposed · dark <span class="tag">new</span></h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Next bake</p>
+            <input class="cms-input sim-focus" type="date" value="2026-11-14" aria-label="Next bake (proposed, dark)" />
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+        </div>
+      </div>
+
+      <p class="note">Live, in the Publish sheet: Tab into “Publish at”.</p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Current · live</h3>
+          <section class="cms-root cms-panel cms-sheet" aria-label="Publish (current)">
+            <div class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </div>
+            <div class="cms-sheet__body">
+              <label class="cms-field-label"
+                >Publish at (optional)<input class="cms-input" type="datetime-local"
+              /></label>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+                ><button type="button" class="cms-btn cms-btn--primary">Publish</button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="cell proposed">
+          <h3>Proposed · live <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" aria-label="Publish (proposed)">
+            <div class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </div>
+            <div class="cms-sheet__body">
+              <label class="cms-field-label"
+                >Publish at (optional)<input class="cms-input" type="datetime-local"
+              /></label>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+                ><button type="button" class="cms-btn cms-btn--primary">Publish</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <h2>2. A select as tall as every other control (documented 44px; WCAG 2.5.8)</h2>
+      <p class="note">
+        In Safari the Status select and the Revisions drawer's document picker are 23px tall. The chrome promises 44px
+        controls, and 23px is also under the 24px WCAG 2.5.8 minimum. Safari ignores the height on a native select, so
+        the approved rule sets <code>height</code> from the control-height token. Chrome and Firefox don't change, and
+        every browser keeps its native arrow.
+      </p>
+
+      <div class="grid">
+        <div class="cell">
+          <h3>Current · native</h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Status</p>
+            <select class="cms-input" aria-label="Status (current)">
+              <option>draft</option>
+              <option selected>live</option>
+              <option>archived</option>
+            </select>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">In Safari this select renders 23px tall, beside a 44px Cancel.</p>
+        </div>
+        <div class="cell proposed">
+          <h3>Proposed <span class="tag">new</span></h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Status</p>
+            <select class="cms-input" aria-label="Status (proposed)">
+              <option>draft</option>
+              <option selected>live</option>
+              <option>archived</option>
+            </select>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">44px in every browser, with the native arrow.</p>
+        </div>
+        <div class="cell dark">
+          <h3>Current · dark</h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Status</p>
+            <select class="cms-input" aria-label="Status (current, dark)">
+              <option>draft</option>
+              <option selected>live</option>
+              <option>archived</option>
+            </select>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+        </div>
+        <div class="cell dark proposed">
+          <h3>Proposed · dark <span class="tag">new</span></h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Status</p>
+            <select class="cms-input" aria-label="Status (proposed, dark)">
+              <option>draft</option>
+              <option selected>live</option>
+              <option>archived</option>
+            </select>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+        </div>
+      </div>
+
+      <p class="note">The Revisions drawer's document picker, which uses the same control.</p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Current</h3>
+          <section class="cms-root cms-panel cms-sheet" aria-label="Revisions (current)">
+            <div class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Revisions</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </div>
+            <div class="cms-sheet__body">
+              <select class="cms-input" aria-label="Document (current)">
+                <option>pages/home</option>
+                <option>pages/about</option>
+              </select>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--danger">Unpublish</button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="cell proposed">
+          <h3>Proposed <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" aria-label="Revisions (proposed)">
+            <div class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Revisions</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </div>
+            <div class="cms-sheet__body">
+              <select class="cms-input" aria-label="Document (proposed)">
+                <option>pages/home</option>
+                <option>pages/about</option>
+              </select>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--danger">Unpublish</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
