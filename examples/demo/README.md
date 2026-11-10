@@ -49,3 +49,12 @@ through `e2e/fixtures.ts` rather than directly.
 | `POST /__test/clock`        | `{ now }`: fixes the store clock (ISO), or `null` for real time            |
 | `GET /__test/csp-violation` | A page with an inline `style` attribute, for the guard's own test          |
 | `GET /__test/console-error` | A page that logs a console error and throws, for the guard's own test      |
+
+## Timeouts
+
+Tests use Playwright's default 30s timeout; the slowest takes about 6s on CI. On a machine busy with other work, raise
+it for a local run rather than in the specs, so a hang still fails fast in CI:
+
+```sh
+npm run build && npx playwright test --timeout=60000
+```
