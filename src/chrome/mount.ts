@@ -16,7 +16,7 @@ import type {
   WidgetHandle,
 } from "./types.ts";
 import { Sheet, Toast } from "./ui.ts";
-import { createDefaultWidgets, missingWidget } from "./widgets.ts";
+import { createDefaultWidgets, missingWidget, provideStatus } from "./widgets.ts";
 
 interface ActiveWidget {
   record: FieldRecord;
@@ -330,6 +330,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       },
       announce: (message) => toast.announce(message),
     };
+    provideStatus(context, (message) => toast.show(message, "info"));
     active = opened;
     record.element.classList.add("cms-field--editing");
     try {

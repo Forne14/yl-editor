@@ -411,6 +411,91 @@ describe("a half-typed date or invalid number", () => {
     expect(commit).toHaveBeenCalledWith(9);
   });
 
+  test.each(["number", "date"] as const)(
+    "%s: Enter shows why under the input, marks it invalid and points at the line",
+    (type) => {
+      const { ctx, announce } = context(type, type === "number" ? 4 : "2026-11-14");
+      defaultWidgets[type].mount(ctx);
+      const input = popoverControl<HTMLInputElement>("input");
+      input.setAttribute("aria-describedby", "host-hint");
+      holdBadInput(input);
+      pressKey(input, "Enter");
+      const line = input.nextElementSibling as HTMLElement;
+      expect(line.matches(".cms-popover > .cms-diff")).toBe(true);
+      expect(line.querySelector("p.cms-error")?.textContent).toBe(
+        "p isn’t complete or valid. Finish it, or press Esc to keep the saved value.",
+      );
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      expect(input.getAttribute("aria-describedby")).toBe(`host-hint ${line.id}`);
+      expect(announce).toHaveBeenCalledOnce();
+    },
+  );
+
+  test("a second Enter on a still bad value announces again but adds no second line", () => {
+    const { ctx, announce } = context("number", 4);
+    defaultWidgets.number.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    holdBadInput(input);
+    pressKey(input, "Enter");
+    const line = input.nextElementSibling;
+    pressKey(input, "Enter");
+    expect(document.querySelectorAll(".cms-popover .cms-error")).toHaveLength(1);
+    expect(input.nextElementSibling).toBe(line);
+    expect(input.getAttribute("aria-describedby")).toBe(line?.id);
+    expect(announce).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ["readable", "9"],
+    ["empty", ""],
+  ])("the line and both attributes go once the value is %s again", (_state, value) => {
+    const { ctx } = context("number", 4);
+    defaultWidgets.number.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    holdBadInput(input);
+    pressKey(input, "Enter");
+    // Still bad: typing more keeps the line.
+    input.dispatchEvent(new Event("input"));
+    expect(document.querySelector(".cms-popover .cms-error")).not.toBeNull();
+    Object.defineProperty(input, "validity", { value: { badInput: false }, configurable: true });
+    input.value = value;
+    input.dispatchEvent(new Event("input"));
+    expect(document.querySelector(".cms-popover .cms-diff")).toBeNull();
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  test("the line goes with the popover", () => {
+    const { ctx } = context("date", "2026-11-14");
+    const widget = defaultWidgets.date.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    holdBadInput(input);
+    pressKey(input, "Enter");
+    widget.destroy();
+    expect(document.querySelector(".cms-error")).toBeNull();
+  });
+
+  test("Esc cancels silently, with no line, toast or announcement", () => {
+    const { ctx, commit, cancel, announce } = context("date", "2026-11-14");
+    defaultWidgets.date.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    holdBadInput(input);
+    pressKey(input, "Escape");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(commit).not.toHaveBeenCalled();
+    expect(announce).not.toHaveBeenCalled();
+  });
+
+  test("a url is never refused and shows no line", () => {
+    const { ctx, commit } = context("url", "https://a.test");
+    defaultWidgets.url.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    input.value = "https://b.test";
+    pressKey(input, "Enter");
+    expect(commit).toHaveBeenCalledWith("https://b.test");
+    expect(document.querySelector(".cms-error")).toBeNull();
+  });
+
   test("a date deliberately emptied, with no bad input, still commits empty", () => {
     const { ctx, commit } = context("date", "2026-11-14");
     defaultWidgets.date.mount(ctx);

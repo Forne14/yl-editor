@@ -433,6 +433,49 @@ test("a url popover edit is committed when another field is opened", async () =>
   expect(write?.body).toMatchObject({ path: "link", value: "https://example.com" });
 });
 
+describe("a number left holding what the browser can't read", () => {
+  async function openBadNumber(): Promise<HTMLInputElement> {
+    addEditValueField("spaces", "number", "12");
+    handlers["GET /api/content/document"] = () => ({
+      json: { document: wireDocument("pages/home", 3, { spaces: 12 }) },
+    });
+    await mount();
+    field("pages/home:spaces").click();
+    await settle();
+    const input = document.querySelector<HTMLInputElement>(".cms-popover input");
+    if (!input) throw new Error("no input");
+    input.value = "";
+    Object.defineProperty(input, "validity", { value: { badInput: true }, configurable: true });
+    return input;
+  }
+
+  test("another field opened keeps the saved value and says so in an info toast that hides itself", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      await openBadNumber();
+      field("pages/home:title").click();
+      await settle();
+      expect(fieldWrites()).toHaveLength(0);
+      const toast = visibleToast();
+      expect(toast.dataset.kind).toBe("info");
+      expect(toast.textContent).toBe("spaces wasn’t complete or valid, so it keeps the saved value.");
+      expect(document.querySelector(".cms-live")?.textContent).toBe(toast.textContent);
+      vi.advanceTimersByTime(3000);
+      expect(toast.hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("Esc cancels with no toast", async () => {
+    const input = await openBadNumber();
+    press(input, "Escape");
+    await settle();
+    expect(fieldWrites()).toHaveLength(0);
+    expect(document.querySelector<HTMLElement>(".cms-toast")?.hidden).toBe(true);
+  });
+});
+
 test("a tags popover edit is committed when the editor is destroyed", async () => {
   document
     .getElementById("page")

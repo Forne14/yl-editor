@@ -220,6 +220,19 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
   };
 }
 
+/** How the chrome shows a status toast for a context it built. Internal: `WidgetContext` stays as documented. */
+const statusFor = new WeakMap<WidgetContext, (message: string) => void>();
+
+/** Lets the default widgets show `message` as an info toast for `ctx`. Called by `mountEditor` only. */
+export function provideStatus(ctx: WidgetContext, show: (message: string) => void): void {
+  statusFor.set(ctx, show);
+}
+
+/** An info toast where the chrome provides one; a context built elsewhere only announces it. */
+function showStatus(ctx: WidgetContext, message: string): void {
+  (statusFor.get(ctx) ?? ctx.announce)(message);
+}
+
 /** Commit-or-cancel bookkeeping every widget needs: only the first outcome counts. */
 function once(ctx: WidgetContext) {
   let settled = false;
@@ -406,7 +419,7 @@ export function formWidget(
         }
         // It reads as empty, but the editor didn't empty it: erasing the stored value would be the wrong guess.
         if (built.parts.unreadable?.()) {
-          ctx.announce(format(strings.invalidValueKept, { label: fieldLabel(ctx) }));
+          showStatus(ctx, format(strings.invalidValueKept, { label: fieldLabel(ctx) }));
           outcome.cancel();
           return;
         }
@@ -479,12 +492,41 @@ function inputWidget(strings: Strings, inputType: "number" | "url" | "date"): Wi
       if (inputType === "number") return input.value === "" ? null : Number(input.value);
       return input.value.trim();
     };
+    // Why Enter was refused, under the input until the value is readable or empty again (WCAG 3.3.1).
+    let invalidNote: HTMLElement | undefined;
+    const clearInvalid = () => {
+      if (!invalidNote) return;
+      const { id } = invalidNote;
+      invalidNote.remove();
+      invalidNote = undefined;
+      input.removeAttribute("aria-invalid");
+      const others = (input.getAttribute("aria-describedby") ?? "").split(/\s+/).filter((ref) => ref && ref !== id);
+      if (others.length > 0) input.setAttribute("aria-describedby", others.join(" "));
+      else input.removeAttribute("aria-describedby");
+    };
+    const showInvalid = () => {
+      const message = format(strings.invalidValue, { label: fieldLabel(ctx) });
+      ctx.announce(message);
+      if (invalidNote) return;
+      const id = uniqueId("cms-invalid");
+      invalidNote = element("div", { class: "cms-diff", id }, [element("p", { class: "cms-error" }, [message])]);
+      input.after(invalidNote);
+      input.setAttribute("aria-invalid", "true");
+      const describedBy = input.getAttribute("aria-describedby");
+      input.setAttribute("aria-describedby", describedBy ? `${describedBy} ${id}` : id);
+    };
+    // Clearing a date's last segments changes no `value`, so no `input` fires; the key's release still says so.
+    const clearIfReadable = () => {
+      if (!input.validity.badInput) clearInvalid();
+    };
+    input.addEventListener("input", clearIfReadable);
+    input.addEventListener("keyup", clearIfReadable);
     // Enter commits, and so does leaving the popover (see `formWidget`). A number never commits on `change`: it fires
     // on every arrow step and on the blur that pressing Cancel causes.
     input.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      if (input.validity.badInput) ctx.announce(format(strings.invalidValue, { label: fieldLabel(ctx) }));
+      if (input.validity.badInput) showInvalid();
       else finish();
     });
     if (inputType === "date") {
