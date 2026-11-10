@@ -98,27 +98,37 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   read. If the fetch failed, a toast says the field started from the page's value; with no `data-edit-value` the widget
   stays closed and a toast says why. A failed fetch is not cached, so the next opening tries again. Leaving the widget
   untouched writes nothing, wherever the starting value came from.
-- Discard, Restore, a conflict catch-up or Take theirs can remove a field's value. The field is emptied, and until the
-  next value arrives the chrome ignores the `data-edit-value` that held it, so the widget doesn't reopen on the value
-  just removed. The attribute itself stays as the host wrote it, and a different one written by the host counts.
+- Discard, Restore, a conflict catch-up or Take theirs can remove a field's value. A field of plain text is emptied, and
+  until the next value arrives the chrome ignores the `data-edit-value` it had at that moment, so the widget doesn't
+  reopen on the value just removed. The attribute itself stays as the host wrote it, and a different one the host writes
+  later counts, even if the value is removed again. A field the chrome doesn't empty (one with child elements, or a
+  toggle) still shows its content, so its `data-edit-value` counts as before.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select and toggle
   commit on change; number, date and url commit on Enter, not on change (arrow keys and date segments fire change at
-  every step), except that a date picked from the browser's date picker commits at once; tags commit on Enter in an
-  empty input or Done. Esc and Cancel back out and write nothing. Every popover also commits when it is left: a primary
-  press outside it and its field, a completed tap there, or focus moving out of it. A right-click, a Ctrl+click, a press
-  on the page's scrollbar and a touch that becomes a scroll aren't leaving: the popover stays open with focus on its
-  control. A press inside the popover off its controls keeps it open and focus where it was, so Esc and Enter go on
-  working. A popover edit still open when another field is opened, a sheet or panel is opened, the page is refreshed, or
-  the editor is exited or destroyed is committed, not dropped. Text is too. Paste goes in through the browser's own text
-  insertion when it allows it. Focus returns to the field when the widget closes.
+  every step), except that a date picked from the browser's date picker commits at once, however soon after the key
+  that opened the picker. Only the keys that type or step a segment (digits, arrows without Alt, Backspace, Delete,
+  Home, End, Page Up and Page Down) hold a date's `change` back until Enter; Space, Enter, Alt+ArrowDown and F4 don't.
+  Tags commit on Enter in an empty input or Done. Esc and Cancel back out and write nothing. Every popover also commits
+  when it is left: a primary click outside it and its field, a completed tap there, or focus moving out of it. A
+  Ctrl+click is a click on Windows and Linux and commits. A press that opens a context menu (a right-click, or a Mac's
+  Ctrl+click, which the browser reports with `contextmenu` before the press completes), a middle-click, a press on the
+  page's scrollbar and a touch that becomes a scroll aren't leaving: the popover stays open. If such a press moved focus
+  to nowhere, focus goes back to the control; if it focused something, such as a host input right-clicked for its Paste,
+  focus stays there. That covers only the press's own focus change: focus moved later by a script or assistive
+  technology is leaving. A press inside the popover off its controls keeps it open and focus where it was, so Esc and
+  Enter go on working. A popover edit still open when another field is opened, a sheet or panel is opened, the page is
+  refreshed, or the editor is exited or destroyed is committed, not dropped. Text is too. Paste goes in through the
+  browser's own text insertion when it allows it. Focus returns to the field when the widget closes.
 - Enter or leaving with nothing changed writes nothing, for every popover input (a failed save still resends).
 - A half-typed date or an invalid number (`validity.badInput`) reads as empty, but it isn't the editor emptying the
   field. Enter keeps the popover open and announces why through the live region. Leaving, or the chrome closing the
   popover, cancels, keeps the stored value and announces that. An input emptied on purpose still commits empty.
 - A text edit normalises only what it changed. Firefox types a space next to another space, or at the end, as a no-break
   space, and those are stored as plain spaces. A no-break space outside the changed stretch, the part between what is
-  the same at the start and at the end of the text, stays: "10\u00a0km" keeps it when the edit is elsewhere. An edit on
-  both sides of it makes the whole stretch between them changed, so that one is normalised too.
+  the same at the start and at the end of the text, stays: "10\u00a0km" keeps it when the edit is elsewhere. The stored
+  value says which spaces are deliberate, so one the page renders as a plain space survives too: stored "10\u00a0km",
+  shown "10 km", "s" typed at the end saves "10\u00a0kms". An edit on both sides of it makes the whole stretch between
+  them changed, so that one is normalised too.
 - A popover still waiting on its fetch is cancelled by opening any sheet, panel or the revisions drawer and by starting
   any lifecycle action, and it doesn't open on a document deleted during the wait.
 - Commits go through a save queue. Each field moves idle → saving → saved, or → failed with a Retry button in the
@@ -129,14 +139,22 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - The bar shows the actor label, the number of changes and documents changed this session (kept in session storage,
   so a reload does not forget), and Revisions, Done, Discard and Publish. A change is a field, or one for a document
   changed with no field to name: Unpublish, or a Restore that left the draft as it was. Both leave the document in the
-  Publish sheet, so it can go live again. Publish and Discard commit an open edit first, then list the
-  touched documents the editor may act on before acting (a document whose first save is still on its way counts): `access.publish` for Publish, `access.edit` for Discard (the server
-  gates discard by edit access). The endpoint is called once per document, after that document's pending field
-  writes finish. Touched documents they may not act on are counted, not acted on. Discarding a document with nothing
-  live deletes it, whether it was never published or was unpublished, so its fields stop being editable until the page
-  is reloaded. Its revisions go with it and can't be recovered through the chrome or the HTTP API. The Discard sheet says
-  so on each such document, and they stay listed because discarding is still valid. If a document loses its published
-  version while the sheet is open, the warning appears and that Confirm does nothing, so it can be read first.
+  Publish sheet, so it can go live again. Publish and Discard commit an open edit first, then list the touched
+  documents the editor may act on before acting: `access.publish` for Publish, `access.edit` for Discard (the server
+  gates discard by edit access). The endpoint is called once per document, after that document's pending field writes
+  finish. Touched documents they may not act on are counted, not acted on.
+- A document whose first save this session is still queued or on the wire is listed too, with the count it has so far.
+  Each row's count updates as its writes settle. A row listed only for such a save, which settles without changing the
+  document (it failed), drops out: the sheet then says "Left out, with no saved change from this session: <keys>" and
+  the live region announces each such document once. Such a document may hold another editor's draft, so it is never
+  published or discarded on this session's behalf. Confirm pressed while those saves are on their way waits for them,
+  checks the rows again and acts only on what is left; if nothing is left, the sheet says so and nothing is sent. The
+  count of documents the editor may not act on follows the same saves.
+- Discarding a document with nothing live deletes it, whether it was never published or was unpublished, so its fields
+  stop being editable until the page is reloaded. Its revisions go with it and can't be recovered through the chrome or
+  the HTTP API. The Discard sheet says so on each such document, and they stay listed because discarding is still valid.
+  If a document loses its published version while the sheet is open, the warning appears and that Confirm does nothing,
+  so it can be read first.
   `api.discard` asks nothing and warns about nothing: a panel that calls it does its own asking.
 - One document failing doesn't stop or misreport the others. Those that worked leave the sheet; those that failed stay in
   it with the reason, a toast counts both, and Confirm tries the failed ones again.
@@ -183,8 +201,9 @@ node, class, attribute and listener the chrome added and leaves the host's marku
     stays as a draft.
 - After a non-text field saves, the chrome replaces the element's text only when it holds no child elements, and
   always dispatches a bubbling `cms:change` event (`detail: { key, path, value }`) so a host can re-render richer
-  markup itself. Discard, Restore and a conflict catch-up repaint the same way; when the new content lacks the field's
-  path, the text is emptied (same child-element rule) and `detail.value` is `undefined`.
+  markup itself. Discard, Restore, a conflict catch-up and Take theirs repaint the same way; when the new content lacks
+  the field's path, the text is emptied (same child-element rule, and never a toggle's) and `detail.value` is
+  `undefined`.
 - When the page's documents fail to load, a toast offers Retry. A later load that succeeds hides it, unless another
   toast has replaced it.
 
@@ -208,7 +227,8 @@ actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `resto
 `unpublished`, `schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`,
 `firstPublish`, `noDifferences`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`,
 `loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `bulkStopped`,
-`scheduleInPast`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`.
+`scheduleInPast`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`, `bulkLeftOut`. The number and date
+widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept` (leaving one).
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.
@@ -288,15 +308,31 @@ text input; commas split). `richtext` falls back to the text widget with a visib
 a rich widget. `media` has no default. A type with nothing registered shows "No editor registered for <type>"; it
 never throws.
 
-`openPopover(anchor, label, onLeave?)` is exported for host widgets that want the same themed popover. `onLeave` fires at
-most once per popover, and never after `close()`, when the editor leaves it: a primary press or a completed tap outside
-the popover's element and `anchor`, or focus moving out of the popover's element. Right-clicks, Ctrl+clicks, presses on
-the page's scrollbar and touch scrolls don't count. Outside means outside the DOM subtree, so a host's own dropdown or
-date picker appended to `body` counts as outside and fires `onLeave` when pressed: render it inside `popover.root`, or
-ignore the call and reopen. Since it fires only once, a host that keeps the popover open after it gets no second call.
-A press inside the popover that isn't on an `input`, `select`, `textarea`, `button`, link, `label`, `summary`,
-`[contenteditable]` or `[tabindex]` has its `mousedown` default prevented, so focus stays on the control, with or without
-`onLeave`.
+`openPopover(anchor, label, onLeave?)` is exported for host widgets that want the same themed popover. It appends a
+`.cms-root.cms-popover` dialog to `body`, labelled by `label` and placed under `anchor` through custom properties, and
+returns `{ root, close }`. The host puts its controls in `root`, moves focus into it, and calls `close()` to remove it.
+
+What it does:
+
+- `onLeave` fires at most once per popover, and never after `close()`, when the editor leaves it: a primary click or a
+  completed tap outside the popover's element and `anchor`, or focus moving out of the popover's element. A Ctrl+click
+  counts as a click where it is one (Windows, Linux).
+- A press that opens a context menu (a right-click, or a Mac's Ctrl+click), a middle-click, a press on the page's
+  scrollbar and a touch that becomes a scroll don't fire it. If such a press moved focus to nowhere, focus goes back to
+  the control it left; focus it gave to an element, such as a host input right-clicked for its Paste, stays there.
+- Outside means outside the DOM subtree, so a host's own dropdown or date picker appended to `body` counts as outside and
+  fires `onLeave` when pressed: render it inside `popover.root`, or ignore the call and reopen. Since it fires only once,
+  a host that keeps the popover open after it gets no second call.
+
+What it doesn't do:
+
+- It leaves every press inside the popover to the browser, so text selection, drag and drop and custom controls work.
+  A press on the host's own non-focusable content moves focus to the body, as anywhere else on the page; with `onLeave`
+  that isn't leaving, because the press was inside. The chrome's default widgets keep focus on their control after a
+  press on the popover's title or empty space; a host popover that wants that prevents `mousedown` itself.
+- It doesn't handle Esc, Enter or a focus trap, commit or cancel anything, or return focus to the field: the host's
+  widget does that through its `WidgetContext`, and the chrome returns focus when the widget closes.
+- With no `onLeave` it listens to nothing.
 
 A rich text widget built on TipTap, as a sketch:
 
