@@ -349,6 +349,22 @@ test.describe("no-break spaces in a text edit", () => {
     await expectDraft(demo, "title", "Run 10\u00a0km today");
   });
 
+  test("a stored one the page renders as a plain space survives typing at the end", async ({ page, demo }) => {
+    await demo.seed({ key: HOME, published: { title: "10 km" }, draft: { title: "10 km" } });
+    await demo.openEditor();
+    const field = page.locator("#home-title");
+    // A host that renders the text with plain spaces, and the stored value in data-edit-value.
+    await field.evaluate((node) => {
+      node.textContent = "10 km";
+      node.dataset.editValue = JSON.stringify("10 km");
+    });
+    await field.click();
+    await expect(field).toHaveAttribute("contenteditable", /^(plaintext-only|true)$/);
+    await page.keyboard.type("s");
+    await page.keyboard.press("Enter");
+    await expectDraft(demo, "title", "10 kms");
+  });
+
   test("a space typed at the end and then after it is stored plain", async ({ page, demo }) => {
     await demo.openEditor();
     const field = page.locator("#home-title");
