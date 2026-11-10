@@ -104,6 +104,27 @@ const STATES: ChromeState[] = [
   popoverState("tags", "#home-tags", (popover) => expect(popover.locator(".cms-chip")).toHaveCount(2)),
   popoverState("date", "#home-date", (popover) => expect(popover.locator("input[type=date]")).toBeFocused()),
   popoverState("url", "#home-link", (popover) => expect(popover.getByRole("textbox")).toBeFocused()),
+  // A real badInput, refused on Enter: "1e" in the number, one emptied segment of the date. Every engine here makes one.
+  // Keys go through the page's keyboard, as a user types them: `locator.press` refocuses the input first.
+  popoverState("number, with the incomplete-value line,", "#home-price", async (popover) => {
+    const input = popover.getByRole("spinbutton");
+    await expect(input).toBeFocused();
+    const { keyboard } = popover.page();
+    await keyboard.press("ControlOrMeta+a");
+    await keyboard.type("1e");
+    await keyboard.press("Enter");
+    expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(true);
+    await expect(popover.locator(".cms-diff .cms-error")).toBeVisible();
+  }),
+  popoverState("date, with the incomplete-value line,", "#home-date", async (popover) => {
+    const input = popover.locator("input[type=date]");
+    await expect(input).toBeFocused();
+    const { keyboard } = popover.page();
+    await keyboard.press("Backspace");
+    await keyboard.press("Enter");
+    expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(true);
+    await expect(popover.locator(".cms-diff .cms-error")).toBeVisible();
+  }),
   {
     name: "richtext fallback note",
     async setup({ page, demo }) {
