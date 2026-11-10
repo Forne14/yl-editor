@@ -46,7 +46,7 @@ function errorMessage(error: unknown, strings: Strings): string {
 /** A field's `data-edit-value`: parsed as JSON, or the attribute as written when it is not JSON. */
 function editValueAttribute(record: FieldRecord): unknown {
   const attribute = record.element.dataset.editValue;
-  if (attribute === undefined || attribute === record.staleEditValue) return undefined;
+  if (attribute === undefined || (record.cleared && attribute === record.cleared.editValue)) return undefined;
   try {
     return JSON.parse(attribute) as unknown;
   } catch {
@@ -161,7 +161,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       },
       saved(slot, value) {
         for (const record of recordsFor(slot)) {
-          record.staleEditValue = undefined;
+          record.cleared = undefined;
           if (!TEXT_TYPES.has(record.info.type)) render(record, value);
         }
         if (slot.state === "saved") toast.show(strings.saved, "saved");
@@ -188,15 +188,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /**
    * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. A save never
    * passes `undefined`, but content replaced by Discard, Restore or a conflict can lack the path: `clearMissing` then
-   * empties the text, so the page stops showing a value that is gone, and sets aside a `data-edit-value` that held it.
-   * `cms:change` carries `undefined` either way.
+   * empties plain text, so the page stops showing a value that is gone, and sets aside the `data-edit-value` it had at
+   * that moment. A field already emptied keeps the one set aside then: a later one is the host's. A field it can't
+   * empty still shows its content, so its attribute stands. `cms:change` carries `undefined` either way.
    */
   function render(record: FieldRecord, value: unknown, clearMissing = false): void {
     const target = record.element;
-    if (value !== undefined) record.staleEditValue = undefined;
-    else if (clearMissing) record.staleEditValue = target.dataset.editValue;
     const plain = target.children.length === 0 && record.info.type !== "toggle";
+    if (value !== undefined) record.cleared = undefined;
     if (plain && value === undefined && clearMissing) {
+      record.cleared ??= { editValue: target.dataset.editValue };
       target.textContent = "";
     } else if (plain && value !== undefined) {
       target.textContent = Array.isArray(value)
@@ -498,11 +499,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           othersNote.hidden = count === 0;
           othersNote.textContent = count === 0 ? "" : format(template, { count });
         };
-        /** Resolves once none of the document's writes is queued or on the wire, however many arrive meanwhile. */
-        const writesSettled = async (key: string) => {
-          do {
-            await session.pending(key);
-          } while (session.isSaving(key));
+        /**
+         * Resolves once none of the document's writes is queued or on the wire, however many arrive meanwhile. One wait
+         * per document at a time, shared by the sheet and Confirm, so each settling rechecks the rows once.
+         */
+        const settling = new Map<string, Promise<void>>();
+        const writesSettled = (key: string): Promise<void> => {
+          const waiting = settling.get(key);
+          if (waiting) return waiting;
+          const wait = (async () => {
+            do {
+              await session.pending(key);
+            } while (session.isSaving(key));
+          })().finally(() => settling.delete(key));
+          settling.set(key, wait);
+          return wait;
         };
         /**
          * Brings the rows up to date with the writes that have settled. A document listed only because its save was on
@@ -524,9 +535,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           }
           if (gone.length === 0) return;
           leftOut.push(...gone);
-          const message = format(strings.bulkLeftOut, { keys: leftOut.join(", ") });
-          toast.announce(message);
-          leftOutNote.textContent = message;
+          // The note lists every document left out; the live region says only what is new.
+          toast.announce(format(strings.bulkLeftOut, { keys: gone.join(", ") }));
+          leftOutNote.textContent = format(strings.bulkLeftOut, { keys: leftOut.join(", ") });
           leftOutNote.hidden = false;
           if (rows.size > 0) return;
           const focusWasInside = body.contains(document.activeElement);
@@ -1092,7 +1103,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       const previous = byElement;
       fields = scanFields(scanRoot);
       byElement = new Map(fields.map((record) => [record.element, record]));
-      for (const record of fields) record.staleEditValue = previous.get(record.element)?.staleEditValue;
+      for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
       let loadError: string | undefined;
       try {
         await session.load([...groupByDocument(fields).keys()]);

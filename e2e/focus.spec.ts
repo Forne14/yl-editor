@@ -308,6 +308,75 @@ test.describe("popover widgets", () => {
     await expectNoWrites(demo);
   });
 
+  test("a Ctrl+click elsewhere commits, unless it opens a context menu, as on a Mac", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-price");
+    await input.fill("20");
+    await page.evaluate(() => {
+      document.addEventListener("contextmenu", () => (document.documentElement.dataset.sawContextMenu = "true"), true);
+    });
+    await plainText(page).click({ modifiers: ["Control"] });
+    const openedMenu = (await page.locator("html").getAttribute("data-saw-context-menu")) === "true";
+    test.info().annotations.push({ type: "Ctrl+click", description: openedMenu ? "context menu" : "click" });
+    if (openedMenu) {
+      await expect(popover(page)).toBeVisible();
+      await expect(input).toBeFocused();
+      await expectNoWrites(demo);
+    } else {
+      // Windows and Linux: a Ctrl+click is a click.
+      await expect(popover(page)).toHaveCount(0);
+      await expectDraft(demo, "price", 20);
+    }
+  });
+
+  test("a right-click on a host's input leaves focus there, and the popover open", async ({ page, demo }) => {
+    await demo.openEditor();
+    await page.evaluate(() => {
+      const hostInput = document.createElement("input");
+      hostInput.id = "host-input";
+      hostInput.setAttribute("aria-label", "Search");
+      document.querySelector(".facts")?.before(hostInput);
+      hostInput.addEventListener("focus", () => (hostInput.dataset.focused = "true"));
+    });
+    const input = await openInput(page, "#home-price");
+    await input.fill("20");
+    const hostInput = page.locator("#host-input");
+    await hostInput.click({ button: "right" });
+    await expect(popover(page)).toBeVisible();
+    // Engines differ on whether a right-click focuses: wherever focus went, it stays, and never drops to the body.
+    const tookFocus = (await hostInput.getAttribute("data-focused")) === "true";
+    await expect(tookFocus ? hostInput : input).toBeFocused();
+    await page.waitForTimeout(100);
+    await expect(tookFocus ? hostInput : input).toBeFocused();
+    await expectNoWrites(demo);
+  });
+
+  test("after a right-click, focus moved away by a script is leaving", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-price");
+    await input.fill("20");
+    await plainText(page).click({ button: "right" });
+    await expect(input).toBeFocused();
+    await page.waitForTimeout(50);
+    await input.evaluate((node) => node.blur());
+    await expect(popover(page)).toHaveCount(0);
+    await expectDraft(demo, "price", 20);
+  });
+
+  test("a day picked right after a key opened the date picker commits at once", async ({ page, demo }) => {
+    await demo.openEditor();
+    const input = await openInput(page, "#home-date");
+    // The picker can swallow the keyup of the key that opened it: hold the key down while a day is picked.
+    await page.keyboard.down("F4");
+    await input.evaluate((node: HTMLInputElement) => {
+      node.value = "2026-12-24";
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.keyboard.up("F4");
+    await expect(popover(page)).toHaveCount(0);
+    await expectDraft(demo, "date", "2026-12-24");
+  });
+
   test("a click on the page's empty margin still commits, though it has the root as its target", async ({
     page,
     demo,
@@ -324,6 +393,33 @@ test.describe("popover widgets", () => {
     await page.mouse.click(2, 2);
     await expect(popover(page)).toHaveCount(0);
     await expectDraft(demo, "price", 20);
+  });
+});
+
+test.describe("a host's popover from openPopover", () => {
+  test("leaves presses inside it to the browser, so its text can be selected with the mouse", async ({
+    page,
+    demo,
+  }) => {
+    await demo.openEditor();
+    await page.evaluate(async () => {
+      const chrome = (await import("/pkg/chrome/index.js" as string)) as typeof import("../src/chrome/index.ts");
+      const anchor = document.querySelector<HTMLElement>("#home-price");
+      if (!anchor) throw new Error("no anchor");
+      const popover = chrome.openPopover(anchor, "Host widget", () => undefined);
+      const content = document.createElement("p");
+      content.id = "host-popover-text";
+      content.textContent = "Selectable words in a host widget";
+      popover.root.append(content);
+    });
+    const text = page.locator("#host-popover-text");
+    const box = await text.boundingBox();
+    if (!box) throw new Error("no box");
+    await page.mouse.move(box.x + 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    expect((await page.evaluate(() => document.getSelection()?.toString() ?? "")).length).toBeGreaterThan(5);
   });
 });
 

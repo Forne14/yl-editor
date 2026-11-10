@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { EditFieldType } from "../editable.ts";
 import type { WidgetContext } from "./types.ts";
-import { defaultWidgets, openPopover } from "./widgets.ts";
+import { defaultStrings } from "./strings.ts";
+import { defaultWidgets, formWidget, openPopover } from "./widgets.ts";
 
 let host: HTMLElement;
 
@@ -53,6 +54,19 @@ function pointerDown(target: Element, init: MouseEventInit & { pointerType?: str
   const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, ...init });
   Object.defineProperty(event, "pointerType", { value: init.pointerType ?? "mouse" });
   target.dispatchEvent(event);
+}
+
+function pointerUp(target: Element): void {
+  const event = new MouseEvent("pointerup", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "pointerType", { value: "mouse" });
+  target.dispatchEvent(event);
+}
+
+/** A complete mouse press: down, up and the click it makes. */
+function clickOn(target: Element, init: MouseEventInit = {}): void {
+  pointerDown(target, init);
+  pointerUp(target);
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
 }
 
 test("number commits a number on Enter and null when emptied, not on change", () => {
@@ -130,8 +144,13 @@ test("a press outside the popover and its field commits once; one inside or on t
   pointerDown(popoverControl(".cms-popover__title"));
   pointerDown(host);
   expect(commit).not.toHaveBeenCalled();
-  pointerDown(document.getElementById("elsewhere") as HTMLElement);
+  const elsewhere = document.getElementById("elsewhere") as HTMLElement;
+  pointerDown(elsewhere);
   input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+  // It commits once the press completes, which a press opening a context menu never does.
+  expect(commit).not.toHaveBeenCalled();
+  pointerUp(elsewhere);
+  elsewhere.click();
   expect(commit).toHaveBeenCalledOnce();
   expect(commit).toHaveBeenCalledWith("https://b.test");
   widget.destroy();
@@ -142,7 +161,7 @@ test("a closed popover no longer listens for presses", () => {
   const widget = defaultWidgets.url.mount(ctx);
   popoverControl<HTMLInputElement>("input").value = "https://b.test";
   widget.destroy();
-  pointerDown(document.body);
+  clickOn(document.body);
   expect(commit).not.toHaveBeenCalled();
   expect(cancel).not.toHaveBeenCalled();
 });
@@ -370,7 +389,7 @@ describe("a half-typed date or invalid number", () => {
     const { ctx, commit, cancel } = context("number", 4, undefined, true);
     defaultWidgets.number.mount(ctx);
     holdBadInput(popoverControl<HTMLInputElement>("input"));
-    pointerDown(document.getElementById("elsewhere") as HTMLElement);
+    clickOn(document.getElementById("elsewhere") as HTMLElement);
     expect(commit).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
   });
@@ -454,10 +473,22 @@ describe("a press inside the popover", () => {
     urlWidget.destroy();
   });
 
-  test("a popover with no onLeave keeps focus too", () => {
-    const popover = openPopover(host, "A note");
-    expect(mouseDown(popover.root.querySelector("p") as Element)).toBe(false);
-    popover.close();
+  test("off its controls in a note popover keeps focus too", () => {
+    const { ctx } = context("richtext", "Value");
+    const widget = defaultWidgets.richtext.mount(ctx);
+    expect(mouseDown(document.querySelector(".cms-popover--note .cms-popover__title") as Element)).toBe(false);
+    widget.destroy();
+  });
+
+  test("in a host's popover is left to the browser, with or without onLeave", () => {
+    for (const onLeave of [undefined, vi.fn()]) {
+      const popover = openPopover(host, "Host widget", onLeave);
+      const content = popover.root.appendChild(document.createElement("div"));
+      content.textContent = "Selectable, draggable content";
+      expect(mouseDown(popover.root.querySelector("p") as Element)).toBe(true);
+      expect(mouseDown(content)).toBe(true);
+      popover.close();
+    }
   });
 });
 
@@ -471,11 +502,10 @@ describe("presses outside that aren't the editor leaving", () => {
     return { ...parts, widget, input, elsewhere: document.getElementById("elsewhere") as HTMLElement };
   }
 
-  test("a right-click, middle-click or Ctrl+click commits nothing", () => {
+  test("a right-click or middle-click commits nothing", () => {
     const { commit, cancel, elsewhere } = changedUrl();
     pointerDown(elsewhere, { button: 2 });
     pointerDown(elsewhere, { button: 1 });
-    pointerDown(elsewhere, { ctrlKey: true });
     pointerDown(host, { button: 2 });
     expect(commit).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
@@ -535,8 +565,8 @@ describe("openPopover's onLeave", () => {
     const onLeave = vi.fn();
     const popover = openPopover(host, "Label", onLeave);
     const control = popover.root.appendChild(document.createElement("input"));
-    pointerDown(document.body);
-    pointerDown(document.body);
+    clickOn(document.body);
+    clickOn(document.body);
     control.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
     control.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -548,7 +578,7 @@ describe("openPopover's onLeave", () => {
     const onLeave = vi.fn();
     const popover = openPopover(host, "Label", onLeave);
     const dropdown = document.body.appendChild(document.createElement("div"));
-    pointerDown(dropdown);
+    clickOn(dropdown);
     expect(onLeave).toHaveBeenCalledOnce();
     popover.close();
   });
@@ -560,7 +590,7 @@ describe("openPopover's onLeave", () => {
     pointerDown(host);
     expect(onLeave).not.toHaveBeenCalled();
     popover.close();
-    pointerDown(document.body);
+    clickOn(document.body);
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(onLeave).not.toHaveBeenCalled();
   });
@@ -614,21 +644,30 @@ describe("no-break spaces in a text edit", () => {
 });
 
 describe("the date widget's keystroke tracking", () => {
-  test("a key whose keyup the picker swallowed stops counting, so the day picked next commits", () => {
-    vi.useFakeTimers();
-    try {
-      const { ctx, commit } = context("date", "2026-11-14");
-      const widget = defaultWidgets.date.mount(ctx);
-      const input = popoverControl<HTMLInputElement>("input");
-      pressKey(input, " ");
-      vi.advanceTimersByTime(1000);
-      input.value = "2026-12-24";
-      input.dispatchEvent(new Event("change"));
-      expect(commit).toHaveBeenCalledWith("2026-12-24");
-      widget.destroy();
-    } finally {
-      vi.useRealTimers();
-    }
+  test.each([
+    ["Space", { key: " " }],
+    ["Alt+ArrowDown", { key: "ArrowDown", altKey: true }],
+    ["F4", { key: "F4" }],
+  ])("a day picked right after %s opened the picker commits at once, its keyup swallowed", (_name, init) => {
+    const { ctx, commit } = context("date", "2026-11-14");
+    const widget = defaultWidgets.date.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    input.value = "2026-12-24";
+    input.dispatchEvent(new Event("change"));
+    expect(commit).toHaveBeenCalledWith("2026-12-24");
+    widget.destroy();
+  });
+
+  test.each(["7", "ArrowUp", "ArrowRight", "Backspace", "Delete"])("a `change` while %s is down waits", (key) => {
+    const { ctx, commit } = context("date", "2026-11-14");
+    const widget = defaultWidgets.date.mount(ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    pressKey(input, key);
+    input.value = "2026-12-14";
+    input.dispatchEvent(new Event("change"));
+    expect(commit).not.toHaveBeenCalled();
+    widget.destroy();
   });
 
   test("a `change` while a key is down waits for Enter", () => {
@@ -648,5 +687,123 @@ describe("the date widget's keystroke tracking", () => {
     popoverControl<HTMLInputElement>("input").dispatchEvent(new Event("change"));
     expect(commit).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("leaving and presses that open a context menu", () => {
+  function changedUrl() {
+    document.body.insertAdjacentHTML("beforeend", "<p id='elsewhere'>Plain</p><input id='host-input'>");
+    const parts = context("url", "https://a.test");
+    const widget = defaultWidgets.url.mount(parts.ctx);
+    const input = popoverControl<HTMLInputElement>("input");
+    input.value = "https://b.test";
+    input.focus();
+    return {
+      ...parts,
+      widget,
+      input,
+      elsewhere: document.getElementById("elsewhere") as HTMLElement,
+      hostInput: document.getElementById("host-input") as HTMLInputElement,
+    };
+  }
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const focusDropped = (input: HTMLElement) => {
+    input.blur();
+    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+  };
+
+  test("a Ctrl+click elsewhere is a click, as on Windows and Linux, and commits", () => {
+    const { commit, elsewhere } = changedUrl();
+    clickOn(elsewhere, { ctrlKey: true });
+    expect(commit).toHaveBeenCalledWith("https://b.test");
+  });
+
+  test("a primary press that opens a context menu (a Mac's Ctrl+click) commits nothing and keeps focus", async () => {
+    const { commit, cancel, input, elsewhere } = changedUrl();
+    pointerDown(elsewhere, { ctrlKey: true });
+    focusDropped(input);
+    elsewhere.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    // A pointerup can still arrive once the menu has gone.
+    pointerUp(elsewhere);
+    await settled();
+    expect(document.activeElement).toBe(input);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  test("a press released where no click follows still commits", async () => {
+    const { commit, elsewhere } = changedUrl();
+    pointerDown(elsewhere);
+    pointerUp(document.body);
+    await settled();
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
+  test("after a right-click, a later focus move with no press is leaving", async () => {
+    const { commit, input, elsewhere } = changedUrl();
+    pointerDown(elsewhere, { button: 2 });
+    await settled();
+    expect(commit).not.toHaveBeenCalled();
+    // A host script or assistive technology moves focus away.
+    focusDropped(input);
+    await settled();
+    expect(commit).toHaveBeenCalledWith("https://b.test");
+  });
+
+  test("a right-click on a focusable host input leaves focus there for its Paste and commits nothing", async () => {
+    const { commit, cancel, input, hostInput } = changedUrl();
+    pointerDown(hostInput, { button: 2 });
+    hostInput.focus();
+    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: hostInput }));
+    await settled();
+    expect(document.activeElement).toBe(hostInput);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  test("a right-click that drops focus to nowhere hands it back to the control", async () => {
+    const { commit, input, elsewhere } = changedUrl();
+    pointerDown(elsewhere, { button: 2 });
+    focusDropped(input);
+    await settled();
+    expect(document.activeElement).toBe(input);
+    expect(commit).not.toHaveBeenCalled();
+  });
+});
+
+describe("a deliberate no-break space the page renders as a plain one", () => {
+  test("survives typing at the end: stored '10\u00a0km', page '10 km', 's' typed", () => {
+    host.textContent = "10 km";
+    const { ctx, commit } = context("text", "10\u00a0km");
+    const widget = defaultWidgets.text.mount(ctx);
+    host.textContent = "10 kms";
+    widget.commit?.();
+    expect(commit).toHaveBeenCalledWith("10\u00a0kms");
+  });
+
+  test("an untouched one writes nothing", () => {
+    host.textContent = "10 km";
+    const { ctx, commit, cancel } = context("text", "10\u00a0km");
+    defaultWidgets.text.mount(ctx).commit?.();
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("formWidget", () => {
+  test("a build that finishes at once doesn't throw, and finishes once the widget is mounted", async () => {
+    const { ctx, commit, cancel } = context("url", "https://a.test");
+    const widget = formWidget(defaultStrings, (_ctx, _outcome, finish) => {
+      const control = document.createElement("input");
+      control.value = "https://a.test";
+      finish();
+      return { control, read: () => control.value };
+    });
+    const handle = widget.mount(ctx);
+    expect(cancel).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(commit).not.toHaveBeenCalled();
+    handle.destroy();
   });
 });
