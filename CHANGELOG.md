@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-11
+
 ### Changed
 
 - **Breaking:** `openPopover(anchor, label, onLeave?)` fires `onLeave` on a completed primary click or tap outside the
@@ -243,7 +245,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - First release: `ContentStore` seam, `SchemaRegistry`, path operations, `editable()` addressing, `Access` seam and the
   SQLite store.
 
-[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Forne14/yl-editor/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Forne14/yl-editor/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Forne14/yl-editor/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Forne14/yl-editor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Forne14/yl-editor/compare/v0.2.1...v0.3.0
