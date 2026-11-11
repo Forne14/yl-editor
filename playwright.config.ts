@@ -20,9 +20,10 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    // Capped at 2: Playwright's Firefox build (159.0, revision 1572) segfaults in its content process when several
-    // Firefox workers start at once on a loaded machine, at the same site in XUL every time (#24). Fewer Firefox
-    // processes lower that pressure; it is a browser bug, not ours, so this is no substitute for an upstream fix.
+    // Capped at 2 (#24): with Playwright 1.65.0 (Firefox 159.0, revision 1572) the Firefox content process segfaults
+    // when several Firefox workers start at once on a loaded machine; every macOS crash report is the same null write
+    // in XUL. Local runs default to more workers, so this lowers the pressure there. CI already runs 2 workers in
+    // total, so it changes nothing on CI. Retest after a Playwright upgrade and drop the cap once the crash is gone.
     { name: "firefox", workers: 2, use: { ...devices["Desktop Firefox"] } },
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],

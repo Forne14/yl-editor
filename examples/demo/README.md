@@ -61,8 +61,13 @@ npm run test:e2e -- --timeout=60000
 
 ## Firefox workers
 
-The Firefox project runs on at most 2 workers. Playwright's Firefox build segfaults in its content process when
-several Firefox workers start together on a loaded machine, always at the same place in the browser (#24). It shows
-as `Page crashed` or `Target crashed`, usually during an axe check, and a rerun passes. It is a browser bug, not a
-chrome one. If it still turns up, rerun the spec on its own (`--project=firefox --workers=1`) rather than adding
-retries.
+The Firefox project runs on at most 2 workers (#24). With Playwright 1.65.0, Firefox's content process segfaults
+when several Firefox workers start together on a loaded machine. It shows as `Page crashed` or `Target crashed`,
+usually during an axe check, and a rerun passes. Every crash report from macOS is the same null write inside the
+browser, so it is a browser bug there, not a chrome one. The crash seen once on Linux CI was never compared.
+
+Local runs default to half the cores, so the cap lowers the load there. CI already runs 2 workers in total, so the cap
+changes nothing on CI and a rare crash can still happen there. If you see one, check whether it matches #24 (a
+crash, not an assertion failure) before rerunning the job. Locally, rerun the spec on its own
+(`--project=firefox --workers=1`) rather than adding retries. Retest after a Playwright upgrade and drop the cap once
+the crash is gone.
