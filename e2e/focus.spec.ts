@@ -517,9 +517,11 @@ test.describe("half-typed values", () => {
       await expect(line).toHaveCount(1);
       await expect(input).toBeFocused();
       await fix(page, input);
-      await expect(line).toHaveCount(0);
+      // Like the Publish sheet's note: still named, but hidden and empty, so it describes nothing.
+      await expect(line).toBeHidden();
+      await expect(line.locator(".cms-error")).toHaveCount(0);
       await expect(input).not.toHaveAttribute("aria-invalid");
-      await expect(input).not.toHaveAttribute("aria-describedby");
+      await expect(input).toHaveAccessibleDescription("");
       await expect(popover(page)).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(popover(page)).toHaveCount(0);

@@ -626,6 +626,67 @@ test.describe("a short window", () => {
   });
 });
 
+/**
+ * What covers Cancel in an open popover, or is wrong with where it is: nothing when the whole button is in the window
+ * and on top at its corners and centre.
+ */
+const cancelProblems = (page: Page): Promise<string[]> =>
+  page.locator(".cms-popover .cms-popover__actions button").evaluate((cancel) => {
+    const rect = cancel.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > innerHeight || rect.left < 0 || rect.right > innerWidth) {
+      return [`outside the viewport: ${Math.round(rect.top)}–${Math.round(rect.bottom)} of ${innerHeight}`];
+    }
+    const problems: string[] = [];
+    for (const [fx, fy] of [
+      [0.5, 0.5],
+      [0.05, 0.05],
+      [0.95, 0.05],
+      [0.05, 0.95],
+      [0.95, 0.95],
+    ] as const) {
+      const hit = document.elementFromPoint(rect.left + rect.width * fx, rect.top + rect.height * fy);
+      if (hit && (hit === cancel || cancel.contains(hit))) continue;
+      const surface = hit?.closest(".cms-bar, .cms-toast, .cms-sheet, .cms-popover, .cms-enter");
+      problems.push(`at ${fx},${fy}: ${surface ? surface.className : (hit?.tagName ?? "nothing")}`);
+    }
+    return problems;
+  });
+
+for (const { name, viewport } of [
+  { name: "a short window", viewport: { width: 1024, height: 420 } },
+  // Short enough that the sheet, capped at --cms-sheet-max-h, overflows once the line shows.
+  { name: "a short bottom sheet", viewport: { width: 375, height: 200 } },
+]) {
+  test.describe(`${name}, with the incomplete-value line`, () => {
+    test.use({ viewport });
+
+    test("Cancel stays in view and on top of the bar once the line shows", async ({ page, demo }) => {
+      await demo.openEditor();
+      await page.locator("#home-price").focus();
+      await page.keyboard.press("Enter");
+      const popover = page.locator(".cms-popover");
+      await expect(popover.getByRole("spinbutton")).toBeFocused();
+      // Scroll so Cancel only just fits at the bottom of the window, as for a field near the bottom of the page: the
+      // line then pushes it out. The bottom sheet is fixed, so scrolling the page changes nothing there.
+      await page.evaluate(() => {
+        const cancel = document.querySelector(".cms-popover .cms-popover__actions button");
+        if (!cancel) throw new Error("no Cancel");
+        window.scrollBy(0, cancel.getBoundingClientRect().bottom - innerHeight + 4);
+      });
+      expect(await cancelProblems(page)).toEqual([]);
+      await page.keyboard.press("ControlOrMeta+a");
+      await page.keyboard.type("1e");
+      await page.keyboard.press("Enter");
+      await expect(popover.locator(".cms-diff .cms-error")).toBeVisible();
+      await expect(popover.getByRole("spinbutton")).toBeFocused();
+      await expect.poll(() => cancelProblems(page)).toEqual([]);
+      await expect(popover.locator(".cms-diff .cms-error")).toBeInViewport({ ratio: 1 });
+      await page.keyboard.press("Escape");
+      await expect(popover).toHaveCount(0);
+    });
+  });
+}
+
 // ---------- Reduced motion ----------
 
 /** Every chrome element with a running transition, and what it transitions. */
