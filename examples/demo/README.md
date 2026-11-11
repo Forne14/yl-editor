@@ -58,3 +58,17 @@ raise it for a local run rather than in the specs, so a hung test still fails at
 ```sh
 npm run test:e2e -- --timeout=60000
 ```
+
+## Firefox workers
+
+The Firefox project runs on at most 2 workers (#24). With Playwright 1.65.0, Firefox's content process segfaults
+when several Firefox workers start together on a loaded machine. It shows as `Page crashed` or `Target crashed`,
+usually during an axe check, and a rerun passes. Every crash report from macOS is the same null write inside the
+browser, so it is a browser bug there, not a chrome one.
+
+Local runs default to half the cores, so the cap lowers the load there. CI already runs 2 workers in total, so the cap
+changes nothing on CI, and the same `Page crashed` still turns up there during an axe check without heavy load. #24
+stays open for that. If a CI job fails this way, check that it is a crash, not an assertion failure, before rerunning
+it. Locally, rerun the spec on its own
+(`--project=firefox --workers=1`) rather than adding retries. Retest after a Playwright upgrade and drop the cap once
+the crash is gone.
