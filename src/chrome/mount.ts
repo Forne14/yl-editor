@@ -330,7 +330,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       },
       announce: (message) => toast.announce(message),
     };
-    provideStatus(context, (message) => toast.show(message, "info"));
+    // An error toast stays until dismissed or resolved (a failed save's Retry, a conflict's choice): an info toast
+    // replacing it would take the unsaved change out of view when it hides itself.
+    provideStatus(context, (message) => {
+      if (toast.showingError) toast.announce(message);
+      else toast.show(message, "info");
+    });
     active = opened;
     record.element.classList.add("cms-field--editing");
     try {
@@ -1150,6 +1155,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       closeActive(false, true);
       sheet.close(false);
       toast.clearTimer();
+      toast.cancelAnnounce();
       for (const record of fields) record.detach?.();
       disposer.dispose();
       chrome.remove();

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { EditFieldType } from "../editable.ts";
 import type { WidgetContext } from "./types.ts";
 import { defaultStrings } from "./strings.ts";
-import { defaultWidgets, formWidget, openPopover } from "./widgets.ts";
+import { defaultWidgets, formWidget, openPopover, provideStatus } from "./widgets.ts";
 
 let host: HTMLElement;
 
@@ -417,16 +417,21 @@ describe("a half-typed date or invalid number", () => {
       const { ctx, announce } = context(type, type === "number" ? 4 : "2026-11-14");
       defaultWidgets[type].mount(ctx);
       const input = popoverControl<HTMLInputElement>("input");
-      input.setAttribute("aria-describedby", "host-hint");
+      // Named from the start, hidden and empty, like the Publish sheet's note. Another id added later stays.
+      const line = input.nextElementSibling as HTMLElement;
+      expect(line.matches(".cms-popover > .cms-diff[hidden]")).toBe(true);
+      expect(line.childNodes).toHaveLength(0);
+      expect(input.getAttribute("aria-describedby")).toBe(line.id);
+      input.setAttribute("aria-describedby", `${line.id} host-hint`);
       holdBadInput(input);
       pressKey(input, "Enter");
-      const line = input.nextElementSibling as HTMLElement;
-      expect(line.matches(".cms-popover > .cms-diff")).toBe(true);
+      expect(input.nextElementSibling).toBe(line);
+      expect(line.hidden).toBe(false);
       expect(line.querySelector("p.cms-error")?.textContent).toBe(
         "p isn’t complete or valid. Finish it, or press Esc to keep the saved value.",
       );
       expect(input.getAttribute("aria-invalid")).toBe("true");
-      expect(input.getAttribute("aria-describedby")).toBe(`host-hint ${line.id}`);
+      expect(input.getAttribute("aria-describedby")).toBe(`${line.id} host-hint`);
       expect(announce).toHaveBeenCalledOnce();
     },
   );
@@ -452,6 +457,7 @@ describe("a half-typed date or invalid number", () => {
     const { ctx } = context("number", 4);
     defaultWidgets.number.mount(ctx);
     const input = popoverControl<HTMLInputElement>("input");
+    const line = input.nextElementSibling as HTMLElement;
     holdBadInput(input);
     pressKey(input, "Enter");
     // Still bad: typing more keeps the line.
@@ -460,9 +466,48 @@ describe("a half-typed date or invalid number", () => {
     Object.defineProperty(input, "validity", { value: { badInput: false }, configurable: true });
     input.value = value;
     input.dispatchEvent(new Event("input"));
-    expect(document.querySelector(".cms-popover .cms-diff")).toBeNull();
+    expect(line.hidden).toBe(true);
+    expect(line.childNodes).toHaveLength(0);
+    expect(document.querySelector(".cms-popover .cms-error")).toBeNull();
     expect(input.hasAttribute("aria-invalid")).toBe(false);
-    expect(input.hasAttribute("aria-describedby")).toBe(false);
+    expect(input.getAttribute("aria-describedby")).toBe(line.id);
+  });
+
+  test("showing the line scrolls Cancel into view, once", () => {
+    const scrolled: { node: Element; options: unknown }[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+      scrolled.push({ node: this, options });
+    };
+    try {
+      const { ctx } = context("number", 4);
+      defaultWidgets.number.mount(ctx);
+      const input = popoverControl<HTMLInputElement>("input");
+      holdBadInput(input);
+      pressKey(input, "Enter");
+      pressKey(input, "Enter");
+      expect(scrolled).toHaveLength(1);
+      expect(scrolled[0]?.options).toEqual({ block: "nearest" });
+      const actions = scrolled[0]?.node as HTMLElement;
+      expect(actions.matches(".cms-popover > .cms-popover__actions:last-child")).toBe(true);
+      expect(actions.textContent).toBe("Cancel");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  test("a host widget wrapping a default one with a spread context keeps the chrome's toast", () => {
+    const { ctx, cancel, announce } = context("number", 4);
+    const status = vi.fn();
+    provideStatus(ctx, status);
+    const wrappedCommit = vi.fn(async () => {});
+    const widget = defaultWidgets.number.mount({ ...ctx, commit: wrappedCommit });
+    holdBadInput(popoverControl<HTMLInputElement>("input"));
+    widget.commit?.();
+    expect(status).toHaveBeenCalledWith("p wasn’t complete or valid, so it keeps the saved value.");
+    expect(announce).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(wrappedCommit).not.toHaveBeenCalled();
   });
 
   test("the line goes with the popover", () => {

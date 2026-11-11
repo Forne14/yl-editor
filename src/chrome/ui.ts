@@ -11,10 +11,16 @@ export interface ToastAction {
 }
 
 const AUTO_HIDE_MS = 2600;
+/**
+ * How long the live region stays empty before a repeated message goes back in. Many screen readers ignore a polite
+ * region set to the text it already holds; emptying it first, for longer than a frame, makes the repeat a change.
+ */
+const REANNOUNCE_MS = 100;
 
 export class Toast {
   readonly node: HTMLElement;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private announceTimer: ReturnType<typeof setTimeout> | undefined;
   private shown = 0;
 
   constructor(
@@ -51,8 +57,29 @@ export class Toast {
     if (token === this.shown && !this.node.hidden) this.hide();
   }
 
+  /** Whether an error toast is showing: it stays until dismissed or resolved, so nothing should replace it. */
+  get showingError(): boolean {
+    return !this.node.hidden && this.node.dataset.kind === "error";
+  }
+
+  /** Puts `message` in the live region. The same message again is announced again. */
   announce(message: string): void {
-    this.live.textContent = message;
+    this.cancelAnnounce();
+    if (this.live.textContent !== message) {
+      this.live.textContent = message;
+      return;
+    }
+    this.live.textContent = "";
+    this.announceTimer = setTimeout(() => {
+      this.announceTimer = undefined;
+      this.live.textContent = message;
+    }, REANNOUNCE_MS);
+  }
+
+  /** Drops a repeated message still waiting to go back in the live region. */
+  cancelAnnounce(): void {
+    if (this.announceTimer !== undefined) clearTimeout(this.announceTimer);
+    this.announceTimer = undefined;
   }
 
   hide(): void {

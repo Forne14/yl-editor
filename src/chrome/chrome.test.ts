@@ -306,6 +306,42 @@ test("only one toast shows at a time", async () => {
   expect(document.querySelector(".cms-live")?.textContent).toBe("Second");
 });
 
+describe("the live region", () => {
+  const live = () => document.querySelector(".cms-live")?.textContent;
+
+  test("a repeated message is cleared, then set again on a later task, so it is announced again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { api } = await mount();
+      api.status("Same");
+      expect(live()).toBe("Same");
+      api.status("Same");
+      expect(live()).toBe("");
+      vi.advanceTimersByTime(99);
+      expect(live()).toBe("");
+      vi.advanceTimersByTime(1);
+      expect(live()).toBe("Same");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a different message replaces it at once, and drops a repeat still waiting", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { api } = await mount();
+      api.status("Same");
+      api.status("Same");
+      api.status("Other");
+      expect(live()).toBe("Other");
+      vi.advanceTimersByTime(1000);
+      expect(live()).toBe("Other");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 test("a field type with no widget says so and never throws", async () => {
   await mount();
   const clip = field("pages/home:clip");
@@ -434,12 +470,14 @@ test("a url popover edit is committed when another field is opened", async () =>
 });
 
 describe("a number left holding what the browser can't read", () => {
-  async function openBadNumber(): Promise<HTMLInputElement> {
+  /** `before` runs once the editor is up, before the popover opens. */
+  async function openBadNumber(before?: () => Promise<void>): Promise<HTMLInputElement> {
     addEditValueField("spaces", "number", "12");
     handlers["GET /api/content/document"] = () => ({
       json: { document: wireDocument("pages/home", 3, { spaces: 12 }) },
     });
     await mount();
+    await before?.();
     field("pages/home:spaces").click();
     await settle();
     const input = document.querySelector<HTMLInputElement>(".cms-popover input");
@@ -462,6 +500,35 @@ describe("a number left holding what the browser can't read", () => {
       expect(document.querySelector(".cms-live")?.textContent).toBe(toast.textContent);
       vi.advanceTimersByTime(3000);
       expect(toast.hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("leaving keeps a failed save's error toast, announces through the live region only, and Retry still works", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      handlers["POST /api/content/field"] = [serverError, echoField];
+      await openBadNumber(() => editText("artists/finn:name", "Again"));
+      const toast = visibleToast();
+      expect(toast.dataset.kind).toBe("error");
+      expect(toast.textContent).toContain("Not saved: Boom");
+      field("pages/home:title").click();
+      await settle();
+      expect(fieldWrites()).toHaveLength(1);
+      expect(visibleToast()).toBe(toast);
+      expect(toast.dataset.kind).toBe("error");
+      expect(toast.textContent).toContain("Not saved: Boom");
+      expect(document.querySelector(".cms-live")?.textContent).toBe(
+        "spaces wasn’t complete or valid, so it keeps the saved value.",
+      );
+      vi.advanceTimersByTime(3000);
+      expect(toast.hidden).toBe(false);
+      buttonNamed("Retry", toast).click();
+      await settle();
+      expect(fieldWrites()).toHaveLength(2);
+      expect(fieldWrites()[1]?.body).toMatchObject({ key: "artists/finn", path: "name", value: "Again" });
+      expect(field("artists/finn:name").dataset.cmsState).toBe("saved");
     } finally {
       vi.useRealTimers();
     }
