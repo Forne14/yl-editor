@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Invalid value message</title>
+    <!-- The real chrome stylesheet. Open this file straight from the repo; it looks the same in every browser. -->
+    <link rel="stylesheet" href="../../../src/chrome/chrome.css" />
+    <style>
+      /* Prototype page only. The proposal adds no CSS: it reuses .cms-diff, .cms-error and the toast. */
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 48px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 70ch;
+        margin: 4px 0 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 16px;
+      }
+      .cell {
+        border-radius: 10px;
+        padding: 16px;
+        background: #ffffff;
+        border: 1px solid #e3e5eb;
+      }
+      .cell.dark {
+        background: #0f1116;
+        border-color: #2a2d36;
+      }
+      .cell h3 {
+        margin: 0 0 12px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .cell.dark h3 {
+        color: #aab0bf;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .cell.dark .tag {
+        background: #1f2a44;
+        color: #9dbbff;
+      }
+      /* Popovers and toasts are positioned surfaces in the chrome; here they sit in the flow. */
+      .cell .cms-popover,
+      .cell .cms-toast {
+        position: static;
+        transform: none;
+        width: auto;
+        max-width: none;
+        box-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+      }
+      .cell.dark .cms-root {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        color-scheme: dark;
+      }
+      .cell:not(.dark) .cms-root {
+        color-scheme: light;
+      }
+      /* A still picture of the focused input, so the ring shows without interaction. */
+      .sim-focus {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      .caption {
+        margin: 10px 0 0;
+        font-size: 0.8rem;
+        color: #5b6170;
+      }
+      .cell.dark .caption {
+        color: #aab0bf;
+      }
+      code {
+        font-size: 0.85em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>A visible message for an incomplete value</h1>
+      <p class="lead">
+        Since the review fixes in #21, a half-typed date or a number the browser can't read never erases the stored
+        value. Pressing Enter keeps the popover open, and leaving it keeps the saved value. Today the reason is only
+        announced to screen readers, so a sighted editor sees nothing happen. WCAG 3.3.1 (Error Identification, level A)
+        asks for the error in text. The proposal shows the same text on screen. It reuses the red line the Publish sheet
+        already shows under “Publish at” for a past time, and the existing info toast, so it adds no CSS.
+      </p>
+
+      <h2>1. Enter on an incomplete value: a line under the input</h2>
+      <p class="note">
+        The line appears when Enter is refused and goes away as soon as the value becomes readable or empty. The input
+        gets <code>aria-invalid="true"</code> and points at the line with <code>aria-describedby</code>, so a screen
+        reader reads it with the field. Inputs are shown as text so the half-typed values stay visible on this page.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Today · Enter pressed</h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Next bake</p>
+            <input class="cms-input sim-focus" type="text" value="14 / mm / 2026" aria-label="Next bake (today)" />
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">Nothing visible happens. Only a screen reader hears why.</p>
+        </div>
+        <div class="cell">
+          <h3>Proposed · Enter pressed <span class="tag">new</span></h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Next bake</p>
+            <input
+              class="cms-input sim-focus"
+              type="text"
+              value="14 / mm / 2026"
+              aria-invalid="true"
+              aria-describedby="note-date"
+              aria-label="Next bake (proposed)"
+            />
+            <div class="cms-diff" id="note-date">
+              <p class="cms-error">
+                Next bake isn’t complete or valid. Finish it, or press Esc to keep the saved value.
+              </p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">The <code>invalidValue</code> string, under the input.</p>
+        </div>
+        <div class="cell dark">
+          <h3>Proposed · dark <span class="tag">new</span></h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Price</p>
+            <input
+              class="cms-input sim-focus"
+              type="text"
+              value="12,5e"
+              aria-invalid="true"
+              aria-describedby="note-price"
+              aria-label="Price (proposed, dark)"
+            />
+            <div class="cms-diff" id="note-price">
+              <p class="cms-error">Price isn’t complete or valid. Finish it, or press Esc to keep the saved value.</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+        </div>
+        <div class="cell">
+          <h3>Proposed · at 375px</h3>
+          <div class="cms-root cms-popover" role="presentation">
+            <p class="cms-popover__title">Price</p>
+            <input
+              class="cms-input sim-focus"
+              type="text"
+              value="12,5e"
+              aria-invalid="true"
+              aria-label="Price (proposed, narrow)"
+            />
+            <div class="cms-diff">
+              <p class="cms-error">Price isn’t complete or valid. Finish it, or press Esc to keep the saved value.</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">On a phone the popover is a bottom sheet; the line wraps inside it.</p>
+        </div>
+      </div>
+
+      <h2>2. Leaving with an incomplete value: an info toast</h2>
+      <p class="note">
+        Clicking elsewhere or opening another field closes the popover and keeps the saved value. The proposal shows the
+        <code>invalidValueKept</code> string as an info toast, which hides itself like every info toast. Nothing is
+        saved, so there is nothing to retry.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Today · after leaving</h3>
+          <p class="caption">The popover closes and the field shows its saved value. No message on screen.</p>
+        </div>
+        <div class="cell">
+          <h3>Proposed · after leaving <span class="tag">new</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="info">
+              <p class="cms-toast__message">Next bake wasn’t complete or valid, so it keeps the saved value.</p>
+              <div class="cms-toast__actions"></div>
+            </div>
+          </div>
+        </div>
+        <div class="cell dark">
+          <h3>Proposed · dark <span class="tag">new</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="info">
+              <p class="cms-toast__message">Price wasn’t complete or valid, so it keeps the saved value.</p>
+              <div class="cms-toast__actions"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

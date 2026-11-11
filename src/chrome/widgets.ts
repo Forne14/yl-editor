@@ -220,6 +220,24 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
   };
 }
 
+/**
+ * Where the chrome keeps how it shows a status toast for a context it built. An enumerable symbol key, so a host widget
+ * that wraps a default one with `{ ...ctx, commit }` passes it on; `WidgetContext` stays as documented.
+ */
+const STATUS = Symbol("cms-status");
+
+type StatusContext = WidgetContext & { [STATUS]?: (message: string) => void };
+
+/** Lets the default widgets show `message` as an info toast for `ctx`. Called by `mountEditor` only. */
+export function provideStatus(ctx: WidgetContext, show: (message: string) => void): void {
+  (ctx as StatusContext)[STATUS] = show;
+}
+
+/** An info toast where the chrome provides one; a context built elsewhere only announces it. */
+function showStatus(ctx: WidgetContext, message: string): void {
+  ((ctx as StatusContext)[STATUS] ?? ctx.announce)(message);
+}
+
 /** Commit-or-cancel bookkeeping every widget needs: only the first outcome counts. */
 function once(ctx: WidgetContext) {
   let settled = false;
@@ -382,6 +400,8 @@ interface FormWidgetParts {
   focusTarget?: HTMLElement;
   /** The control holds something `read` can't represent, such as a half-typed date. */
   unreadable?(): boolean;
+  /** Placed right under `control`, such as the line saying why Enter was refused. */
+  note?: HTMLElement;
 }
 
 /**
@@ -406,7 +426,7 @@ export function formWidget(
         }
         // It reads as empty, but the editor didn't empty it: erasing the stored value would be the wrong guess.
         if (built.parts.unreadable?.()) {
-          ctx.announce(format(strings.invalidValueKept, { label: fieldLabel(ctx) }));
+          showStatus(ctx, format(strings.invalidValueKept, { label: fieldLabel(ctx) }));
           outcome.cancel();
           return;
         }
@@ -430,6 +450,7 @@ export function formWidget(
       popover.root.addEventListener("keydown", handleKeydown);
       popover.root.append(
         parts.control,
+        ...(parts.note ? [parts.note] : []),
         element("div", { class: "cms-popover__actions" }, [button(strings.cancel, () => outcome.cancel(), "ghost")]),
       );
       return {
@@ -479,12 +500,39 @@ function inputWidget(strings: Strings, inputType: "number" | "url" | "date"): Wi
       if (inputType === "number") return input.value === "" ? null : Number(input.value);
       return input.value.trim();
     };
+    // Why Enter was refused, under the input until the value is readable or empty again (WCAG 3.3.1). Like the Publish
+    // sheet's note, it is always there and named by `aria-describedby`; hidden and empty, it describes nothing.
+    const note = element("div", { class: "cms-diff", id: uniqueId("cms-invalid"), hidden: true });
+    input.setAttribute("aria-describedby", note.id);
+    const clearInvalid = () => {
+      if (note.hidden) return;
+      note.hidden = true;
+      note.replaceChildren();
+      input.removeAttribute("aria-invalid");
+    };
+    const showInvalid = () => {
+      const message = format(strings.invalidValue, { label: fieldLabel(ctx) });
+      ctx.announce(message);
+      if (!note.hidden) return;
+      note.replaceChildren(element("p", { class: "cms-error" }, [message]));
+      note.hidden = false;
+      input.setAttribute("aria-invalid", "true");
+      // The popover was placed before it grew: near the bottom of the window, or in the bottom sheet, the line could
+      // push Cancel out of view.
+      note.closest(".cms-popover")?.lastElementChild?.scrollIntoView?.({ block: "nearest" });
+    };
+    // Clearing a date's last segments changes no `value`, so no `input` fires; the key's release still says so.
+    const clearIfReadable = () => {
+      if (!input.validity.badInput) clearInvalid();
+    };
+    input.addEventListener("input", clearIfReadable);
+    input.addEventListener("keyup", clearIfReadable);
     // Enter commits, and so does leaving the popover (see `formWidget`). A number never commits on `change`: it fires
     // on every arrow step and on the blur that pressing Cancel causes.
     input.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      if (input.validity.badInput) ctx.announce(format(strings.invalidValue, { label: fieldLabel(ctx) }));
+      if (input.validity.badInput) showInvalid();
       else finish();
     });
     if (inputType === "date") {
@@ -516,7 +564,7 @@ function inputWidget(strings: Strings, inputType: "number" | "url" | "date"): Wi
         if (!keying) finish();
       });
     }
-    return { control: input, read, unreadable: () => input.validity.badInput };
+    return { control: input, read, unreadable: () => input.validity.badInput, note };
   });
 }
 

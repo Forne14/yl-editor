@@ -442,19 +442,103 @@ test.describe("half-typed values", () => {
     return input;
   }
 
+  /** Types a readable number over the bad one. */
+  async function fixNumber(page: Page, input: Locator): Promise<void> {
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.type("20");
+    expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(false);
+  }
+
+  /** Types the emptied segment back: the first one, the month, in the en-US layout every engine runs here. */
+  async function fixHalfDate(page: Page, input: Locator): Promise<void> {
+    await page.keyboard.type("11");
+    expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(false);
+  }
+
   const cases = [
-    { name: "number", selector: "#home-price", path: "price", shown: "12", hold: holdBadNumber },
-    { name: "date", selector: "#home-date", path: "date", shown: "14 Nov 2026", hold: holdHalfDate },
+    {
+      name: "number",
+      selector: "#home-price",
+      label: "Price",
+      shown: "12",
+      hold: holdBadNumber,
+      fix: fixNumber,
+    },
+    {
+      name: "date",
+      selector: "#home-date",
+      label: "Next bake",
+      shown: "14 Nov 2026",
+      hold: holdHalfDate,
+      fix: fixHalfDate,
+    },
   ];
 
-  for (const { name, selector, shown, hold } of cases) {
-    test(`${name}: leaving by a click elsewhere cancels and keeps the stored value`, async ({ page, demo }) => {
+  const toast = (page: Page) => page.locator(".cms-toast");
+
+  for (const { name, selector, label, shown, hold, fix } of cases) {
+    test(`${name}: leaving by a click elsewhere cancels, keeps the stored value and says so in a toast`, async ({
+      page,
+      demo,
+    }) => {
+      // Info toasts hide themselves. A paused clock holds it up however loaded the machine is, then shows it going;
+      // a click outside leaves without any timer.
+      await page.clock.install();
       await demo.openEditor();
       await hold(page);
+      await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
       await plainText(page).click();
       await expect(popover(page)).toHaveCount(0);
       await expect(page.locator(selector)).toHaveText(shown);
+      await expect(toast(page)).toBeVisible();
+      await expect(toast(page)).toHaveAttribute("data-kind", "info");
+      await expect(toast(page)).toHaveText(`${label} wasn’t complete or valid, so it keeps the saved value.`);
       await expect(liveRegion(page)).toContainText("keeps the saved value");
+      await expectNoWrites(demo);
+      await page.clock.runFor(3000);
+      await expect(toast(page)).toBeHidden();
+    });
+
+    test(`${name}: Enter shows why under the input until the value is readable again`, async ({ page, demo }) => {
+      await demo.openEditor();
+      const input = await hold(page);
+      await page.keyboard.press("Enter");
+      const line = popover(page).locator(".cms-diff");
+      await expect(line).toBeVisible();
+      await expect(line.locator(".cms-error")).toHaveText(
+        `${label} isn’t complete or valid. Finish it, or press Esc to keep the saved value.`,
+      );
+      // Directly under the input, and read with it.
+      expect(await input.evaluate((node) => node.nextElementSibling?.classList.contains("cms-diff"))).toBe(true);
+      await expect(input).toHaveAttribute("aria-invalid", "true");
+      await expect(input).toHaveAttribute("aria-describedby", (await line.getAttribute("id")) ?? "no id");
+      await expect(input).toHaveAccessibleDescription(/isn’t complete or valid/);
+      await page.keyboard.press("Enter");
+      await expect(line).toHaveCount(1);
+      await expect(input).toBeFocused();
+      await fix(page, input);
+      // Like the Publish sheet's note: still named, but hidden and empty, so it describes nothing.
+      await expect(line).toBeHidden();
+      await expect(line.locator(".cms-error")).toHaveCount(0);
+      await expect(input).not.toHaveAttribute("aria-invalid");
+      await expect(input).toHaveAccessibleDescription("");
+      await expect(popover(page)).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(popover(page)).toHaveCount(0);
+      await expect(toast(page)).toBeHidden();
+      await expectNoWrites(demo);
+    });
+
+    test(`${name}: Esc on a refused value cancels with no toast`, async ({ page, demo }) => {
+      await demo.openEditor();
+      await hold(page);
+      await page.keyboard.press("Enter");
+      await expect(popover(page).locator(".cms-error")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(popover(page)).toHaveCount(0);
+      await expect(page.locator(".cms-error")).toHaveCount(0);
+      await expect(toast(page)).toBeHidden();
+      await expect(page.locator(selector)).toHaveText(shown);
       await expectNoWrites(demo);
     });
 
@@ -478,6 +562,7 @@ test.describe("half-typed values", () => {
       await expect(page.locator(".cms-sheet")).toBeVisible();
       await expect(popover(page)).toHaveCount(0);
       await expect(page.locator(selector)).toHaveText(shown);
+      await expect(liveRegion(page)).toHaveText(`${label} wasn’t complete or valid, so it keeps the saved value.`);
       await expectNoWrites(demo);
     });
   }

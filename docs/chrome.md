@@ -121,8 +121,17 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   browser's own text insertion when it allows it. Focus returns to the field when the widget closes.
 - Enter or leaving with nothing changed writes nothing, for every popover input (a failed save still resends).
 - A half-typed date or an invalid number (`validity.badInput`) reads as empty, but it isn't the editor emptying the
-  field. Enter keeps the popover open and announces why through the live region. Leaving, or the chrome closing the
-  popover, cancels, keeps the stored value and announces that. An input emptied on purpose still commits empty.
+  field. Enter keeps the popover open and shows why on a line under the input (the `invalidValue` string, in
+  `.cms-diff` > `.cms-error`), marks the input `aria-invalid="true"`, and scrolls Cancel back into view if the taller
+  popover pushed it out of the window or the bottom sheet. Like the Publish sheet's note, the line's `.cms-diff` is
+  under the input from the start and named in its `aria-describedby`, hidden and empty, so it describes nothing until
+  it shows. Each refused Enter also announces it through the live region; a second one adds no second line. The line
+  and `aria-invalid` go as soon as the value is readable or empty again, and with the popover. Leaving, or the chrome
+  closing the popover, cancels, keeps the stored value and says so in an info toast (`invalidValueKept`) that hides
+  itself; while an error toast is showing (a failed save's Retry, a conflict's choice) it stays, and the message is
+  only announced. A host widget that wraps a default one with a spread context (`{ ...ctx, commit }`) keeps that
+  toast. Esc cancels silently, as always. An input emptied on purpose still commits empty. Url and the other widgets
+  are unaffected.
 - A text edit normalises only what it changed. Firefox types a space next to another space, or at the end, as a no-break
   space, and those are stored as plain spaces. A no-break space outside the changed stretch, the part between what is
   the same at the start and at the end of the text, stays: "10\u00a0km" keeps it when the edit is elsewhere. The stored
@@ -455,7 +464,11 @@ also on `data-cms-state`, and the toast's kind on `data-kind`.
   "Press Enter to edit" or the reason it is locked.
 - Esc closes the open widget or panel; focus returns to the field or to the button that opened the panel.
 - Status goes to one `aria-live="polite"` region; only one toast shows at a time. Errors stay until dismissed or
-  resolved; "saved" and "info" toasts hide themselves.
+  resolved; "saved" and "info" toasts hide themselves. A message the region already holds is announced again: the
+  region empties, then gets the text back 100ms later, since many screen readers ignore a region set to the same text.
+  This covers `ctx.announce` and `api.status` too.
+- An error is shown in text, not only announced (WCAG 3.3.1): a number or date the browser can't read, refused on Enter,
+  shows a line under its input that the input names with `aria-describedby` and marks with `aria-invalid="true"`.
 - Touch targets are at least `--cms-control-h` (44px). Under 40em the bar, panels and popovers become bottom
   sheets that respect the safe-area inset.
 - With `prefers-reduced-motion: reduce` transitions are opacity-only and at most 120ms.

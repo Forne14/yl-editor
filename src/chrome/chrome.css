@@ -387,6 +387,11 @@
   font-size: var(--cms-size-sm);
 }
 
+/* Scrolled back into view when the popover grows (the incomplete-value line): keep the popover's padding below it. */
+:where(.cms-popover__actions) {
+  scroll-margin-block-end: var(--cms-space-3);
+}
+
 :where(.cms-popover__title) {
   margin: 0;
   font-size: var(--cms-size-sm);
