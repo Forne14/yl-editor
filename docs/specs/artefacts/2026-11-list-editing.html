@@ -1,0 +1,1703 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>List editing</title>
+    <style>
+      /* ==========================================================================================================
+         1. COPIED FROM src/chrome/chrome.css (tokens, fields, buttons, focus ring, bar, toast, popover). Unchanged
+            except that the zero-specificity :where() wrapper is kept and position:fixed surfaces are placed inside
+            the demo frames by section 3. This file is self-contained so it still opens when the repo moves.
+         ========================================================================================================== */
+      :where(.cms-root, .cms-field, .cms-listedit, .cms-item) {
+        --cms-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --cms-size-sm: 0.8125rem;
+        --cms-size-md: 0.9375rem;
+        --cms-line: 1.4;
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-success: #1f7a45;
+        --cms-warning: #a15c07;
+        --cms-outline: 2px dashed #2557d6;
+        --cms-radius: 6px;
+        --cms-space-1: 4px;
+        --cms-space-2: 8px;
+        --cms-space-3: 12px;
+        --cms-space-4: 16px;
+        --cms-space-5: 24px;
+        --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+        --cms-z: 1000;
+        --cms-control-h: 44px;
+        --cms-sheet-max-h: 70vh;
+      }
+      :where(.cms-field) {
+        outline: var(--cms-outline);
+        outline-offset: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        cursor: text;
+      }
+      :where(.cms-field:hover, .cms-field:focus-visible) {
+        outline-color: var(--cms-fg);
+      }
+      :where(.cms-field--editing) {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+      }
+      :where(.cms-root) {
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        line-height: var(--cms-line);
+        color: var(--cms-fg);
+      }
+      .cms-root [hidden] {
+        display: none;
+      }
+      :where(.cms-root *, .cms-root *::before, .cms-root *::after) {
+        box-sizing: border-box;
+      }
+      :where(.cms-btn) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--cms-space-1);
+        min-height: var(--cms-control-h);
+        min-width: var(--cms-control-h);
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        color: var(--cms-fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      :where(.cms-btn--primary) {
+        border-color: var(--cms-accent);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+      }
+      :where(.cms-btn--danger) {
+        border-color: var(--cms-danger);
+        color: var(--cms-danger);
+      }
+      :where(.cms-btn--ghost) {
+        background: transparent;
+      }
+      :where(.cms-btn:disabled) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      :where(.cms-root :focus-visible, .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      :where(.cms-muted) {
+        color: var(--cms-muted);
+      }
+      :where(.cms-visually-hidden, .cms-live) {
+        position: absolute;
+        inline-size: 1em;
+        block-size: 1em;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      :where(.cms-bar) {
+        position: fixed;
+        inset-inline: var(--cms-space-4);
+        bottom: var(--cms-space-4);
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-4);
+        padding: var(--cms-space-2) var(--cms-space-4);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-bar__state) {
+        display: grid;
+        flex: 1 1 18em;
+        min-width: 0;
+      }
+      :where(.cms-bar__changes) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-bar__actions, .cms-toast__actions, .cms-popover__actions) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--cms-space-2);
+      }
+      :where(.cms-toast) {
+        position: fixed;
+        top: var(--cms-space-4);
+        left: 50%;
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        max-width: calc(100vw - 2 * var(--cms-space-4));
+        padding: var(--cms-space-2) var(--cms-space-4);
+        transform: translateX(-50%);
+        border-radius: var(--cms-radius);
+        border-inline-start: medium solid var(--cms-accent);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-toast__message) {
+        margin: 0;
+      }
+      :where(.cms-popover) {
+        position: absolute;
+        top: calc(var(--cms-popover-top, 0) + var(--cms-space-2));
+        left: var(--cms-popover-left, 0);
+        z-index: var(--cms-z);
+        display: grid;
+        gap: var(--cms-space-2);
+        width: min(22em, calc(100vw - 2 * var(--cms-space-4)));
+        padding: var(--cms-space-3);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-popover__title) {
+        margin: 0;
+        font-size: var(--cms-size-sm);
+        font-weight: 600;
+      }
+      :where(.cms-popover--note) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-toast, .cms-popover) {
+        transition:
+          opacity 160ms ease,
+          transform 200ms ease;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :where(.cms-toast, .cms-popover) {
+          transition: opacity 120ms linear;
+        }
+      }
+
+      /* ==========================================================================================================
+         2. PROPOSED: list editing. These are the only new chrome rules. Same tokens, same :where() zero
+            specificity, no raw colours or sizes. Hosts restyle them from their own stylesheet like everything else.
+         ========================================================================================================== */
+
+      /* The list: a muted dashed outline, so it never reads as an editable field (those are accent blue). */
+      :where(.cms-listedit) {
+        outline: thin dashed var(--cms-muted);
+        outline-offset: var(--cms-space-3);
+        border-radius: var(--cms-radius);
+      }
+      :where(.cms-listedit__head) {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--cms-space-3);
+        min-height: var(--cms-control-h);
+        margin-block-end: var(--cms-space-3);
+      }
+      /* Same look as .cms-badge--locked, but in the flow: muted fill, small type. */
+      :where(.cms-listedit__tag) {
+        display: inline-flex;
+        gap: var(--cms-space-2);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-muted);
+        color: var(--cms-bg);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-sm);
+        line-height: var(--cms-line);
+        white-space: nowrap;
+      }
+      :where(.cms-listedit__items) {
+        display: grid;
+        gap: calc(var(--cms-control-h) + var(--cms-space-4));
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      :where(.cms-listedit__empty) {
+        margin: 0 0 var(--cms-space-3);
+        padding: var(--cms-space-5) var(--cms-space-4);
+        border: thin dashed var(--cms-border);
+        border-radius: var(--cms-radius);
+        color: var(--cms-muted);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        text-align: center;
+      }
+      :where(.cms-listedit__add) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        margin-block-start: var(--cms-space-5);
+        font-family: var(--cms-font);
+      }
+      :where(.cms-listedit__reason) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-btn[aria-disabled="true"]) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      :where(.cms-btn--add) {
+        border-style: dashed;
+        border-color: var(--cms-accent);
+        color: var(--cms-accent);
+      }
+
+      /* The item: unmarked at rest. Hover, focus inside, or "open" (touch) outlines it and shows its tools. */
+      :where(.cms-item) {
+        position: relative;
+        border-radius: var(--cms-radius);
+      }
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) {
+        outline: thin solid var(--cms-accent);
+        outline-offset: var(--cms-space-2);
+      }
+      /* Option B: items outlined all the time. */
+      :where([data-mark="always"] .cms-item) {
+        outline: thin solid var(--cms-border);
+        outline-offset: var(--cms-space-2);
+      }
+      :where(.cms-item--dragging) {
+        opacity: 0.6;
+        outline-style: dashed;
+      }
+      :where(.cms-item__tools) {
+        position: absolute;
+        inset-inline-end: 0;
+        bottom: calc(100% + var(--cms-space-3));
+        z-index: calc(var(--cms-z) - 1);
+        display: flex;
+        gap: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms linear;
+      }
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) > .cms-item__tools {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      :where(.cms-item__tools .cms-btn) {
+        padding: 0;
+        border: 0;
+      }
+      :where(.cms-item__danger) {
+        color: var(--cms-danger);
+      }
+      :where(.cms-item__grip) {
+        cursor: grab;
+        touch-action: none;
+      }
+      :where(.cms-item__chip) {
+        display: none;
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-item__chip-open) {
+        display: none;
+      }
+      /* Touch: tools collapse to one chip per item (a tap target that doesn't compete with the fields). */
+      :where([data-input="touch"] .cms-item__tools) {
+        opacity: 1;
+        pointer-events: auto;
+        background: transparent;
+        box-shadow: none;
+      }
+      :where([data-input="touch"] .cms-item__chip) {
+        display: inline-flex;
+        background: var(--cms-bg);
+      }
+      :where([data-input="touch"] .cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+        display: none;
+      }
+      :where([data-input="touch"] .cms-item[data-open] > .cms-item__tools) {
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where([data-input="touch"] .cms-item[data-open] > .cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+        display: inline-flex;
+      }
+      :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-closed) {
+        display: none;
+      }
+      :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-open) {
+        display: inline;
+      }
+      :where([data-input="touch"] .cms-item:hover:not([data-open])) {
+        outline: none;
+      }
+
+      /* ==========================================================================================================
+         3. PROTOTYPE PAGE ONLY: layout of this document, the demo "host site", and the frames. Not part of the
+            proposal.
+         ========================================================================================================== */
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1280px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 56px 0 4px;
+      }
+      h3 {
+        font-size: 1rem;
+        margin: 24px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 72ch;
+        margin: 4px 0 16px;
+      }
+      code {
+        font-size: 0.85em;
+        overflow-wrap: anywhere;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+        font-weight: 400;
+      }
+      .tag.rec {
+        background: #dcf3e6;
+        color: #1f7a45;
+      }
+      .decisions {
+        display: grid;
+        gap: 12px;
+        margin: 16px 0 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: decision;
+      }
+      .decisions li {
+        counter-increment: decision;
+        padding: 12px 16px 12px 48px;
+        position: relative;
+        border-radius: 10px;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+      }
+      .decisions li::before {
+        content: "D" counter(decision);
+        position: absolute;
+        left: 12px;
+        top: 12px;
+        font-weight: 700;
+        color: #2557d6;
+      }
+      .decisions p {
+        margin: 2px 0;
+        overflow-wrap: anywhere;
+      }
+      .decisions .why {
+        color: #5b6170;
+        font-size: 0.9rem;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: 390px minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
+        margin: 16px 0;
+      }
+      .solo {
+        max-width: 640px;
+        margin: 16px 0;
+      }
+      @media (max-width: 900px) {
+        .pair {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .pair > figure:first-child {
+          max-width: 390px;
+        }
+      }
+      figure {
+        margin: 0;
+        min-width: 0;
+      }
+      figcaption {
+        margin: 0 0 6px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .frame {
+        position: relative;
+        container-type: inline-size;
+        overflow: hidden;
+        border-radius: 10px;
+        border: 1px solid #e3e5eb;
+        background: #faf8f3;
+        color-scheme: light;
+      }
+      .host {
+        padding: 24px 24px 32px;
+        font-family: Georgia, "Times New Roman", serif;
+        color: #2a2622;
+      }
+      .host h1 {
+        margin: 0 0 24px;
+        font-size: 1.1rem;
+        letter-spacing: 0.02em;
+      }
+      .host h2 {
+        margin: 40px 0 16px;
+        font-size: 1.4rem;
+      }
+      .host h2:first-of-type {
+        margin-top: 24px;
+      }
+      .host h4 {
+        margin: 0;
+        font-size: 1.1rem;
+      }
+      .host p {
+        margin: 2px 0 0;
+        color: #5a534a;
+      }
+      .host [data-field] {
+        display: block;
+        min-height: 1.4em;
+      }
+      .host .placeholder {
+        color: #8a8378;
+        font-style: italic;
+      }
+      .r-body {
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        gap: 16px;
+        align-items: center;
+      }
+      .photo {
+        display: grid;
+        place-items: center;
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: hsl(var(--hue) 45% 80%);
+        color: hsl(var(--hue) 40% 25%);
+        font-weight: 700;
+      }
+      .host .photo[data-field] {
+        display: grid;
+      }
+      .e-body {
+        display: grid;
+        grid-template-columns: 8em minmax(0, 1fr);
+        gap: 4px 16px;
+      }
+      .e-body .e-date {
+        grid-row: span 2;
+        font-weight: 700;
+      }
+      @container (max-width: 40em) {
+        .e-body {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .e-body .e-date {
+          grid-row: auto;
+        }
+        .host {
+          padding-inline: 20px;
+        }
+      }
+      .frame .cms-bar {
+        position: static;
+        margin: 0 var(--cms-space-4) var(--cms-space-4);
+        border: thin solid var(--cms-border);
+      }
+      .frame .cms-toast {
+        position: absolute;
+      }
+      .frame .cms-popover {
+        position: absolute;
+        top: calc(var(--cms-popover-top, 0px) + var(--cms-space-2));
+        left: auto;
+        right: var(--cms-space-5);
+      }
+      @container (max-width: 40em) {
+        .frame .cms-popover,
+        .frame .cms-toast {
+          inset-inline: 0;
+          left: 0;
+          right: 0;
+          width: auto;
+          max-width: none;
+          transform: none;
+        }
+        .frame .cms-popover {
+          top: auto;
+          bottom: 0;
+          border-radius: var(--cms-radius) var(--cms-radius) 0 0;
+          padding-bottom: var(--cms-space-5);
+        }
+        .frame .cms-toast {
+          top: auto;
+          bottom: 0;
+          border-radius: var(--cms-radius) var(--cms-radius) 0 0;
+          padding-bottom: var(--cms-space-5);
+        }
+        .frame .cms-bar {
+          margin: 0;
+          border-radius: 0;
+        }
+      }
+      .log {
+        margin: 8px 0 0;
+        padding: 8px 12px;
+        border-radius: 8px;
+        background: #eceef3;
+        font-size: 0.8rem;
+        color: #3a3e4a;
+        min-height: 3.4em;
+      }
+      .log b {
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .log ol {
+        margin: 2px 0 0;
+        padding-left: 18px;
+      }
+      .log li:first-child {
+        font-weight: 600;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        padding: 8px 10px;
+        border: 1px solid #e3e5eb;
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+      th {
+        background: #eceef3;
+      }
+      .tablewrap {
+        overflow-x: auto;
+        max-width: 100%;
+      }
+      pre {
+        margin: 8px 0 16px;
+        padding: 12px 16px;
+        border-radius: 8px;
+        background: #16181d;
+        color: #e9ebf2;
+        overflow-x: auto;
+        font-size: 0.8rem;
+        max-width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Editing lists in place</h1>
+      <p class="lead">
+        Issue #28. Today the chrome edits one field at a time. A site can't add a gig, remove an artist or reorder a
+        roster. This page proposes the chrome for keyed lists (<code>items[_key=abc]</code>). Every demo below is live:
+        click, tap, hover or tab through it. The look is the chrome's own (<code>--cms-*</code> tokens copied from
+        <code>src/chrome/chrome.css</code>); the host page is a neutral stand-in. Phone frames are 390px and mimic a
+        touch device (tools collapse to a chip); desktop frames mimic a pointer device. Frames narrower than 40em use
+        the chrome's bottom-sheet layout, the same breakpoint as <code>chrome.css</code>.
+      </p>
+
+      <h2>Decisions for Yassine</h2>
+      <p class="note">
+        Each has a recommendation. The demos below show it, and the alternative where it is a close call.
+      </p>
+      <ol class="decisions">
+        <li>
+          <p>
+            <strong>How is a list marked in edit mode?</strong>
+            <span class="tag rec">Recommend A</span>
+          </p>
+          <p>
+            A: a thin muted dashed outline round the list with a grey tag (“Artists · 3 of 6”). Items are unmarked until
+            hover or focus. B: also outline every item all the time (demo 1, third frame).
+          </p>
+          <p class="why">
+            Fields already use the accent blue dashed outline. A grey list outline can't be mistaken for an editable
+            field, and A leaves the host's design alone at rest. B is noisier and doubles the outlines on a card that
+            has fields in it.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>Where do an item's controls live?</strong>
+            <span class="tag rec">Recommend floating toolbar</span>
+          </p>
+          <p>
+            A toolbar floating above the item (outside its content, skinmenu's pattern). Pointer: shown on hover and on
+            focus inside the item. Touch: a 44px chip per item; tap it to open the toolbar. Keyboard: one tab stop per
+            item (a <code>role="toolbar"</code>), arrow keys move between its buttons.
+          </p>
+          <p class="why">
+            Controls inside the item would restyle host markup. A toolbar per item as 5 tab stops would add 5 stops per
+            item; a roving toolbar adds 1.
+          </p>
+        </li>
+        <li>
+          <p><strong>Reordering.</strong> <span class="tag rec">Recommend drag handle + buttons</span></p>
+          <p>
+            Drag handle for pointer users, always with Move up / Move down buttons as the single-pointer alternative
+            (WCAG 2.5.7 Dragging Movements). Arrow Up/Down on the focused handle also moves. Lists whose order follows
+            the data (events by date) show neither handle nor move buttons.
+          </p>
+        </li>
+        <li>
+          <p><strong>Remove: undo toast or confirm?</strong> <span class="tag rec">Recommend undo toast</span></p>
+          <p>
+            Both are shown in demo 4. The undo toast removes at once, keeps the last removals undoable (button, or
+            Ctrl/Cmd+Z in the list), and stays 15 seconds.
+          </p>
+          <p class="why">
+            A removal is only a draft change: nothing is public until Publish, and revisions keep the published version.
+            A confirm on every remove trains people to click through it and costs a step each time.
+          </p>
+        </li>
+        <li>
+          <p><strong>Add: where, and what opens?</strong> <span class="tag rec">Recommend one Add, at the end</span></p>
+          <p>
+            One Add button under the last item, in both the empty and the populated state (skinmenu rule 14). A new item
+            appears at the end and its first field opens for typing. Duplicate puts the copy right after the original.
+            In a date-sorted list the new event sits at the end until its date is saved, then moves to its place and the
+            move is announced.
+          </p>
+          <p class="why">
+            No “insert here” between items: Duplicate and Move already cover it, and it is a lot of extra targets on a
+            phone.
+          </p>
+        </li>
+        <li>
+          <p><strong>Limits.</strong> <span class="tag rec">Recommend aria-disabled + visible reason</span></p>
+          <p>
+            At <code>max</code>, Add (and Duplicate) stay focusable but inert with <code>aria-disabled</code>, and the
+            reason is on screen and tied to the button. At <code>min</code> the same for Remove. A natively
+            <code>disabled</code> button drops out of the tab order and can't explain itself.
+          </p>
+        </li>
+        <li>
+          <p><strong>Duplicate is opt-in per list.</strong> <span class="tag rec">Recommend default off</span></p>
+          <p>
+            The roster has none (a second “Mara Okoye” is never wanted); events have it (a repeat gig). Show/hide on an
+            item (SOTR's <code>visible</code>) is an ordinary toggle field inside the item, not list chrome.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>How does a new item's markup reach the page?</strong>
+            <span class="tag">needs your call</span>
+          </p>
+          <p>
+            The chrome can insert the data (existing <code>ArrayOp</code> <code>insert</code>) but not the host's HTML.
+            (a) The chrome re-fetches the page and swaps the <code>data-edit-list</code> element. (b) The host passes a
+            <code>render(item)</code> callback. I lean (a): SOTR is server-rendered and has no client template, and (b)
+            would duplicate the markup. Detail in the notes.
+          </p>
+        </li>
+      </ol>
+
+      <h2>1. Edit mode at rest</h2>
+      <p class="note">
+        The list has a grey dashed outline and a grey tag with its name and count. Fields keep the blue dashed outline.
+        Items are unmarked. On the phone each item has a small “⋯ n of N” chip (the only way in without hover). The Add
+        button is always at the end of the list. Third frame: the alternative B with every item outlined.
+      </p>
+      <div class="pair" data-pair='{"lists":["roster","events"],"roster":3,"events":3}'></div>
+      <div
+        class="solo"
+        data-pair='{"lists":["roster"],"roster":2,"solo":"desktop","mark":"always","title":"Alternative B · every item outlined"}'
+      ></div>
+
+      <h2>2. An item's controls</h2>
+      <p class="note">
+        Hover or tab into any item on desktop; tap a chip on the phone. The toolbar is
+        <strong>Drag handle · Move up · Move down · Duplicate · Remove</strong>, each 44px. Tab enters the toolbar once;
+        Left/Right/Home/End move inside it; Tab again goes on to the item's fields. The first item's Move up and the
+        last item's Move down are inert (<code>aria-disabled</code>) and say why on activation. Item 2 is pinned open in
+        the stills.
+      </p>
+      <h3>Reorderable roster (handle, Move up, Move down, Remove; Duplicate is off for this list)</h3>
+      <div class="pair" data-pair='{"lists":["roster"],"roster":3,"open":{"roster":1}}'></div>
+      <h3>Date-sorted events (no handle, no move; Duplicate on)</h3>
+      <div class="pair" data-pair='{"lists":["events"],"events":3,"open":{"events":1}}'></div>
+
+      <h2>3. Add</h2>
+      <p class="note">
+        Add is present when the list is empty and when it has items. Pressing it puts the new item last, opens its first
+        field with the caret in it, and moves focus there. Edit the field and press Enter, or Escape to keep the
+        default. For an event the first field is the date; saving it moves the event into date order.
+      </p>
+      <h3>Empty state (both lists)</h3>
+      <div class="pair" data-pair='{"lists":["roster","events"],"roster":0,"events":0}'></div>
+      <h3>Populated: press Add (the still shows the moment after)</h3>
+      <div class="pair" data-pair='{"lists":["roster"],"roster":3,"pre":"add:roster"}'></div>
+      <h3>Date-sorted: add an event, type a date (try “20 Dec 2026”), press Enter</h3>
+      <div class="pair" data-pair='{"lists":["events"],"events":3}'></div>
+
+      <h2>4. Remove: undo toast (recommended) and confirm</h2>
+      <p class="note">
+        Undo: the item goes at once, focus moves to the item that took its place, the toast offers Undo. The toast sits
+        in the DOM straight after the list, so Tab from the list reaches Undo, and Ctrl/Cmd+Z works while focus is in
+        the list. Confirm: a popover (a bottom sheet on the phone) with Cancel and Remove; focus starts on Cancel.
+      </p>
+      <h3>A. Undo toast <span class="tag rec">recommended</span></h3>
+      <div
+        class="pair"
+        data-pair='{"lists":["roster"],"roster":3,"remove":"undo","pre":"remove:roster:1","sticky":true}'
+      ></div>
+      <h3>B. Confirm</h3>
+      <div
+        class="pair"
+        data-pair='{"lists":["roster"],"roster":3,"remove":"confirm","pre":"confirm:roster:1","sticky":true,"open":{"roster":1}}'
+      ></div>
+
+      <h2>5. At the maximum (and minimum)</h2>
+      <p class="note">
+        This roster allows 6 and holds 6. Add is inert and says “Maximum of 6 artists. Remove one to add another.” The
+        tag reads “6 of 6”. Remove one and Add comes back. A list may also set a minimum: the last frame holds the
+        minimum (1 artist) and Remove is inert with its reason.
+      </p>
+      <div class="pair" data-pair='{"lists":["roster"],"roster":6,"open":{"roster":5}}'></div>
+      <div
+        class="solo"
+        data-pair='{"lists":["roster"],"roster":1,"solo":"desktop","open":{"roster":0},"title":"At the minimum · desktop"}'
+      ></div>
+
+      <h2>6. Focus after each operation, and what is announced</h2>
+      <p class="note">
+        The announcements go to one polite live region (<code>role="status"</code>) that the chrome already owns. Each
+        demo frame above prints what it announced under it, newest first; use a screen reader to confirm the real thing.
+        “{item}” is the item's label: the value of the field named by <code>data-edit-item-label</code>, else “{noun}
+        {position}”.
+      </p>
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Focus lands on</th>
+              <th>Announcement (exact)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Move up / down (button or arrow key)</td>
+              <td>
+                The same button on the moved item. If that button is now inert (the item reached an end), the opposite
+                move button.
+              </td>
+              <td><code>Tobias Lindqvist moved to position 1 of 3.</code></td>
+            </tr>
+            <tr>
+              <td>Drag and drop</td>
+              <td>The item's drag handle.</td>
+              <td><code>Tobias Lindqvist moved to position 1 of 3.</code></td>
+            </tr>
+            <tr>
+              <td>Date saved in an ordered-by-data list</td>
+              <td>The date field, now in its new place.</td>
+              <td>
+                <code>Winter Warehouse is now at position 3 of 4, in date order.</code> (nothing if it didn't move)
+              </td>
+            </tr>
+            <tr>
+              <td>Add</td>
+              <td>The new item's first field, open for typing.</td>
+              <td><code>New artist added at position 4 of 6. Editing name.</code></td>
+            </tr>
+            <tr>
+              <td>Duplicate</td>
+              <td>The copy's first field, open, text selected.</td>
+              <td><code>Winter Warehouse duplicated. The copy is at position 2 of 4. Editing date.</code></td>
+            </tr>
+            <tr>
+              <td>Remove (undo)</td>
+              <td>
+                The toolbar of the item now at that position; the previous item if it was last; the Add button if the
+                list is now empty.
+              </td>
+              <td>
+                <code>Ines Duarte removed. 2 left. Undo: press Ctrl+Z, or find the Undo button after the list.</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Undo</td>
+              <td>The restored item's toolbar.</td>
+              <td><code>Ines Duarte restored at position 3 of 3.</code></td>
+            </tr>
+            <tr>
+              <td>Remove (confirm) opens</td>
+              <td>Cancel button in the popover.</td>
+              <td>The dialog's name: <code>Remove Ines Duarte?</code></td>
+            </tr>
+            <tr>
+              <td>Confirm: Cancel / Escape</td>
+              <td>The item's Remove button.</td>
+              <td>(none)</td>
+            </tr>
+            <tr>
+              <td>Confirm: Remove</td>
+              <td>As Remove (undo).</td>
+              <td><code>Ines Duarte removed. 2 left.</code></td>
+            </tr>
+            <tr>
+              <td>Inert control activated</td>
+              <td>Stays.</td>
+              <td>
+                <code>Maximum of 6 artists. Remove one to add another.</code> / <code>At least 1 artist needed.</code> /
+                <code>Mara Okoye is already first.</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Touch: chip opens / closes</td>
+              <td>The chip (it keeps focus).</td>
+              <td>(none; <code>aria-expanded</code> changes)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Notes: proposed public surface</h2>
+      <p class="note">
+        A proposal for review, no code yet. Per CLAUDE.md the attributes, the <code>mountEditor</code> option and the
+        <code>defaultStrings</code> keys are public API, so they are listed in full.
+      </p>
+      <h3>Attributes a host emits</h3>
+      <p class="note">
+        Only for signed-in editors, like <code>data-edit-field</code>. Likely through
+        <code>editable()</code> (<code>edit.list(...)</code>, <code>edit.item(...)</code>) so hosts never hand-write
+        them.
+      </p>
+      <pre>
+&lt;ul data-edit-list="artist/list:artists"
+    data-edit-list-label="Artists"
+    data-edit-list-noun="artist"
+    data-edit-list-min="1" data-edit-list-max="6"
+    data-edit-list-order="manual"        &lt;!-- or "data": no handle, no move buttons --&gt;
+    data-edit-list-duplicate&gt;             &lt;!-- present = Duplicate on --&gt;
+  &lt;li data-edit-item="artist/list:artists[_key=a1b2]"   &lt;!-- itemPath(base, item, index) --&gt;
+      data-edit-item-label="name"&gt;      &lt;!-- field name whose value labels the item --&gt;
+    &lt;img data-edit-field="artist/list:artists[_key=a1b2].photo" data-edit-type="image"&gt;
+    &lt;h3 data-edit-field="artist/list:artists[_key=a1b2].name" data-edit-type="text"&gt;…&lt;/h3&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;</pre>
+      <ul>
+        <li>
+          <code>data-edit-list</code> is <code>"&lt;docKey&gt;:&lt;path&gt;"</code>, the same grammar as
+          <code>data-edit-field</code>. Its children are the items.
+        </li>
+        <li>
+          <code>data-edit-item</code> is the full address of the item, built with <code>itemPath</code> so it uses
+          <code>[_key=…]</code> when the item has a <code>_key</code> and an index otherwise. Index items work but can
+          drift under concurrent edits, as <code>paths.md</code> already says.
+        </li>
+        <li>
+          Absent attributes mean: <code>min</code> 0, no <code>max</code>, <code>order="manual"</code>, no Duplicate.
+          <code>label</code> and <code>noun</code> default to the path's last name, singularised by the host if it wants
+          better.
+        </li>
+        <li>
+          Chrome operations use the existing <code>ArrayOp</code>s (<code>insert</code>, <code>move</code>,
+          <code>remove</code>) on the list path. A stale list surfaces as the existing conflict toast
+          (<code>actionConflict</code>).
+        </li>
+        <li>
+          The list and item elements get <code>.cms-listedit</code> and <code>.cms-item</code> (like
+          <code>.cms-field</code>), plus <code>.cms-item__tools</code> (chrome-owned, <code>.cms-root</code>) inside
+          each item. The token block in <code>chrome.css</code> gains those two selectors.
+        </li>
+      </ul>
+      <h3>A new item's default, and its markup</h3>
+      <pre>
+mountEditor({
+  lists: {
+    "artist/list:artists": {
+      newItem: () =&gt; ({ name: "New artist", line: "", visible: true }),  // _key added by the chrome if missing
+      focusField: "name",                       // default: the first data-edit-field inside the new item
+    },
+    "event/list:events": {
+      newItem: () =&gt; ({ title: "New event", date: null, venue: "" }),
+    },
+  },
+});</pre>
+      <ul>
+        <li>
+          Keyed by the list's <code>docKey:path</code>. Without an entry the list can't Add (the button is not shown)
+          but can still reorder and remove.
+        </li>
+        <li>
+          <code>_key</code>: the chrome generates a short id when <code>newItem</code> returns none (decision for
+          review: <code>paths.md</code> today says the host owns <code>_key</code>; this is the one place the chrome
+          creates items).
+        </li>
+        <li>
+          Markup (D8): (a) lean: after the op is saved, the chrome re-fetches the page and replaces the
+          <code>[data-edit-list]</code> element, then focuses the new item's first field. (b) option:
+          <code>render(item, index) =&gt; HTMLElement</code> in the same entry for hosts with a client template.
+        </li>
+      </ul>
+      <h3>New <code>defaultStrings</code> keys</h3>
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Default</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>listTag</code></td>
+              <td>{label} · {count} of {max}</td>
+            </tr>
+            <tr>
+              <td><code>listTagNoMax</code></td>
+              <td>{label} · {count}</td>
+            </tr>
+            <tr>
+              <td><code>listAdd</code></td>
+              <td>Add {noun}</td>
+            </tr>
+            <tr>
+              <td><code>listEmpty</code></td>
+              <td>No {plural} yet.</td>
+            </tr>
+            <tr>
+              <td><code>listFull</code></td>
+              <td>Maximum of {max} {plural}. Remove one to add another.</td>
+            </tr>
+            <tr>
+              <td><code>listAtMin</code></td>
+              <td>At least {min} {noun} needed.</td>
+            </tr>
+            <tr>
+              <td><code>itemToolbar</code></td>
+              <td>{item}, {position} of {count}: actions</td>
+            </tr>
+            <tr>
+              <td><code>itemActions</code></td>
+              <td>Actions for {item}, {position} of {count}</td>
+            </tr>
+            <tr>
+              <td><code>itemDrag</code></td>
+              <td>Drag to reorder {item}, or use the move buttons</td>
+            </tr>
+            <tr>
+              <td><code>itemMoveUp</code></td>
+              <td>Move {item} up</td>
+            </tr>
+            <tr>
+              <td><code>itemMoveDown</code></td>
+              <td>Move {item} down</td>
+            </tr>
+            <tr>
+              <td><code>itemDuplicate</code></td>
+              <td>Duplicate {item}</td>
+            </tr>
+            <tr>
+              <td><code>itemRemove</code></td>
+              <td>Remove {item}</td>
+            </tr>
+            <tr>
+              <td><code>itemIsFirst</code></td>
+              <td>{item} is already first.</td>
+            </tr>
+            <tr>
+              <td><code>itemIsLast</code></td>
+              <td>{item} is already last.</td>
+            </tr>
+            <tr>
+              <td><code>itemMoved</code></td>
+              <td>{item} moved to position {position} of {count}.</td>
+            </tr>
+            <tr>
+              <td><code>itemSorted</code></td>
+              <td>{item} is now at position {position} of {count}, in date order.</td>
+            </tr>
+            <tr>
+              <td><code>itemAdded</code></td>
+              <td>{item} added at position {position} of {count}. Editing {field}.</td>
+            </tr>
+            <tr>
+              <td><code>itemDuplicated</code></td>
+              <td>{item} duplicated. The copy is at position {position} of {count}. Editing {field}.</td>
+            </tr>
+            <tr>
+              <td><code>itemRemoved</code></td>
+              <td>{item} removed. {count} left.</td>
+            </tr>
+            <tr>
+              <td><code>itemRemovedUndo</code></td>
+              <td>{item} removed. {count} left. Undo: press Ctrl+Z, or find the Undo button after the list.</td>
+            </tr>
+            <tr>
+              <td><code>itemRestored</code></td>
+              <td>{item} restored at position {position} of {count}.</td>
+            </tr>
+            <tr>
+              <td><code>removedToast</code></td>
+              <td>Removed {item}.</td>
+            </tr>
+            <tr>
+              <td><code>undo</code></td>
+              <td>Undo</td>
+            </tr>
+            <tr>
+              <td><code>removeConfirmTitle</code></td>
+              <td>Remove {item}?</td>
+            </tr>
+            <tr>
+              <td><code>removeConfirmBody</code></td>
+              <td>This removes it from the draft. The published page doesn't change until you press Publish.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Other things this implies</h3>
+      <ul>
+        <li>
+          Docs: <code>docs/chrome.md</code> (attributes, option, keyboard) and <code>docs/paths.md</code> (<code
+            >_key</code
+          >
+          creation). CHANGELOG under Unreleased.
+        </li>
+        <li>
+          Real-browser e2e on the demo site, because happy-dom can't prove hover, focus-within or pointer drag:
+          keyboard-only add/move/remove/undo, touch chip, and an axe pass on the toolbar.
+        </li>
+        <li>
+          Dark scheme: nothing new. Every new rule uses the existing tokens, which the chrome already flips under
+          <code>prefers-color-scheme: dark</code>.
+        </li>
+        <li>
+          Reduced motion: the only new transition is the toolbar's 120ms opacity fade, which is already within the
+          chrome's reduced-motion allowance.
+        </li>
+      </ul>
+    </main>
+
+    <script>
+      (() => {
+        const ICONS = {
+          grip: '<circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/>',
+          up: '<path d="m6 15 6-6 6 6"/>',
+          down: '<path d="m6 9 6 6 6-6"/>',
+          dup: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+          remove: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+          plus: '<path d="M12 5v14M5 12h14"/>',
+        };
+        const icon = (name) =>
+          `<svg viewBox="0 0 24 24" width="20" height="20" fill="${name === "grip" ? "currentColor" : "none"}" stroke="${name === "grip" ? "none" : "currentColor"}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
+        const ROSTER = [
+          { id: "r1", name: "Mara Okoye", line: "Field recordings and slow synths", hue: 210 },
+          { id: "r2", name: "Tobias Lindqvist", line: "Tape loops, one lamp", hue: 20 },
+          { id: "r3", name: "Ines Duarte", line: "Cello, pedals, a small choir", hue: 150 },
+          { id: "r4", name: "Kofi Mensah", line: "Drum machines and dub", hue: 280 },
+          { id: "r5", name: "Yuki Tanabe", line: "Piano miniatures", hue: 340 },
+          { id: "r6", name: "Sol Hartmann", line: "Modular, mostly patience", hue: 90 },
+        ];
+        const EVENTS = [
+          { id: "e1", date: new Date(2026, 11, 5).getTime(), title: "Winter Warehouse", venue: "Dock Road Arches" },
+          { id: "e2", date: new Date(2026, 11, 12).getTime(), title: "Listening Room", venue: "St Anne's Hall" },
+          { id: "e3", date: new Date(2027, 0, 9).getTime(), title: "New Year Drift", venue: "The Boathouse" },
+          { id: "e4", date: new Date(2027, 1, 6).getTime(), title: "Open Decks", venue: "Corner Bar" },
+        ];
+        const LISTS = {
+          roster: {
+            label: "Artists",
+            noun: "artist",
+            plural: "artists",
+            max: 6,
+            min: 1,
+            ordered: true,
+            duplicate: false,
+            firstField: "name",
+            itemLabel: (item, position) => item.name || `Artist ${position}`,
+          },
+          events: {
+            label: "Events",
+            noun: "event",
+            plural: "events",
+            max: 8,
+            min: 0,
+            ordered: false,
+            duplicate: true,
+            firstField: "date",
+            itemLabel: (item, position) => item.title || `Event ${position}`,
+          },
+        };
+
+        const esc = (text) =>
+          String(text).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]);
+        const formatDate = (stamp) =>
+          new Date(stamp).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+        const initials = (name) =>
+          name
+            .split(/\s+/)
+            .map((part) => part[0] || "")
+            .join("")
+            .slice(0, 2)
+            .toUpperCase();
+        let counter = 100;
+        const uid = () => `n${counter++}`;
+        const UNDO_MS = 15000;
+
+        function createFrame(parent, config, kind) {
+          const touch = kind === "phone";
+          const wrapper = document.createElement("figure");
+          wrapper.innerHTML = `<figcaption></figcaption><div class="frame" data-input="${touch ? "touch" : "pointer"}"><div class="host"></div></div><div class="log"><b>Announced</b><ol></ol></div>`;
+          parent.append(wrapper);
+          const caption = wrapper.querySelector("figcaption");
+          caption.textContent =
+            config.title && config.solo
+              ? config.title
+              : `${touch ? "Phone · 390 · touch" : "Desktop · pointer"}${config.title ? " · " + config.title : ""}`;
+          const frame = wrapper.querySelector(".frame");
+          if (config.mark) frame.dataset.mark = config.mark;
+          const state = {
+            frame,
+            host: frame.querySelector(".host"),
+            log: wrapper.querySelector(".log ol"),
+            touch,
+            config,
+            lists: config.lists,
+            data: {
+              roster: ROSTER.slice(0, config.roster ?? 3).map((x) => ({ ...x })),
+              events: EVENTS.slice(0, config.events ?? 3).map((x) => ({ ...x })),
+            },
+            open: { roster: null, events: null },
+            undo: [],
+            timer: null,
+            removeMode: config.remove || "undo",
+          };
+          if (config.open) {
+            for (const [key, index] of Object.entries(config.open))
+              state.open[key] = state.data[key][index]?.id ?? null;
+          }
+          frame.insertAdjacentHTML(
+            "beforeend",
+            `<div class="cms-root cms-bar" role="region" aria-label="Editing"><div class="cms-bar__state"><span>Editing</span><span class="cms-bar__changes">drafts save as you go</span></div><div class="cms-bar__actions"><button type="button" class="cms-btn cms-btn--primary">Done</button></div></div><div class="cms-root cms-live" role="status" aria-live="polite"></div><div class="cms-root" data-layer></div>`,
+          );
+          state.live = frame.querySelector(".cms-live");
+          state.layer = frame.querySelector("[data-layer]");
+          bind(state);
+          render(state);
+          if (config.pre) {
+            const [op, key, index] = config.pre.split(":");
+            const items = state.data[key];
+            if (op === "add") add(state, key, { quiet: true });
+            if (op === "remove") remove(state, key, items[Number(index)].id, { quiet: true });
+            if (op === "confirm") confirm(state, key, items[Number(index)].id, { quiet: true });
+          }
+          return state;
+        }
+
+        function say(state, text) {
+          state.live.textContent = "";
+          requestAnimationFrame(() => (state.live.textContent = text));
+          const entry = document.createElement("li");
+          entry.textContent = text;
+          state.log.prepend(entry);
+          while (state.log.children.length > 3) state.log.lastChild.remove();
+        }
+
+        const fieldLabelOf = (key) => LISTS[key].firstField;
+
+        function listHtml(state, key) {
+          const def = LISTS[key];
+          const items = state.data[key];
+          const count = items.length;
+          const full = count >= def.max;
+          const atMin = count <= def.min;
+          const reasonId = `${state.id}-${key}-reason`;
+          const rows = items
+            .map((item, index) => {
+              const position = index + 1;
+              const label = def.itemLabel(item, position);
+              const isOpen = state.open[key] === item.id;
+              const name = esc(label);
+              const buttons = [];
+              if (def.ordered) {
+                buttons.push(
+                  `<button type="button" class="cms-btn cms-btn--ghost cms-item__grip" data-act="grip" aria-label="${esc(`Drag to reorder ${label}, or use the move buttons`)}">${icon("grip")}</button>`,
+                  `<button type="button" class="cms-btn cms-btn--ghost" data-act="up" aria-label="Move ${name} up" ${index === 0 ? 'aria-disabled="true"' : ""}>${icon("up")}</button>`,
+                  `<button type="button" class="cms-btn cms-btn--ghost" data-act="down" aria-label="Move ${name} down" ${index === count - 1 ? 'aria-disabled="true"' : ""}>${icon("down")}</button>`,
+                );
+              }
+              if (def.duplicate) {
+                buttons.push(
+                  `<button type="button" class="cms-btn cms-btn--ghost" data-act="dup" aria-label="Duplicate ${name}" ${full ? 'aria-disabled="true"' : ""}>${icon("dup")}</button>`,
+                );
+              }
+              buttons.push(
+                `<button type="button" class="cms-btn cms-btn--ghost cms-item__danger" data-act="remove" aria-label="Remove ${name}" ${atMin ? 'aria-disabled="true"' : ""}>${icon("remove")}</button>`,
+              );
+              const body =
+                key === "roster"
+                  ? `<div class="r-body"><div class="photo cms-field" style="--hue:${item.hue}" tabindex="0" role="button" data-field="photo" aria-label="Photo of ${name}: replace">${esc(initials(item.name))}</div><div><h4 class="cms-field" tabindex="0" data-field="name">${esc(item.name)}</h4><p class="cms-field" tabindex="0" data-field="line">${esc(item.line) || '<span class="placeholder">Add a line</span>'}</p></div></div>`
+                  : `<div class="e-body"><span class="cms-field e-date" tabindex="0" data-field="date">${item.date ? formatDate(item.date) : '<span class="placeholder">Add a date</span>'}</span><h4 class="cms-field" tabindex="0" data-field="title">${esc(item.title)}</h4><p class="cms-field" tabindex="0" data-field="venue">${esc(item.venue) || '<span class="placeholder">Add a venue</span>'}</p></div>`;
+              return `<li class="cms-item" data-id="${item.id}" ${isOpen ? "data-open" : ""}><div class="cms-root cms-item__tools" role="toolbar" aria-label="${name}, ${position} of ${count}: actions"><button type="button" class="cms-btn cms-item__chip" data-act="chip" aria-expanded="${isOpen}" aria-label="Actions for ${name}, ${position} of ${count}"><span class="cms-item__chip-closed" aria-hidden="true">⋯ ${position} of ${count}</span><span class="cms-item__chip-open" aria-hidden="true">✕</span></button>${buttons.join("")}</div>${body}</li>`;
+            })
+            .join("");
+          const tag = `${def.label} · ${count} of ${def.max}`;
+          const reason = full
+            ? `Maximum of ${def.max} ${def.plural}. Remove one to add another.`
+            : count <= def.min && count > 0
+              ? `At least ${def.min} ${def.noun} needed.`
+              : "";
+          return `<section class="cms-listedit" data-list="${key}" aria-label="${def.label}">
+            <div class="cms-listedit__head"><span class="cms-listedit__tag cms-root">${esc(tag)}</span></div>
+            ${count ? `<ul class="cms-listedit__items">${rows}</ul>` : `<p class="cms-listedit__empty cms-root">No ${def.plural} yet.</p>`}
+            <div class="cms-listedit__add cms-root"><button type="button" class="cms-btn cms-btn--add" data-act="add" ${full ? `aria-disabled="true" aria-describedby="${reasonId}"` : ""}>${icon("plus")} Add ${def.noun}</button><span class="cms-listedit__reason" id="${reasonId}" data-reason>${esc(reason)}</span></div>
+          </section>`;
+        }
+
+        let frameCounter = 0;
+        function render(state) {
+          state.id ||= `f${frameCounter++}`;
+          state.host.innerHTML =
+            `<h1>Harbour Collective</h1>` +
+            state.lists.map((key) => `<h2>${LISTS[key].label}</h2>` + listHtml(state, key)).join("");
+          state.host.querySelectorAll(".cms-item__tools").forEach(setRoving);
+        }
+
+        function setRoving(toolbar, active) {
+          const buttons = [...toolbar.querySelectorAll("button:not(.cms-item__chip)")];
+          const target = active && buttons.includes(active) ? active : buttons[0];
+          buttons.forEach((button) => (button.tabIndex = button === target ? 0 : -1));
+        }
+
+        function itemEl(state, key, id) {
+          return state.host.querySelector(`[data-list="${key}"] [data-id="${id}"]`);
+        }
+        function focusTools(state, key, id, act) {
+          const toolbar = itemEl(state, key, id)?.querySelector(".cms-item__tools");
+          if (!toolbar) return;
+          const wanted = (act && toolbar.querySelector(`[data-act="${act}"]`)) || null;
+          const target =
+            wanted && wanted.getAttribute("aria-disabled") !== "true"
+              ? wanted
+              : toolbar.querySelector("button:not(.cms-item__chip)");
+          const chip = state.touch && !itemEl(state, key, id).hasAttribute("data-open");
+          const focusTarget = chip ? toolbar.querySelector(".cms-item__chip") : target;
+          setRoving(toolbar, target);
+          focusTarget.focus();
+        }
+
+        function startEdit(state, el, { select = false, quiet = false } = {}) {
+          if (!el || el.classList.contains("cms-field--editing") || el.dataset.field === "photo") return;
+          const field = el.dataset.field;
+          const key = el.closest("[data-list]").dataset.list;
+          const id = el.closest("[data-id]").dataset.id;
+          const item = state.data[key].find((entry) => entry.id === id);
+          const original = field === "date" ? (item.date ? formatDate(item.date) : "") : item[field];
+          el.textContent = original;
+          el.classList.add("cms-field--editing");
+          el.contentEditable = "true";
+          if (!quiet) {
+            el.focus();
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            if (!select) range.collapse(false);
+            const selection = getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          const finish = (commit, viaKey) => {
+            el.removeEventListener("keydown", onKey);
+            el.removeEventListener("blur", onBlur);
+            el.contentEditable = "false";
+            el.classList.remove("cms-field--editing");
+            if (commit) commitField(state, key, id, field, el.textContent.trim(), viaKey);
+            else renderField(el, key, item, field);
+            if (viaKey) el.focus();
+          };
+          const onKey = (event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              finish(true, true);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              finish(false, true);
+            }
+          };
+          const onBlur = () => finish(true, false);
+          el.addEventListener("keydown", onKey);
+          el.addEventListener("blur", onBlur);
+        }
+
+        function renderField(el, key, item, field) {
+          if (field === "date")
+            el.innerHTML = item.date ? formatDate(item.date) : '<span class="placeholder">Add a date</span>';
+          else el.innerHTML = esc(item[field]) || `<span class="placeholder">Add a ${field}</span>`;
+          if (field === "name") el.closest(".r-body").querySelector(".photo").textContent = initials(item.name);
+        }
+
+        function commitField(state, key, id, field, text, viaKey) {
+          const items = state.data[key];
+          const item = items.find((entry) => entry.id === id);
+          if (field === "date") {
+            const parsed = text ? Date.parse(text) : NaN;
+            if (Number.isNaN(parsed)) {
+              renderField(itemEl(state, key, id).querySelector('[data-field="date"]'), key, item, field);
+              return;
+            }
+            item.date = parsed;
+            const before = items.indexOf(item);
+            items.sort((a, b) => (a.date ?? Infinity) - (b.date ?? Infinity));
+            const after = items.indexOf(item);
+            render(state);
+            if (viaKey) itemEl(state, key, id).querySelector('[data-field="date"]').focus();
+            if (before !== after) {
+              say(
+                state,
+                `${LISTS[key].itemLabel(item, after + 1)} is now at position ${after + 1} of ${items.length}, in date order.`,
+              );
+              const moved = itemEl(state, key, id);
+              moved.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 400 });
+            }
+            return;
+          }
+          item[field] = text;
+          renderField(itemEl(state, key, id).querySelector(`[data-field="${field}"]`), key, item, field);
+        }
+
+        function move(state, key, id, direction) {
+          const items = state.data[key];
+          const from = items.findIndex((entry) => entry.id === id);
+          const to = from + direction;
+          const item = items[from];
+          const label = LISTS[key].itemLabel(item, from + 1);
+          if (to < 0 || to >= items.length) {
+            say(state, direction < 0 ? `${label} is already first.` : `${label} is already last.`);
+            return;
+          }
+          items.splice(to, 0, items.splice(from, 1)[0]);
+          render(state);
+          say(state, `${label} moved to position ${to + 1} of ${items.length}.`);
+          focusTools(state, key, id, direction < 0 ? "up" : "down");
+          if (
+            !itemEl(state, key, id).querySelector(`[data-act="${direction < 0 ? "up" : "down"}"][aria-disabled="true"]`)
+          )
+            return;
+          focusTools(state, key, id, direction < 0 ? "down" : "up");
+        }
+
+        function add(state, key, { quiet = false } = {}) {
+          const def = LISTS[key];
+          const items = state.data[key];
+          if (items.length >= def.max) {
+            say(state, `Maximum of ${def.max} ${def.plural}. Remove one to add another.`);
+            return;
+          }
+          const item =
+            key === "roster"
+              ? { id: uid(), name: "New artist", line: "", hue: Math.floor(Math.random() * 360) }
+              : { id: uid(), date: null, title: "New event", venue: "" };
+          items.push(item);
+          render(state);
+          const el = itemEl(state, key, item.id);
+          startEdit(state, el.querySelector(`[data-field="${def.firstField}"]`), { select: true, quiet });
+          if (!quiet)
+            say(
+              state,
+              `${def.itemLabel(item, items.length)} added at position ${items.length} of ${items.length}. Editing ${def.firstField}.`,
+            );
+          else
+            say(
+              state,
+              `${def.itemLabel(item, items.length)} added at position ${items.length} of ${items.length}. Editing ${def.firstField}.`,
+            );
+        }
+
+        function duplicate(state, key, id) {
+          const def = LISTS[key];
+          const items = state.data[key];
+          if (items.length >= def.max) {
+            say(state, `Maximum of ${def.max} ${def.plural}. Remove one to add another.`);
+            return;
+          }
+          const index = items.findIndex((entry) => entry.id === id);
+          const copy = { ...items[index], id: uid() };
+          items.splice(index + 1, 0, copy);
+          render(state);
+          startEdit(state, itemEl(state, key, copy.id).querySelector(`[data-field="${def.firstField}"]`), {
+            select: true,
+          });
+          say(
+            state,
+            `${def.itemLabel(copy, index + 2)} duplicated. The copy is at position ${index + 2} of ${items.length}. Editing ${def.firstField}.`,
+          );
+        }
+
+        function remove(state, key, id, { confirmed = false, quiet = false } = {}) {
+          const def = LISTS[key];
+          const items = state.data[key];
+          if (items.length <= def.min) {
+            say(state, `At least ${def.min} ${def.noun} needed.`);
+            return;
+          }
+          if (state.removeMode === "confirm" && !confirmed) return confirm(state, key, id, { quiet });
+          const index = items.findIndex((entry) => entry.id === id);
+          const [item] = items.splice(index, 1);
+          const label = def.itemLabel(item, index + 1);
+          if (state.removeMode === "undo") state.undo.push({ key, item, index });
+          closeLayer(state);
+          render(state);
+          const next = items[index] || items[index - 1];
+          if (!quiet) {
+            if (next) focusTools(state, key, next.id);
+            else state.host.querySelector(`[data-list="${key}"] [data-act="add"]`).focus();
+          }
+          if (state.removeMode === "undo") {
+            say(
+              state,
+              `${label} removed. ${items.length} left. Undo: press Ctrl+Z, or find the Undo button after the list.`,
+            );
+            showToast(state, label);
+          } else {
+            say(state, `${label} removed. ${items.length} left.`);
+          }
+        }
+
+        function showToast(state, label) {
+          clearTimeout(state.timer);
+          state.layer.innerHTML = `<div class="cms-toast" data-kind="info"><p class="cms-toast__message">Removed ${esc(label)}.</p><div class="cms-toast__actions"><button type="button" class="cms-btn" data-act="undo">Undo</button></div></div>`;
+          if (!state.config.sticky) state.timer = setTimeout(() => closeLayer(state), UNDO_MS);
+        }
+
+        function undo(state) {
+          const last = state.undo.pop();
+          if (!last) return;
+          const { key, item, index } = last;
+          state.data[key].splice(index, 0, item);
+          render(state);
+          if (state.undo.length) showToast(state, LISTS[key].itemLabel(state.undo.at(-1).item, 0));
+          else closeLayer(state);
+          focusTools(state, key, item.id);
+          say(
+            state,
+            `${LISTS[key].itemLabel(item, index + 1)} restored at position ${index + 1} of ${state.data[key].length}.`,
+          );
+        }
+
+        function closeLayer(state) {
+          clearTimeout(state.timer);
+          state.layer.innerHTML = "";
+        }
+
+        function confirm(state, key, id, { quiet = false } = {}) {
+          const items = state.data[key];
+          const index = items.findIndex((entry) => entry.id === id);
+          const label = LISTS[key].itemLabel(items[index], index + 1);
+          const li = itemEl(state, key, id);
+          li.setAttribute("data-open", "");
+          const frameTop = state.frame.getBoundingClientRect().top;
+          state.layer.innerHTML = `<div class="cms-popover" role="dialog" aria-labelledby="${state.id}-ct" data-confirm="${key}:${id}"><p class="cms-popover__title" id="${state.id}-ct">Remove ${esc(label)}?</p><p class="cms-popover--note">This removes it from the draft. The published page doesn't change until you press Publish.</p><div class="cms-popover__actions"><button type="button" class="cms-btn" data-act="cancel">Cancel</button><button type="button" class="cms-btn cms-btn--danger" data-act="confirm">Remove</button></div></div>`;
+          const popover = state.layer.firstElementChild;
+          popover.style.setProperty("--cms-popover-top", `${li.getBoundingClientRect().bottom - frameTop - 16}px`);
+          if (!quiet) popover.querySelector('[data-act="cancel"]').focus();
+        }
+
+        function bind(state) {
+          const { frame } = state;
+          frame.addEventListener("click", (event) => {
+            const button = event.target.closest("[data-act]");
+            const field = event.target.closest(".cms-field[data-field]");
+            if (!button && field) {
+              if (field.dataset.field === "photo") say(state, "The photo picker opens here (not in this prototype).");
+              else startEdit(state, field);
+              return;
+            }
+            if (!button) return;
+            const act = button.dataset.act;
+            const itemNode = button.closest("[data-id]");
+            const listNode = button.closest("[data-list]");
+            const id = itemNode?.dataset.id;
+            const key = listNode?.dataset.list;
+            if (act === "chip") {
+              const opening = !itemNode.hasAttribute("data-open");
+              state.host.querySelectorAll("[data-open]").forEach((node) => node.removeAttribute("data-open"));
+              state.host
+                .querySelectorAll(".cms-item__chip")
+                .forEach((chip) => chip.setAttribute("aria-expanded", "false"));
+              if (opening) {
+                itemNode.setAttribute("data-open", "");
+                button.setAttribute("aria-expanded", "true");
+              }
+              state.open[key] = opening ? id : null;
+            } else if (act === "add") add(state, key);
+            else if (act === "up" || act === "down") move(state, key, id, act === "up" ? -1 : 1);
+            else if (act === "dup") duplicate(state, key, id);
+            else if (act === "remove") remove(state, key, id);
+            else if (act === "undo") undo(state);
+            else if (act === "cancel") {
+              const [popKey, popId] = button.closest("[data-confirm]").dataset.confirm.split(":");
+              closeLayer(state);
+              itemEl(state, popKey, popId)?.removeAttribute("data-open");
+              itemEl(state, popKey, popId)?.querySelector('[data-act="remove"]').focus();
+            } else if (act === "confirm") {
+              const [popKey, popId] = button.closest("[data-confirm]").dataset.confirm.split(":");
+              remove(state, popKey, popId, { confirmed: true });
+            }
+          });
+          frame.addEventListener("keydown", (event) => {
+            const tools = event.target.closest(".cms-item__tools");
+            if (tools && event.target.dataset.act !== "chip") {
+              const buttons = [...tools.querySelectorAll("button:not(.cms-item__chip)")];
+              const at = buttons.indexOf(event.target);
+              let to = null;
+              if (event.key === "ArrowRight") to = (at + 1) % buttons.length;
+              if (event.key === "ArrowLeft") to = (at - 1 + buttons.length) % buttons.length;
+              if (event.key === "Home") to = 0;
+              if (event.key === "End") to = buttons.length - 1;
+              if (to !== null) {
+                event.preventDefault();
+                setRoving(tools, buttons[to]);
+                buttons[to].focus();
+              }
+              if (event.target.dataset.act === "grip" && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+                event.preventDefault();
+                const item = tools.closest("[data-id]");
+                move(
+                  state,
+                  item.closest("[data-list]").dataset.list,
+                  item.dataset.id,
+                  event.key === "ArrowUp" ? -1 : 1,
+                );
+              }
+            }
+            if (event.key === "Escape") {
+              const popover = event.target.closest("[data-confirm]");
+              if (popover) popover.querySelector('[data-act="cancel"]').click();
+              else if (event.target.closest(".cms-item[data-open]") && state.touch && !event.target.isContentEditable) {
+                event.target.closest(".cms-item").removeAttribute("data-open");
+              }
+            }
+            if (
+              (event.ctrlKey || event.metaKey) &&
+              event.key.toLowerCase() === "z" &&
+              !event.target.isContentEditable &&
+              state.undo.length
+            ) {
+              event.preventDefault();
+              undo(state);
+            }
+          });
+          frame.addEventListener("focusin", (event) => {
+            const tools = event.target.closest(".cms-item__tools");
+            if (tools && event.target.dataset.act !== "chip") setRoving(tools, event.target);
+          });
+          frame.addEventListener("pointerdown", (event) => {
+            const grip = event.target.closest('[data-act="grip"]');
+            if (!grip || event.button) return;
+            event.preventDefault();
+            const li = grip.closest(".cms-item");
+            const ul = li.parentElement;
+            const key = li.closest("[data-list]").dataset.list;
+            li.classList.add("cms-item--dragging");
+            ul.setPointerCapture(event.pointerId);
+            const onMove = (moveEvent) => {
+              const others = [...ul.children].filter((child) => child !== li);
+              const before = others.find((child) => {
+                const box = child.getBoundingClientRect();
+                return moveEvent.clientY < box.top + box.height / 2;
+              });
+              if (before) ul.insertBefore(li, before);
+              else ul.append(li);
+            };
+            const onUp = () => {
+              ul.removeEventListener("pointermove", onMove);
+              ul.removeEventListener("pointerup", onUp);
+              ul.removeEventListener("pointercancel", onUp);
+              li.classList.remove("cms-item--dragging");
+              const order = [...ul.children].map((child) => child.dataset.id);
+              const items = state.data[key];
+              const dragged = items.find((entry) => entry.id === li.dataset.id);
+              const before = items.indexOf(dragged);
+              state.data[key] = order.map((id) => items.find((entry) => entry.id === id));
+              const after = state.data[key].indexOf(dragged);
+              render(state);
+              focusTools(state, key, dragged.id, "grip");
+              if (before !== after)
+                say(
+                  state,
+                  `${LISTS[key].itemLabel(dragged, after + 1)} moved to position ${after + 1} of ${items.length}.`,
+                );
+            };
+            ul.addEventListener("pointermove", onMove);
+            ul.addEventListener("pointerup", onUp);
+            ul.addEventListener("pointercancel", onUp);
+          });
+        }
+
+        document.querySelectorAll("[data-pair]").forEach((node) => {
+          const config = JSON.parse(node.dataset.pair);
+          if (config.solo === "desktop") createFrame(node, config, "desktop");
+          else {
+            createFrame(node, config, "phone");
+            createFrame(node, config, "desktop");
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
