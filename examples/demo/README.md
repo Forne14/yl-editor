@@ -58,3 +58,11 @@ raise it for a local run rather than in the specs, so a hung test still fails at
 ```sh
 npm run test:e2e -- --timeout=60000
 ```
+
+## Firefox workers
+
+The Firefox project runs on at most 2 workers. Playwright's Firefox build segfaults in its content process when
+several Firefox workers start together on a loaded machine, always at the same place in the browser (#24). It shows
+as `Page crashed` or `Target crashed`, usually during an axe check, and a rerun passes. It is a browser bug, not a
+chrome one. If it still turns up, rerun the spec on its own (`--project=firefox --workers=1`) rather than adding
+retries.

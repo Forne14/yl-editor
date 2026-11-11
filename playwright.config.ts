@@ -20,7 +20,10 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    // Capped at 2: Playwright's Firefox build (159.0, revision 1572) segfaults in its content process when several
+    // Firefox workers start at once on a loaded machine, at the same site in XUL every time (#24). Fewer Firefox
+    // processes lower that pressure; it is a browser bug, not ours, so this is no substitute for an upstream fix.
+    { name: "firefox", workers: 2, use: { ...devices["Desktop Firefox"] } },
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
   webServer: {
