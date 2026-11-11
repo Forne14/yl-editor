@@ -406,6 +406,21 @@
         background: #dcf3e6;
         color: #1f7a45;
       }
+      .constraint {
+        margin: 24px 0 0;
+        padding: 12px 16px;
+        border-radius: 10px;
+        border: 2px solid #b42318;
+        background: #fff;
+      }
+      .constraint h2 {
+        margin: 0 0 4px;
+        font-size: 1.05rem;
+      }
+      .constraint p {
+        margin: 4px 0;
+        max-width: 72ch;
+      }
       .decisions {
         display: grid;
         gap: 12px;
@@ -656,6 +671,20 @@
         touch device (tools collapse to a chip); desktop frames mimic a pointer device. Frames narrower than 40em use
         the chrome's bottom-sheet layout, the same breakpoint as <code>chrome.css</code>.
       </p>
+
+      <section class="constraint" aria-labelledby="constraint-title">
+        <h2 id="constraint-title">Yassine's constraint (2026-11-11), before any decision below</h2>
+        <p>
+          <strong>No overlapping dashed outlines.</strong> Closely placed elements are grouped inside one larger dashed
+          outline, with a single dashed separator between them. This draft does not follow that yet: its list outline,
+          item outlines and field outlines can sit inside one another and cross. Rework the marking (D1) and the item
+          states around this rule when #28 is picked up.
+        </p>
+        <p class="note">
+          Status: an unreviewed draft made from the South of the River session. None of the decisions below has been
+          taken.
+        </p>
+      </section>
 
       <h2>Decisions for Yassine</h2>
       <p class="note">
