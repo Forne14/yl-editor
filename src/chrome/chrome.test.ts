@@ -2416,6 +2416,100 @@ describe("scheduling", () => {
     expect(sheet.querySelector(".cms-error")).toBeNull();
   });
 
+  test("on: a past time marks the input invalid until it is cleared", async () => {
+    vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    await mount({ scheduling: true });
+    await editText("pages/home:title", "One");
+    const input = dateInput(await openPublishSheet()) as HTMLInputElement;
+    type(input, "2030-06-01T09:00");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    type(input, "");
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  describe("a half-typed Publish at", () => {
+    const INCOMPLETE = "That date and time isn’t complete, so it can’t be scheduled.";
+    /** The state a half-typed datetime-local leaves: an empty value and `badInput`. */
+    const halfType = (input: HTMLInputElement, bad = true) => {
+      input.value = "";
+      Object.defineProperty(input, "validity", { value: { badInput: bad }, configurable: true });
+    };
+
+    async function openHalfTyped() {
+      serve({ "pages/home": { payload: { title: "Hello" } } });
+      await mount({ scheduling: true });
+      await editText("pages/home:title", "One");
+      const sheet = await openPublishSheet();
+      const input = dateInput(sheet) as HTMLInputElement;
+      input.focus();
+      halfType(input);
+      input.dispatchEvent(new Event("input"));
+      return { sheet, input };
+    }
+
+    test("while typing, Publish is disabled but no line shows yet", async () => {
+      const { sheet, input } = await openHalfTyped();
+      expect(buttonNamed("Publish", sheet).disabled).toBe(true);
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      expect(input.hasAttribute("aria-invalid")).toBe(false);
+    });
+
+    test("leaving the input says why, marks it invalid and announces it once", async () => {
+      const { sheet, input } = await openHalfTyped();
+      input.dispatchEvent(new FocusEvent("blur"));
+      const reason = sheet.querySelector(".cms-error");
+      expect(reason?.textContent).toBe(
+        "That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.",
+      );
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      expect(input.getAttribute("aria-describedby")).toBe(reason?.parentElement?.id);
+      expect(document.querySelector(".cms-live")?.textContent).toBe(reason?.textContent);
+      // Back in the input and still half-typed: the line stays.
+      input.focus();
+      input.dispatchEvent(new Event("keyup"));
+      expect(sheet.textContent).toContain(INCOMPLETE);
+      expect(buttonNamed("Publish", sheet).disabled).toBe(true);
+    });
+
+    test("emptying the segments clears the line on the key's release, and Publish comes back", async () => {
+      const { sheet, input } = await openHalfTyped();
+      input.dispatchEvent(new FocusEvent("blur"));
+      halfType(input, false);
+      // Clearing a datetime's last segments changes no `value`, so no `input` fires.
+      input.dispatchEvent(new Event("keyup"));
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      expect(input.hasAttribute("aria-invalid")).toBe(false);
+      expect(buttonNamed("Publish", sheet).disabled).toBe(false);
+    });
+
+    test("min is left alone while it is half-typed, since setting it empties the input in Chromium", async () => {
+      vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+      const { input } = await openHalfTyped();
+      vi.setSystemTime(new Date(2030, 5, 1, 9, 45));
+      input.dispatchEvent(new Event("keyup"));
+      input.dispatchEvent(new FocusEvent("blur"));
+      expect(input.min).toBe("2030-06-01T09:30");
+      halfType(input, false);
+      type(input, "2030-06-01T10:00");
+      expect(input.min).toBe("2030-06-01T09:45");
+    });
+
+    test("completing it swaps the line for the time's own check", async () => {
+      vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+      const { sheet, input } = await openHalfTyped();
+      input.dispatchEvent(new FocusEvent("blur"));
+      halfType(input, false);
+      type(input, "2030-06-01T09:00");
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      expect(sheet.querySelector(".cms-error")?.textContent).toContain("in the past");
+      type(input, "2030-06-01T10:00");
+      expect(sheet.querySelector(".cms-error")).toBeNull();
+      expect(input.hasAttribute("aria-invalid")).toBe(false);
+      expect(buttonNamed("Schedule", sheet).disabled).toBe(false);
+    });
+  });
+
   test("on: a time the clock passes while the sheet is open is refused at Confirm", async () => {
     vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
     serve({ "pages/home": { payload: { title: "Hello" } } });

@@ -642,6 +642,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             ? element("input", { class: "cms-input", type: "datetime-local", "aria-describedby": pastNote.id })
             : null;
         const at = () => (publishAt ? localToIso(publishAt.value) : undefined);
+        /** Focus left "Publish at" while it was half-typed, and it still is. */
+        let incompleteLeft = false;
+        let shownReason: string | undefined;
         const inPast = () => {
           const when = at();
           return when !== undefined && new Date(when).getTime() <= Date.now();
@@ -652,14 +655,27 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             confirm.disabled = false;
             return;
           }
-          publishAt.min = localInputValue(new Date());
-          confirm.textContent = at() !== undefined ? strings.schedule : strings.publish;
+          // Setting `min`, even to the same value, empties a half-typed datetime-local in Chromium.
+          const min = localInputValue(new Date());
+          if (!publishAt.validity.badInput && publishAt.min !== min) publishAt.min = min;
+          const label = at() !== undefined ? strings.schedule : strings.publish;
+          // Runs on the blur a click on Confirm causes: replacing its text then loses that click in WebKit.
+          if (confirm.textContent !== label) confirm.textContent = label;
           const past = inPast();
-          if (past && pastNote.hidden) toast.announce(strings.scheduleInPast);
-          pastNote.hidden = !past;
-          pastNote.replaceChildren(...(past ? [element("p", { class: "cms-error" }, [strings.scheduleInPast])] : []));
           // A half-typed date reads as empty; publishing right now would be the wrong guess.
-          confirm.disabled = publishAt.validity.badInput || past;
+          const incomplete = publishAt.validity.badInput;
+          if (!incomplete) incompleteLeft = false;
+          // Every date is half-typed while it is being typed, so that reason waits until focus leaves the input.
+          const reason = past ? strings.scheduleInPast : incompleteLeft ? strings.scheduleIncomplete : undefined;
+          if (reason !== shownReason) {
+            if (reason !== undefined) toast.announce(reason);
+            shownReason = reason;
+            pastNote.hidden = reason === undefined;
+            pastNote.replaceChildren(...(reason !== undefined ? [element("p", { class: "cms-error" }, [reason])] : []));
+            if (reason !== undefined) publishAt.setAttribute("aria-invalid", "true");
+            else publishAt.removeAttribute("aria-invalid");
+          }
+          confirm.disabled = incomplete || past;
         };
         /** Back to a sheet that can be confirmed, after a run that left something to do. */
         const resume = () => {
@@ -772,6 +788,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           publishAt.min = localInputValue(new Date());
           publishAt.addEventListener("input", syncConfirm);
           publishAt.addEventListener("change", syncConfirm);
+          // Clearing a date's last segments changes no `value`, so no `input` fires; the key's release still says so.
+          publishAt.addEventListener("keyup", syncConfirm);
+          publishAt.addEventListener("blur", () => {
+            if (publishAt.validity.badInput) incompleteLeft = true;
+            syncConfirm();
+          });
           body.append(element("label", { class: "cms-field-label" }, [strings.publishAt, publishAt]), pastNote);
         }
         body.append(element("div", { class: "cms-sheet__actions" }, [cancel, confirm]));

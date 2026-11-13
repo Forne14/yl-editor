@@ -1,6 +1,6 @@
-// "Publish at" with `scheduling: true`: the datetime-local input and its past-time checks (on change and again at
-// Confirm, against the browser's clock), scheduling through the real API, the bar's line and Publish now, and the
-// host's publish-due run promoting what is due while an invalid draft fails on its own.
+// "Publish at" with `scheduling: true`: the datetime-local input, its past-time checks (on change and again at
+// Confirm, against the browser's clock) and its half-typed line, scheduling through the real API, the bar's line and
+// Publish now, and the host's publish-due run promoting what is due while an invalid draft fails on its own.
 import { expect, test, type Demo } from "./fixtures.ts";
 import type { Page } from "@playwright/test";
 
@@ -196,4 +196,41 @@ test("a time that passes while the sheet is open is refused at Confirm, by the b
   await confirmButton(page).click();
   await expect(sheet(page)).toBeHidden();
   expect((await demo.readDoc("pages/about"))?.scheduledAt).toBe(await browserInstant(page, "2031-01-01T10:00"));
+});
+
+test("a half-typed Publish at says why once focus leaves it, and clears when it is finished", async ({
+  page,
+  demo,
+}) => {
+  const INCOMPLETE =
+    "That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.";
+  await demo.openEditor({ scheduling: true });
+  await editText(page, "#about-title", "Half title");
+  await openPublishSheet(page);
+  const input = publishAt(page);
+  // Focused while empty, the input starts at its first segment, the month in the en-US layout every engine runs here.
+  // A month alone is half-typed.
+  await input.focus();
+  await page.keyboard.type("11");
+  expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(true);
+  await expect(confirmButton(page)).toBeDisabled();
+  // Still typing: no line yet.
+  await expect(sheet(page)).not.toContainText(INCOMPLETE);
+  await expect(input).not.toHaveAttribute("aria-invalid");
+
+  await input.blur();
+  await expect(sheet(page).locator(".cms-error")).toHaveText(INCOMPLETE);
+  await expect(input).toHaveAttribute("aria-invalid", "true");
+  await expect(input).toHaveAccessibleDescription(INCOMPLETE);
+  await expect(page.locator(".cms-live")).toContainText("isn’t complete");
+  await expect(confirmButton(page)).toBeDisabled();
+
+  // Finished, the line goes and the time's own checks apply; emptying the segments by keyboard is covered in
+  // happy-dom (chrome.test.ts), as each engine steps through them differently.
+  await fillPublishAt(page, "2031-01-01T09:00");
+  await expect(sheet(page).locator(".cms-error")).toHaveCount(0);
+  await expect(input).not.toHaveAttribute("aria-invalid");
+  await expect(input).toHaveAccessibleDescription("");
+  await expect(confirmButton(page)).toHaveText("Schedule");
+  await expect(confirmButton(page)).toBeEnabled();
 });

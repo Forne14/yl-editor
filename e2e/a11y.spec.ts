@@ -195,6 +195,24 @@ const STATES: ChromeState[] = [
     },
   },
   {
+    name: "Publish sheet with scheduling and the half-typed note",
+    async setup({ page, demo }) {
+      await demo.openEditor({ scheduling: true });
+      await editText(page, page.locator("#home-title"), "Later title");
+      await barButton(page, "Publish").click();
+      const sheet = page.getByRole("dialog", { name: "Publish these documents?" });
+      await expect(sheet.locator(".cms-diff li")).toHaveCount(1);
+      const input = sheet.getByLabel("Publish at (optional)");
+      // A month alone: the first segment, in the en-US layout every engine runs here.
+      await input.focus();
+      await page.keyboard.type("11");
+      await sheet.getByRole("button", { name: "Cancel" }).focus();
+      await expect(sheet).toContainText("That date and time isn’t complete");
+      await expect(input).toHaveAttribute("aria-invalid", "true");
+      await expect(sheet.getByRole("button", { name: "Publish", exact: true })).toBeDisabled();
+    },
+  },
+  {
     name: "Discard sheet with the delete warning",
     async setup({ page, demo }) {
       await demo.seed({ key: "pages/about", draft: { title: "Never published", body: "Draft only" } });

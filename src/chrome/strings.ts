@@ -102,6 +102,8 @@ export const defaultStrings = {
   publishAt: "Publish at (optional)",
   scheduleInPast:
     "That time is in the past, so it would never be scheduled. Pick a later time, or clear it to publish now.",
+  scheduleIncomplete:
+    "That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.",
   scheduled: "Scheduled {key} for {time}",
   scheduledFor: "{key} scheduled for {time}",
   publishNow: "Publish now",
