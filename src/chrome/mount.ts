@@ -188,7 +188,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /**
    * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace or rich text,
-   * which is rendered from its sanitised HTML whatever the element held (a string only: anything else is left). A save never
+   * which is rendered from its sanitised HTML whatever the element held (a value that isn't a string empties it, as it
+   * does plain text). A save never
    * passes `undefined`, but content replaced by Discard, Restore or a conflict can lack the path: `clearMissing` then
    * empties plain text, so the page stops showing a value that is gone, and sets aside the `data-edit-value` it had at
    * that moment. A field already emptied keeps the one set aside then: a later one is the host's. A field it can't
@@ -202,8 +203,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (richText && value === undefined && clearMissing) {
       record.cleared ??= { editValue: target.dataset.editValue };
       target.replaceChildren();
-    } else if (richText && typeof value === "string") {
-      renderRichText(target, value);
+    } else if (richText && value !== undefined) {
+      renderRichText(target, typeof value === "string" ? value : "");
     } else if (plain && value === undefined && clearMissing) {
       record.cleared ??= { editValue: target.dataset.editValue };
       target.textContent = "";
@@ -223,7 +224,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const payload = session.takeTheirs(slot);
     // No payload means no conflict was held, so nothing says the value is gone.
     const clearMissing = payload !== undefined;
-    for (const record of recordsFor(slot)) render(record, valueAtPath(payload, slot.path), clearMissing);
+    for (const record of recordsFor(slot)) {
+      // A widget reopened on the field would put its own content back when it closes, over theirs.
+      if (active?.record === record) closeActive(false);
+      render(record, valueAtPath(payload, slot.path), clearMissing);
+    }
     toast.hide();
   }
 

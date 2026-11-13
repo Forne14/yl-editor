@@ -14,8 +14,9 @@ export function headingLevels(target: HTMLElement): RichTextHeading[] {
  */
 export function parseRichText(html: string, doc: Document): Node[] {
   if (html === "") return [];
-  const view = doc.defaultView ?? window;
-  const parsed = new view.DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+  // The document's own realm when it has one, so the nodes are parsed where they will live.
+  const Parser = doc.defaultView?.DOMParser ?? DOMParser;
+  const parsed = new Parser().parseFromString(`<body>${html}</body>`, "text/html");
   return [...parsed.body.childNodes].map((node) => doc.importNode(node, true));
 }
 

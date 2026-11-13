@@ -217,8 +217,9 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   `undefined`.
 - Those four also repaint a `richtext` field, child elements or not, since its value is HTML the chrome can render
   safely: a string value is run through `sanitizeRichText` with the field's `data-edit-headings`, parsed in an inert
-  document and its nodes imported, so the page never sees `innerHTML`. A missing path empties the field; a value that
-  isn't a string leaves it as it was. A save doesn't repaint it: the widget already shows what it committed.
+  document and its nodes imported, so the page never sees `innerHTML`. A missing path empties the field, and so does a
+  value that isn't a string, as for plain text. Take theirs first closes a widget reopened on the field, without
+  committing it. A save doesn't repaint it: the widget already shows what it committed.
 - When the page's documents fail to load, a toast offers Retry. A later load that succeeds hides it, unless another
   toast has replaced it.
 

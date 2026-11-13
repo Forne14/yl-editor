@@ -3246,12 +3246,42 @@ describe("a rich text field repainted from new content", () => {
     expect(lede().innerHTML).toBe(STORED);
   });
 
-  test("a value that isn't a string leaves the field as it was", async () => {
-    serve({ "pages/home": { payload: {}, publishedPayload: { lede: { nested: true } } } });
+  test("Take theirs closes a widget still open on the field before repainting it", async () => {
+    handlers["POST /api/content/field"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { lede: STORED }) } },
+    });
+    let commit: (() => void) | undefined;
+    const destroyed = vi.fn();
+    const stayingOpen: Widget = {
+      mount(ctx) {
+        commit = () => void ctx.commit("<p>Mine</p>");
+        // A widget puts its own last content back when it closes, as the rich text widget does.
+        return { destroy: () => (destroyed(), ctx.element.replaceChildren("Stale")) };
+      },
+    };
+    await mount({ widgets: { richtext: stayingOpen } });
+    lede().click();
+    commit?.();
+    await settle();
+    destroyed.mockClear();
+    lede().click();
+    await settle();
+    expect(destroyed).not.toHaveBeenCalled();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    expect(destroyed).toHaveBeenCalledOnce();
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test.each([
+    ["null", null],
+    ["an object", { nested: true }],
+  ])("a value that is %s empties the field, as it does plain text", async (_name, value) => {
+    serve({ "pages/home": { payload: {}, publishedPayload: { lede: value } } });
     const { api } = await mount();
     await api.discard("pages/home");
     await settle();
-    expect(lede().textContent).toBe("Lede");
+    expect(lede().childNodes).toHaveLength(0);
   });
 });
 
