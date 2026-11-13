@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
 import { Session } from "./session.ts";
-import type { EditorHandle, EditorOptions, WidgetContext, WireDocument } from "./types.ts";
+import type { EditorHandle, EditorOptions, Widget, WidgetContext, WireDocument } from "./types.ts";
 
 interface RecordedCall {
   method: string;
@@ -3148,6 +3148,110 @@ describe("content replaced underneath a field", () => {
     const { api } = await mount();
     await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
     expect(field("pages/home:title").textContent).toBe("");
+  });
+});
+
+describe("a rich text field repainted from new content", () => {
+  const lede = () => field("pages/home:lede");
+  const STORED = "<p>New <strong>bread</strong></p><ul><li><p>Rye</p></li></ul>";
+
+  test("Discard renders the published HTML as elements, never through innerHTML", async () => {
+    serve({ "pages/home": { payload: { lede: "<p>Draft</p>" }, publishedPayload: { lede: STORED } } });
+    const { api } = await mount();
+    lede().replaceChildren(Object.assign(document.createElement("p"), { textContent: "Draft" }));
+    const innerHTML = vi.spyOn(Element.prototype, "innerHTML", "set");
+    await api.discard("pages/home");
+    await settle();
+    expect(innerHTML).not.toHaveBeenCalled();
+    innerHTML.mockRestore();
+    expect(lede().innerHTML).toBe(STORED);
+    expect(lede().querySelector("strong")?.textContent).toBe("bread");
+  });
+
+  test("sanitises what it renders: no script, handler or unsafe link reaches the page", async () => {
+    serve({
+      "pages/home": {
+        payload: {},
+        publishedPayload: {
+          lede: '<p onclick="x()">Hi<script>alert(1)</script> <a href="javascript:alert(1)">bad</a> <a href="/menu">ok</a></p>',
+        },
+      },
+    });
+    const { api } = await mount();
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().querySelector("script, [onclick]")).toBeNull();
+    expect([...lede().querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(["/menu"]);
+  });
+
+  test("keeps only the headings the field allows", async () => {
+    lede().dataset.editHeadings = "2";
+    serve({ "pages/home": { payload: {}, publishedPayload: { lede: "<h2>Two</h2><h3>Three</h3>" } } });
+    const { api } = await mount();
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().innerHTML).toBe("<h2>Two</h2><p>Three</p>");
+  });
+
+  test("Discard empties a rich text field whose path is gone, even with child elements", async () => {
+    serve({ "pages/home": { payload: { lede: "<p>Draft</p>" }, publishedPayload: {} } });
+    const { api } = await mount();
+    lede().replaceChildren(Object.assign(document.createElement("p"), { textContent: "Draft" }));
+    const changes: unknown[] = [];
+    lede().addEventListener("cms:change", (event) => changes.push((event as CustomEvent).detail));
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().childNodes).toHaveLength(0);
+    expect(changes).toEqual([{ key: "pages/home", path: "lede", value: undefined }]);
+  });
+
+  test("Restore repaints it from the restored draft", async () => {
+    handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [revision(7, "publish", {})] } });
+    handlers["POST /api/content/restore-revision"] = (body) => ({
+      json: { document: wireDocument(String(body?.key), 4, { lede: STORED }) },
+    });
+    await mount();
+    const sheet = await openRevisions();
+    buttonNamed("Restore", sheet).click();
+    buttonNamed("Confirm", sheet).click();
+    await settle();
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test("a conflict catch-up repaints it from the server's copy", async () => {
+    handlers["POST /api/content/restore-revision"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { lede: STORED }) } },
+    });
+    const { api } = await mount();
+    await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test("Take theirs repaints it from the other editor's content", async () => {
+    handlers["POST /api/content/field"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { lede: STORED }) } },
+    });
+    const committing: Widget = {
+      mount(ctx) {
+        void ctx.commit("<p>Mine</p>");
+        return { destroy() {} };
+      },
+    };
+    await mount({ widgets: { richtext: committing } });
+    lede().click();
+    await settle();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test("a value that isn't a string leaves the field as it was", async () => {
+    serve({ "pages/home": { payload: {}, publishedPayload: { lede: { nested: true } } } });
+    const { api } = await mount();
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().textContent).toBe("Lede");
   });
 });
 

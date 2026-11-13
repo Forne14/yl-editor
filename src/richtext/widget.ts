@@ -9,7 +9,8 @@ import { element, uniqueId } from "../chrome/dom.ts";
 import { format, type Strings } from "../chrome/strings.ts";
 import type { Widget, WidgetContext, WidgetHandle } from "../chrome/types.ts";
 import { contextStrings, fieldLabel, once, trackLeaving } from "../chrome/widgets.ts";
-import { isAllowedHref, sanitizeRichText, type RichTextHeading } from "./sanitize.ts";
+import { headingLevels, parseRichText } from "./render.ts";
+import { isAllowedHref, sanitizeRichText } from "./sanitize.ts";
 
 export interface RichTextWidgetOptions {
   /** Overrides for this widget's words, on top of the strings `mountEditor` was given. */
@@ -67,12 +68,6 @@ const numberIcon = () =>
 function isApple(): boolean {
   const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
   return /mac|iphone|ipad/i.test(nav.userAgentData?.platform ?? nav.platform ?? "");
-}
-
-/** The heading levels a field allows: `data-edit-headings="2 3"`. */
-export function headingLevels(target: HTMLElement): RichTextHeading[] {
-  const tokens = (target.dataset.editHeadings ?? "").split(/[\s,]+/);
-  return ([2, 3] as const).filter((level) => tokens.includes(String(level)));
 }
 
 /**
@@ -350,11 +345,7 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
    * inside a list item, say, is stored as a paragraph). Parsed in an inert document, from sanitised HTML only: the live
    * page never sees `innerHTML`.
    */
-  const renderStored = (html: string): Node[] => {
-    if (html === "") return [];
-    const parsed = new view.DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
-    return [...parsed.body.childNodes].map((node) => doc.importNode(node, true));
-  };
+  const renderStored = (html: string): Node[] => parseRichText(html, doc);
   const cancelEdit = () => {
     closing = originalNodes;
     outcome.cancel();

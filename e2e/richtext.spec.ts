@@ -260,3 +260,53 @@ test("on a narrow screen the toolbar docks to the top of the viewport", async ({
   expect(bar?.x).toBe(0);
   expect(Math.round(bar?.width ?? 0)).toBe(375);
 });
+
+test.describe("content replaced underneath the lede repaints it as rich text", () => {
+  const bar = (page: Page) => page.locator(".cms-bar");
+  const sheet = (page: Page) => page.locator(".cms-sheet");
+  const toast = (page: Page) => page.locator(".cms-toast");
+
+  /** Adds a bulleted "Rye" to the lede and saves it with Done. */
+  async function addRye(page: Page): Promise<Locator> {
+    const lede = await openLede(page);
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Rye");
+    await page.keyboard.press("ControlOrMeta+Shift+8");
+    await tool(page, "Done").click();
+    await expect(toolbar(page)).toHaveCount(0);
+    return lede;
+  }
+
+  test("Discard puts the published HTML back as elements", async ({ page, demo }) => {
+    await demo.openEditor();
+    const lede = await addRye(page);
+    await expectDraft(demo, `${SEEDED}<ul><li><p>Rye</p></li></ul>`);
+    await expect(lede.locator("li")).toHaveText("Rye");
+
+    await bar(page).getByRole("button", { name: "Discard", exact: true }).click();
+    await sheet(page).locator(".cms-sheet__actions").getByRole("button", { name: "Discard", exact: true }).click();
+    await expect(lede.locator("li")).toHaveCount(0);
+    await expect(lede).toHaveText("Fresh bread every morning.");
+    await expect(lede.locator("p > strong")).toHaveText("every morning");
+    await expectNoDraft(demo);
+  });
+
+  test("Take theirs shows the other editor's HTML as elements", async ({ page, demo, guard }) => {
+    guard.allowFailedRequests();
+    await demo.openEditor();
+    const other = await demo.openEditor({ context: await demo.newContext() });
+    await addRye(other);
+    await expectDraft(demo, `${SEEDED}<ul><li><p>Rye</p></li></ul>`);
+
+    const lede = await openLede(page);
+    await page.keyboard.type(" Mine.");
+    await tool(page, "Done").click();
+    await expect(toast(page)).toContainText("Someone else changed this field since you opened the page.");
+    await toast(page).getByRole("button", { name: "Take theirs (reload field)" }).click();
+    await expect(toast(page)).toBeHidden();
+    await expect(lede.locator("li")).toHaveText("Rye");
+    await expect(lede.locator("p > strong")).toHaveText("every morning");
+    await expect(lede).not.toContainText("Mine.");
+    await expectDraft(demo, `${SEEDED}<ul><li><p>Rye</p></li></ul>`);
+  });
+});

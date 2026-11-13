@@ -1,5 +1,6 @@
 // `mountEditor`: wires the scanned fields, the save queue, the bar, the toast and the sheet together.
 import { diffPayloads, type DiffEntry } from "../diff.ts";
+import { renderRichText } from "../richtext/render.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
 import { Disposer, button, element, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
@@ -186,7 +187,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   /**
-   * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. A save never
+   * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace or rich text,
+   * which is rendered from its sanitised HTML whatever the element held (a string only: anything else is left). A save never
    * passes `undefined`, but content replaced by Discard, Restore or a conflict can lack the path: `clearMissing` then
    * empties plain text, so the page stops showing a value that is gone, and sets aside the `data-edit-value` it had at
    * that moment. A field already emptied keeps the one set aside then: a later one is the host's. A field it can't
@@ -194,9 +196,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   function render(record: FieldRecord, value: unknown, clearMissing = false): void {
     const target = record.element;
-    const plain = target.children.length === 0 && record.info.type !== "toggle";
+    const richText = record.info.type === "richtext";
+    const plain = !richText && target.children.length === 0 && record.info.type !== "toggle";
     if (value !== undefined) record.cleared = undefined;
-    if (plain && value === undefined && clearMissing) {
+    if (richText && value === undefined && clearMissing) {
+      record.cleared ??= { editValue: target.dataset.editValue };
+      target.replaceChildren();
+    } else if (richText && typeof value === "string") {
+      renderRichText(target, value);
+    } else if (plain && value === undefined && clearMissing) {
       record.cleared ??= { editValue: target.dataset.editValue };
       target.textContent = "";
     } else if (plain && value !== undefined) {

@@ -9,7 +9,8 @@ import { defaultStrings } from "../chrome/strings.ts";
 import type { WidgetContext, WidgetHandle } from "../chrome/types.ts";
 import { provideStrings } from "../chrome/widgets.ts";
 import { createRichTextWidget, richTextWidget } from "./index.ts";
-import { headingLevels, normaliseHref, stripInlineStyles } from "./widget.ts";
+import { headingLevels } from "./render.ts";
+import { normaliseHref, stripInlineStyles } from "./widget.ts";
 
 let host: HTMLElement;
 let handle: WidgetHandle | undefined;
@@ -463,9 +464,15 @@ describe("helpers", () => {
 
 test("the chrome entry never imports TipTap or the rich text widget", () => {
   // A path, not a URL: happy-dom replaces the global URL, which node:fs refuses.
-  const directory = join(dirname(fileURLToPath(import.meta.url)), "..", "chrome");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const directory = join(here, "..", "chrome");
   for (const name of readdirSync(directory).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))) {
     const source = readFileSync(join(directory, name), "utf8");
-    expect(source, name).not.toMatch(/from\s+["'](@tiptap\/|\.\.\/richtext\/)/);
+    // The repaint helper is the one rich text module the chrome may load.
+    expect(source, name).not.toMatch(/from\s+["'](@tiptap\/|\.\.\/richtext\/(?!render\.ts["']))/);
+  }
+  for (const name of ["render.ts", "sanitize.ts"]) {
+    const source = readFileSync(join(here, name), "utf8");
+    expect(source, name).not.toMatch(/from\s+["'](@tiptap\/|zod|\.\/widget\.ts|\.\/schema\.ts)/);
   }
 });

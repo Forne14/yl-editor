@@ -102,8 +102,9 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - Discard, Restore, a conflict catch-up or Take theirs can remove a field's value. A field of plain text is emptied, and
   until the next value arrives the chrome ignores the `data-edit-value` it had at that moment, so the widget doesn't
   reopen on the value just removed. The attribute itself stays as the host wrote it, and a different one the host writes
-  later counts, even if the value is removed again. A field the chrome doesn't empty (one with child elements, or a
-  toggle) still shows its content, so its `data-edit-value` counts as before.
+  later counts, even if the value is removed again. A `richtext` field is emptied too, whatever elements it holds. A
+  field the chrome doesn't empty (any other with child elements, or a toggle) still shows its content, so its
+  `data-edit-value` counts as before.
 - Click or Enter opens the widget registered for the field's type. Text commits on blur or Enter; select and toggle
   commit on change; number, date and url commit on Enter, not on change (arrow keys and date segments fire change at
   every step), except that a date picked from the browser's date picker commits at once, however soon after the key
@@ -214,6 +215,10 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   markup itself. Discard, Restore, a conflict catch-up and Take theirs repaint the same way; when the new content lacks
   the field's path, the text is emptied (same child-element rule, and never a toggle's) and `detail.value` is
   `undefined`.
+- Those four also repaint a `richtext` field, child elements or not, since its value is HTML the chrome can render
+  safely: a string value is run through `sanitizeRichText` with the field's `data-edit-headings`, parsed in an inert
+  document and its nodes imported, so the page never sees `innerHTML`. A missing path empties the field; a value that
+  isn't a string leaves it as it was. A save doesn't repaint it: the widget already shows what it committed.
 - When the page's documents fail to load, a toast offers Retry. A later load that succeeds hides it, unless another
   toast has replaced it.
 
