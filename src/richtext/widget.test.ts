@@ -92,6 +92,22 @@ describe("mounting", () => {
     expect(button("Italic").getAttribute("aria-pressed")).toBe("false");
   });
 
+  test("its glyphs, shortcut words and placeholder come from the strings too", () => {
+    host.dataset.editHeadings = "2";
+    const { ctx } = context();
+    provideStrings(ctx, {
+      ...defaultStrings,
+      headingGlyph: "Ü{level}",
+      keyControl: "Strg",
+      linkPlaceholder: "https://…",
+    });
+    handle = richTextWidget.mount(ctx);
+    expect(button("Ü2 Heading")).toBeTruthy();
+    expect(toolbar().querySelector<HTMLInputElement>(".cms-toolbar__link input")?.placeholder).toBe("https://…");
+    button("Bold").dispatchEvent(new Event("mouseover", { bubbles: true }));
+    expect(toolbar().querySelector(".cms-tooltip kbd")?.textContent).toMatch(/^(⌘B|Strg\+B)$/);
+  });
+
   test("takes its words from the strings the chrome hands it, then from its own options", () => {
     const { ctx } = context();
     provideStrings(ctx, { ...defaultStrings, bold: "Gras", formatting: "Mise en forme de {label}" });
@@ -127,6 +143,21 @@ describe("committing and cancelling", () => {
     expect(host.hasAttribute("role")).toBe(false);
     expect(host.className).toBe("lede");
     expect(document.querySelector(".cms-toolbar")).toBeNull();
+  });
+
+  test("after Done the field shows exactly what was stored", () => {
+    host.dataset.editHeadings = "2";
+    const { ctx, commit } = context("<ul><li><p>Item</p></li></ul>");
+    handle = richTextWidget.mount(ctx);
+    // The list item schema takes any block, but the stored shape keeps paragraphs in list items.
+    editorOf(host).commands.setContent("<ul><li><p>Item</p><h2>Sub</h2></li></ul><p>After</p>");
+    expect(host.querySelector("li h2")).not.toBeNull();
+    handle.commit?.();
+    const stored = String(commit.mock.calls[0]?.[0 as never]);
+    expect(stored).toBe("<ul><li><p>Item</p><p>Sub</p></li></ul><p>After</p>");
+    handle.destroy();
+    handle = undefined;
+    expect(host.innerHTML).toBe(stored);
   });
 
   test("Done with nothing changed writes nothing", () => {
@@ -221,6 +252,32 @@ describe("paste", () => {
     expect(host.textContent).toBe("Rye daily");
   });
 
+  test("a toolbar command after a paste puts the paste options away, so they never act on moved content", () => {
+    handle = richTextWidget.mount(context("").ctx);
+    editorOf(host).view.pasteHTML("<p>Rye <strong>daily</strong></p>");
+    const row = toolbar().querySelector<HTMLElement>(".cms-toolbar__paste") as HTMLElement;
+    expect(row.hidden).toBe(false);
+    button("Bulleted list").click();
+    expect(row.hidden).toBe(true);
+  });
+
+  test("Ctrl or Cmd + Shift + V with the paste options up switches the paste to plain text, once", () => {
+    handle = richTextWidget.mount(context("").ctx);
+    editorOf(host).view.pasteHTML("<p>Rye <strong>daily</strong></p>");
+    const event = new KeyboardEvent("keydown", {
+      key: "V",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    host.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(host.querySelector("strong")).toBeNull();
+    expect(host.textContent).toBe("Rye daily");
+    expect(button("Plain text").getAttribute("aria-pressed")).toBe("true");
+  });
+
   test("a plain paste shows no paste options", () => {
     handle = richTextWidget.mount(context("").ctx);
     editorOf(host).view.pasteText("Just words");
@@ -270,6 +327,15 @@ describe("links", () => {
     expect(host.querySelector("a")).toBeNull();
   });
 
+  test("applying a link puts focus back in the text at once, so hiding the row isn't leaving", () => {
+    handle = richTextWidget.mount(context().ctx);
+    button("Link").click();
+    const input = toolbar().querySelector<HTMLInputElement>(".cms-toolbar__link input") as HTMLInputElement;
+    input.value = "/menu";
+    press(input, "Enter");
+    expect(document.activeElement).toBe(host);
+  });
+
   test("Esc in the address row closes the row, not the edit", () => {
     const { ctx, cancel } = context();
     handle = richTextWidget.mount(ctx);
@@ -299,6 +365,15 @@ describe("keyboard", () => {
     press(button("Bold"), "End");
     expect(document.activeElement).toBe(button("Done"));
     expect(tabbable()).toEqual([button("Done")]);
+  });
+
+  test("Tab in a list item that can't be nested goes to the toolbar instead of leaving", () => {
+    const { ctx, commit } = context("<ul><li><p>Only</p></li></ul>");
+    handle = richTextWidget.mount(ctx);
+    editorOf(host).commands.setTextSelection(3);
+    press(host, "Tab");
+    expect(document.activeElement).toBe(button("Bold"));
+    expect(commit).not.toHaveBeenCalled();
   });
 
   test("Enter on a toolbar button formats and puts focus back in the text", async () => {
@@ -360,6 +435,9 @@ describe("helpers", () => {
     ["/bread", "/bread"],
     ["mailto:a@b.test", "mailto:a@b.test"],
     ["javascript:alert(1)", "javascript:alert(1)"],
+    ["hello@example.com", "mailto:hello@example.com"],
+    ["example.com:8080/menu", "https://example.com:8080/menu"],
+    ["www.site.test:443", "https://www.site.test:443"],
     ["just words", "just words"],
   ])("normaliseHref(%j) is %j", (input, output) => expect(normaliseHref(input)).toBe(output));
 });

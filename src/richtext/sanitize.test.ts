@@ -38,6 +38,28 @@ describe("sanitizeRichText: the stored shape", () => {
     );
   });
 
+  it("keeps blocks apart inside inline wrappers, tables and definition lists", () => {
+    expect(sanitizeRichText("<span><p>One</p><p>Two</p></span>")).toBe("<p>One</p><p>Two</p>");
+    expect(sanitizeRichText("<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>")).toBe("<p>a</p><p>b</p>");
+    expect(sanitizeRichText("<dl><dt>A</dt><dd>B</dd></dl>")).toBe("<p>A</p><p>B</p>");
+    expect(sanitizeRichText("<b><p>Bold para</p><ul><li>x</li></ul></b>")).toBe(
+      "<p>Bold para</p><ul><li><p>x</p></li></ul>",
+    );
+  });
+
+  it("gathers a run of list items outside a list into one list", () => {
+    expect(sanitizeRichText("<li>a</li>\n<li>b</li><p>c</p><li>d</li>")).toBe(
+      "<ul><li><p>a</p></li><li><p>b</p></li></ul><p>c</p><ul><li><p>d</p></li></ul>",
+    );
+  });
+
+  it("handles a long value without trouble", () => {
+    const html = "<p>" + '<a href="/x" title="t">link</a> <em>word</em> '.repeat(5000) + "</p>";
+    const started = performance.now();
+    expect(sanitizeRichText(html)).toContain('<a href="/x">link</a> <em>word</em>');
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("returns an empty string for a document with no content", () => {
     expect(sanitizeRichText("")).toBe("");
     expect(sanitizeRichText("<p></p>")).toBe("");

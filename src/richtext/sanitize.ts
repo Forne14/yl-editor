@@ -61,7 +61,46 @@ const CLOSES_P = new Set([
 ]);
 const HEADINGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
 /** Elements whose content is laid out as blocks; anything else in a block context is inline. */
-const BLOCKISH = new Set([...CLOSES_P, "header", "footer", "main", "nav", "aside", "figure", "tr", "td", "th"]);
+const BLOCKISH = new Set([
+  ...CLOSES_P,
+  "header",
+  "footer",
+  "main",
+  "nav",
+  "aside",
+  "figure",
+  "figcaption",
+  "caption",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+  "td",
+  "th",
+  "dl",
+  "dt",
+  "dd",
+  "details",
+  "summary",
+  "address",
+  "fieldset",
+  "legend",
+  "form",
+  "hgroup",
+  "center",
+  "menu",
+  "dir",
+]);
+/** Where an open paragraph, list item or link stops being the one a new start tag closes. */
+const P_SCOPE = new Set(["li", "ul", "ol", "div", "blockquote", "td", "th"]);
+const LI_SCOPE = new Set(["ul", "ol"]);
+const rawTextEnd = new Map<string, RegExp>();
+
+/** An element that lays out blocks, or holds one somewhere inside: its content is blocks, not inline text. */
+function holdsBlocks(node: TreeNode): boolean {
+  if (typeof node === "string" || DROPPED.has(node.tag)) return false;
+  return BLOCKISH.has(node.tag) || node.children.some(holdsBlocks);
+}
 
 const NAMED: Record<string, string> = {
   amp: "&",
@@ -185,16 +224,18 @@ function parse(html: string): ElementNode {
     at = Math.min(cursor + 1, html.length);
 
     if (RAW_TEXT.has(tag)) {
-      const close = new RegExp(`</${tag}[\\s/>]`, "i").exec(html.slice(at));
+      let end = rawTextEnd.get(tag);
+      if (!end) rawTextEnd.set(tag, (end = new RegExp(`</${tag}[\\s/>]`, "i")));
+      const close = end.exec(html.slice(at));
       at = close ? at + close.index : html.length;
       continue;
     }
     if (CLOSES_P.has(tag)) {
-      const p = lastIndexOf("p", new Set(["li", "ul", "ol", "div", "blockquote", "td", "th"]));
+      const p = lastIndexOf("p", P_SCOPE);
       if (p > 0) closeTo(p);
     }
     if (tag === "li") {
-      const li = lastIndexOf("li", new Set(["ul", "ol"]));
+      const li = lastIndexOf("li", LI_SCOPE);
       if (li > 0) closeTo(li);
     }
     if (tag === "a") {
@@ -253,22 +294,34 @@ class Writer {
       run = [];
       if (inner.trim() !== "") out.push(`<p>${inner}</p>`);
     };
-    for (const node of nodes) {
-      if (typeof node === "string" || !BLOCKISH.has(node.tag)) {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
+      if (node === undefined) continue;
+      if (typeof node === "string" || !holdsBlocks(node)) {
         if (typeof node !== "string" && DROPPED.has(node.tag)) continue;
         run.push(node);
         continue;
       }
       flush();
+      if (node.tag === "li") {
+        // A run of list items outside a list is one list; whitespace between them doesn't break it.
+        const items: TreeNode[] = [node];
+        while (index + 1 < nodes.length) {
+          const next = nodes[index + 1];
+          if (typeof next === "string" ? next.trim() !== "" : next?.tag !== "li") break;
+          if (typeof next !== "string" && next !== undefined) items.push(next);
+          index += 1;
+        }
+        const listed = this.listItems(items);
+        if (listed) out.push(`<ul>${listed}</ul>`);
+        continue;
+      }
       if (node.tag === "p" || HEADINGS.has(node.tag)) {
         const tag = this.headings.has(node.tag) ? node.tag : "p";
         out.push(`<${tag}>${this.inline(node.children, false)}</${tag}>`);
       } else if (node.tag === "ul" || node.tag === "ol") {
         const items = this.listItems(node.children);
         if (items) out.push(`<${node.tag}>${items}</${node.tag}>`);
-      } else if (node.tag === "li") {
-        const items = this.listItems([node]);
-        if (items) out.push(`<ul>${items}</ul>`);
       } else {
         out.push(...this.blocks(node.children));
       }

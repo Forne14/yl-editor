@@ -24,7 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Chrome: `chrome.css` styles the toolbar (`.cms-toolbar`, `.cms-tooltip`) and the editable (`.cms-richtext`) with the
   existing tokens. New `defaultStrings` keys: `formatting`, `bold`, `italic`, `link`, `bulletList`, `orderedList`,
   `heading`, `subheading`, `linkAddress`, `applyLink`, `removeLink`, `linkRefused`, `pasteOptions`, `pastedFormatted`,
-  `pastedPlain`, `keepFormatting`, `plainText` and `pasteAnnounce`.
+  `pastedPlain`, `keepFormatting`, `plainText`, `pasteAnnounce`, `headingGlyph`, `linkPlaceholder`, `keyControl`,
+  `keyShift`, `keyAlt`, `keyEnter` and `keyEscape`.
 
 ## [0.5.0] - 2026-11-11
 

@@ -1,7 +1,7 @@
 // The rich text widget: TipTap edits the host element in place, with a toolbar above it. The approved design is
 // docs/specs/artefacts/2026-11-richtext-toolbar.html; the behaviour is documented in docs/chrome.md → Rich text.
 import { Editor, Extension } from "@tiptap/core";
-import { DOMSerializer, type Slice } from "@tiptap/pm/model";
+import type { Slice } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import StarterKit from "@tiptap/starter-kit";
@@ -75,10 +75,17 @@ export function headingLevels(target: HTMLElement): RichTextHeading[] {
   return ([2, 3] as const).filter((level) => tokens.includes(String(level)));
 }
 
-/** A bare domain (`example.com`) gets `https://`; anything with a scheme or a leading `/` is taken as written. */
+/**
+ * What the editor typed as a link address, made into one: an email address gets `mailto:`, and a bare domain
+ * (`example.com`, `example.com:8080/menu`) gets `https://`. A path or anything with a scheme is taken as written.
+ */
 export function normaliseHref(input: string): string {
   const value = input.trim();
-  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("/")) return value;
+  if (value.startsWith("/")) return value;
+  if (/^[^\s@/:]+@[^\s@/:]+\.[^\s@/:]+$/.test(value)) return `mailto:${value}`;
+  // A host and port looks like a scheme to the pattern below (`example.com:8080`); a scheme has no dot before a number.
+  if (/^[^\s/:]+\.[^\s/:]+:\d+(\/|$)/.test(value)) return `https://${value}`;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return value;
   return /^[^\s/]+\.[^\s]+$/.test(value) ? `https://${value}` : value;
 }
 
@@ -132,7 +139,10 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
   const clean = (html: string) => sanitizeRichText(html, { headings: levels });
   const outcome = once(ctx);
   const apple = isApple();
-  const mod = (key: string) => (apple ? `⌘${key}` : `Ctrl+${key}`);
+  // On Apple devices the keys are their standard symbols; elsewhere their names come from the strings.
+  const mod = (key: string) => (apple ? `⌘${key}` : `${strings.keyControl}+${key}`);
+  const shift = (key: string) => (apple ? `⇧${key}` : `${strings.keyShift}+${key}`);
+  const alt = (key: string) => (apple ? `⌥${key}` : `${strings.keyAlt}+${key}`);
 
   const originalNodes = [...target.childNodes].map((node) => node.cloneNode(true));
   // ProseMirror sets attributes on the element it edits in place, and takes `tabindex` off. All of them go back as they
@@ -151,6 +161,8 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
   let closing: Node[] = originalNodes;
   let pasted: { from: number; to: number; slice: Slice; text: string; mode: "keep" | "plain" } | undefined;
   let switching = false;
+  /** Set while the widget changes the document itself, for the paste options. */
+  let ownChange = false;
   let rovingIndex = 0;
 
   // ---------- Toolbar ----------
@@ -208,14 +220,14 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
     "bulletList",
     strings.bulletList,
     bulletIcon(),
-    mod(apple ? "⇧8" : "Shift+8"),
+    mod(shift("8")),
     "Control+Shift+8 Meta+Shift+8",
   );
   const numbers = toolButton(
     "orderedList",
     strings.orderedList,
     numberIcon(),
-    mod(apple ? "⇧7" : "Shift+7"),
+    mod(shift("7")),
     "Control+Shift+7 Meta+Shift+7",
   );
   const headingButtons = levels.map((level) =>
@@ -223,21 +235,21 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
       `h${level}`,
       level === 2 ? strings.heading : strings.subheading,
       document.createTextNode(""),
-      mod(apple ? `⌥${level}` : `Alt+${level}`),
+      mod(alt(String(level))),
       `Control+Alt+${level} Meta+Alt+${level}`,
-      `H${level}`,
+      format(strings.headingGlyph, { level }),
     ),
   );
   const cancel = element("button", { type: "button", class: "cms-btn cms-btn--ghost", "aria-keyshortcuts": "Escape" }, [
     strings.cancel,
   ]);
-  shortcuts.set(cancel, "Esc");
+  shortcuts.set(cancel, strings.keyEscape);
   const done = element(
     "button",
     { type: "button", class: "cms-btn cms-btn--primary", "aria-keyshortcuts": "Control+Enter Meta+Enter" },
     [strings.done],
   );
-  shortcuts.set(done, mod(apple ? "↩" : "Enter"));
+  shortcuts.set(done, mod(apple ? "↩" : strings.keyEnter));
 
   const pasteMessage = element("p", {}, [strings.pastedFormatted]);
   const keepButton = element("button", { type: "button", class: "cms-btn cms-toolbar__btn", "aria-pressed": "true" }, [
@@ -253,7 +265,7 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
     },
     [strings.plainText],
   );
-  shortcuts.set(plainButton, mod(apple ? "⇧V" : "Shift+V"));
+  shortcuts.set(plainButton, mod(shift("V")));
   const pasteRow = element(
     "div",
     { class: "cms-toolbar__paste", role: "group", "aria-label": strings.pasteOptions, hidden: true },
@@ -266,7 +278,7 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
     inputmode: "url",
     autocomplete: "off",
     spellcheck: "false",
-    placeholder: "https://",
+    placeholder: strings.linkPlaceholder,
   });
   const linkError = element("div", { class: "cms-diff", id: uniqueId("cms-link-error"), hidden: true });
   linkInput.setAttribute("aria-describedby", linkError.id);
@@ -330,11 +342,18 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
       outcome.cancel();
       return;
     }
-    const fragment = DOMSerializer.fromSchema(editor.schema).serializeFragment(editor.state.doc.content, {
-      document: doc,
-    });
-    closing = html === "" ? [] : [...fragment.childNodes];
+    closing = renderStored(html);
     outcome.commit(html);
+  };
+  /**
+   * The stored value as nodes, so the field shows what was saved rather than the editor's own rendering (a heading
+   * inside a list item, say, is stored as a paragraph). Parsed in an inert document, from sanitised HTML only: the live
+   * page never sees `innerHTML`.
+   */
+  const renderStored = (html: string): Node[] => {
+    if (html === "") return [];
+    const parsed = new view.DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+    return [...parsed.body.childNodes].map((node) => doc.importNode(node, true));
   };
   const cancelEdit = () => {
     closing = originalNodes;
@@ -366,8 +385,10 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
           toolbarFocusTarget = "last";
           return true;
         },
+        // In a list Tab nests the item; where it can't (the first item), it goes to the toolbar like anywhere else,
+        // rather than letting the browser move focus out of the field, which would commit.
         Tab: ({ editor: current }) => {
-          if (current.isActive("listItem")) return false;
+          if (current.isActive("listItem") && current.commands.sinkListItem("listItem")) return true;
           toToolbar();
           return true;
         },
@@ -419,7 +440,12 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
           .scrollIntoView()
           .setMeta("paste", true)
           .setMeta("uiEvent", "paste");
-        editorView.dispatch(transaction);
+        ownChange = true;
+        try {
+          editorView.dispatch(transaction);
+        } finally {
+          ownChange = false;
+        }
         pasted = {
           from,
           to: editorView.state.selection.from,
@@ -432,7 +458,11 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
         return true;
       },
     },
-    onTransaction: () => syncPressed(),
+    onTransaction: ({ transaction }) => {
+      // The paste options act on the pasted range as it was; any other change moves it, so they go.
+      if (transaction.docChanged && !ownChange) hidePasteRow();
+      syncPressed();
+    },
   });
   const untouched = editor.isEmpty ? "" : clean(editor.getHTML());
 
@@ -454,7 +484,9 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
       openLinkRow();
       return;
     }
-    const chain = editor.chain().focus();
+    // Focus goes back at once (`view.focus()`); TipTap's focus command would wait a frame.
+    editor.view.focus();
+    const chain = editor.chain();
     if (command === "bold") chain.toggleBold();
     else if (command === "italic") chain.toggleItalic();
     else if (command === "bulletList") chain.toggleBulletList();
@@ -481,11 +513,13 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
   }
   function closeLinkRow(returnToText = true): void {
     if (linkRow.hidden) return;
+    // Focus goes back before the row hides: hiding the focused input would drop focus to the body, which is leaving.
+    // `view.focus()` is synchronous; TipTap's focus command waits a frame.
+    if (returnToText) editor.view.focus();
     linkRow.hidden = true;
     link.setAttribute("aria-expanded", "false");
     syncPressed();
     place();
-    if (returnToText) editor.commands.focus();
   }
   function clearLinkError(): void {
     linkError.hidden = true;
@@ -501,7 +535,8 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
       ctx.announce(strings.linkRefused);
       return;
     }
-    const chain = editor.chain().focus();
+    editor.view.focus();
+    const chain = editor.chain();
     if (editor.state.selection.empty && !editor.isActive("link"))
       chain.insertContent({ type: "text", text: href, marks: [{ type: "link", attrs: { href } }] });
     else chain.extendMarkRange("link").setLink({ href });
@@ -522,11 +557,10 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
   function hidePasteRow(): void {
     pasted = undefined;
     if (pasteRow.hidden) return;
-    const focused = pasteRow.contains(doc.activeElement);
+    if (pasteRow.contains(doc.activeElement)) editor.view.focus();
     pasteRow.hidden = true;
     rove(Math.min(rovingIndex, roving().length - 1), false);
     place();
-    if (focused) editor.commands.focus();
   }
   function switchPaste(mode: "keep" | "plain"): void {
     if (!pasted || pasted.mode === mode) return;
@@ -538,11 +572,13 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
     );
     editorView.dispatch(editorView.state.tr.setSelection(range));
     switching = true;
+    ownChange = true;
     try {
       if (mode === "plain") editorView.pasteText(current.text);
       else editorView.dispatch(editorView.state.tr.replaceSelection(current.slice).scrollIntoView());
     } finally {
       switching = false;
+      ownChange = false;
     }
     pasted = { ...current, to: editorView.state.selection.from, mode };
     showPasteRow(mode);
@@ -606,7 +642,8 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
     else if (node === plainButton) switchPaste("plain");
     else if (node === applyLink) applyLinkRow();
     else if (node === removeLink) {
-      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      editor.view.focus();
+      editor.chain().extendMarkRange("link").unsetLink().run();
       closeLinkRow();
     }
   };
@@ -636,7 +673,7 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
       event.stopPropagation();
       if (tooltip.isConnected) hideTooltip();
       else if (!linkRow.hidden && linkRow.contains(node)) closeLinkRow();
-      else editor.commands.focus();
+      else editor.view.focus();
       return;
     }
     const index = roving().indexOf(node as HTMLButtonElement);
@@ -656,7 +693,7 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
       action();
     } else if (event.key === "Tab" && event.shiftKey) {
       event.preventDefault();
-      editor.commands.focus();
+      editor.view.focus();
     }
   };
   const onTooltipIn = (event: Event) => {
@@ -676,6 +713,12 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
     if (pasteRow.hidden) return;
     const modifierOnly = ["Shift", "Control", "Meta", "Alt"].includes(event.key);
     const pasting = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v";
+    if (pasting && event.shiftKey && pasted) {
+      // The Plain text button's shortcut: switch the paste just made, rather than paste a second, plain copy.
+      event.preventDefault();
+      switchPaste("plain");
+      return;
+    }
     if (!modifierOnly && !pasting && !(event.altKey && event.key === "F10")) hidePasteRow();
   };
   const onEditorPointerDown = () => hidePasteRow();
@@ -704,7 +747,12 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
   const tracker = trackLeaving(target, toolbar, finish, { anchorIsInside: true });
 
   return {
-    focus: () => editor.commands.focus("end"),
+    // At once, not TipTap's `focus("end")`, which waits a frame: keys pressed meanwhile (Ctrl+K opening the link row)
+    // would have focus pulled back to the text afterwards.
+    focus: () => {
+      editor.commands.setTextSelection(editor.state.doc.content.size);
+      editor.view.focus();
+    },
     commit: finish,
     destroy() {
       tracker.close();

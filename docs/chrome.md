@@ -358,7 +358,9 @@ import { richTextWidget } from "@yl/editor/richtext";
 mountEditor({ widgets: { richtext: richTextWidget } });
 ```
 
-It reads its words from the `strings` given to `mountEditor`. `createRichTextWidget({ strings })` overrides some for this
+It reads its words from the `strings` given to `mountEditor`, including the H2/H3 glyphs (`headingGlyph`), the
+shortcut key names shown in tooltips off Apple devices (`keyControl`, `keyShift`, `keyAlt`, `keyEnter`, `keyEscape`;
+Apple devices show the standard ⌘ ⇧ ⌥ ↩ symbols) and the address placeholder (`linkPlaceholder`). `createRichTextWidget({ strings })` overrides some for this
 widget only. Its CSS is in `chrome.css`, themed by the same tokens.
 
 **Editing.** The editor types into the host element itself, so the page's own typography stays. A toolbar
@@ -374,22 +376,22 @@ unless the last save failed. The committed value is the stored shape below, and 
 
 **Keyboard.** It follows the ARIA toolbar pattern, and nothing traps focus.
 
-| Where           | Key                            | Does                                                           |
-| --------------- | ------------------------------ | -------------------------------------------------------------- |
-| Text            | Ctrl/⌘ B, Ctrl/⌘ I             | Bold, italic                                                   |
-| Text            | Ctrl/⌘ K                       | Open the link row                                              |
-| Text            | Ctrl/⌘ ⇧ 8, Ctrl/⌘ ⇧ 7         | Bulleted list, numbered list                                   |
-| Text            | Ctrl/⌘ ⌥ 2, Ctrl/⌘ ⌥ 3         | H2, H3, when the field allows them                             |
-| Text            | Ctrl/⌘ ⇧ V                     | Paste as plain text                                            |
-| Text            | Alt F10, or Tab outside a list | Focus the toolbar (Plain text while the paste options are up)  |
-| Text, in a list | Tab, ⇧ Tab                     | Nest or un-nest the item                                       |
-| Text            | Ctrl/⌘ Enter                   | Done                                                           |
-| Text            | Esc                            | Cancel                                                         |
-| Toolbar         | ← → Home End                   | Move between buttons, wrapping at the ends                     |
-| Toolbar         | Enter, Space                   | Press the button; focus goes back to the text, except for Link |
-| Toolbar         | Esc                            | Hide the tooltip if one shows, else back to the text           |
-| Toolbar         | ⇧ Tab / Tab                    | Back to the text, or on past the toolbar (which commits)       |
-| Link row        | Enter / Esc                    | Apply, or close the row; either way back to the text           |
+| Where           | Key                            | Does                                                                   |
+| --------------- | ------------------------------ | ---------------------------------------------------------------------- |
+| Text            | Ctrl/⌘ B, Ctrl/⌘ I             | Bold, italic                                                           |
+| Text            | Ctrl/⌘ K                       | Open the link row                                                      |
+| Text            | Ctrl/⌘ ⇧ 8, Ctrl/⌘ ⇧ 7         | Bulleted list, numbered list                                           |
+| Text            | Ctrl/⌘ ⌥ 2, Ctrl/⌘ ⌥ 3         | H2, H3, when the field allows them                                     |
+| Text            | Ctrl/⌘ ⇧ V                     | Paste as plain text                                                    |
+| Text            | Alt F10, or Tab outside a list | Focus the toolbar (Plain text while the paste options are up)          |
+| Text, in a list | Tab, ⇧ Tab                     | Nest or un-nest the item; where it can't nest, Tab goes to the toolbar |
+| Text            | Ctrl/⌘ Enter                   | Done                                                                   |
+| Text            | Esc                            | Cancel                                                                 |
+| Toolbar         | ← → Home End                   | Move between buttons, wrapping at the ends                             |
+| Toolbar         | Enter, Space                   | Press the button; focus goes back to the text, except for Link         |
+| Toolbar         | Esc                            | Hide the tooltip if one shows, else back to the text                   |
+| Toolbar         | ⇧ Tab / Tab                    | Back to the text, or on past the toolbar (which commits)               |
+| Link row        | Enter / Esc                    | Apply, or close the row; either way back to the text                   |
 
 A tooltip shows each button's name and shortcut on hover and keyboard focus. It is `aria-hidden`: screen readers get
 the name from `aria-label` and the shortcut from `aria-keyshortcuts`. The H2 and H3 buttons are named "H2 Heading" and
@@ -397,14 +399,15 @@ the name from `aria-label` and the shortcut from `aria-keyshortcuts`. The H2 and
 say what they see (WCAG 2.5.3).
 
 **Links.** Link (or Ctrl/⌘ K) opens a row inside the toolbar with the address input, focused. On a link it starts from
-its address, selects the whole link and offers Remove link. A bare domain (`example.com`) gets `https://`. An address
+its address, selects the whole link and offers Remove link. A bare domain (`example.com`, `example.com:8080`) gets `https://` and an email address gets `mailto:`. An address
 that isn't `https:`, `http:`, `mailto:`, `tel:` or a path starting with one `/` is refused with the `linkRefused` line
 under the input (`aria-invalid`, `aria-describedby`). With nothing selected, the address is inserted as its own text.
 
 **Paste.** Pasted content keeps the formatting the field allows and drops the rest without a word. When the paste kept
 some formatting, a Paste options row offers Keep formatting and Plain text (`aria-pressed`), and a screen reader hears
 `pasteAnnounce`. Switching replaces the pasted content, and switching back restores it. The row goes away when the
-editor types or clicks in the text. Ctrl/⌘ ⇧ V pastes plain text with no row.
+editor types or clicks in the text, or anything else changes the document. Ctrl/⌘ ⇧ V pastes plain text with no row;
+pressed while the row is up, it switches the paste just made to plain text.
 
 **The stored shape.** A rich text value is an HTML string of:
 

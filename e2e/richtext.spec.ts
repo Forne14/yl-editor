@@ -25,7 +25,7 @@ const toolbar = (page: Page) => page.getByRole("toolbar", { name: "Formatting fo
 const tool = (page: Page, name: string) => toolbar(page).getByRole("button", { name, exact: true });
 
 /**
- * Opens the lede with a click and puts the caret at the end of its text. Through the editor's own command: no key does
+ * Opens the lede with a click and puts the caret at the end of its text. Through the editor's own commands: no key does
  * that in every engine (WebKit on macOS ignores Cmd+End).
  */
 async function openLede(page: Page): Promise<Locator> {
@@ -33,7 +33,12 @@ async function openLede(page: Page): Promise<Locator> {
   await lede.locator("p").click();
   await expect(toolbar(page)).toBeVisible();
   await expect(lede).toBeFocused();
-  await lede.evaluate((node) => (node as HTMLElement & { editor: Editor }).editor.commands.focus("end"));
+  // Synchronously: TipTap's `focus("end")` waits a frame, and keys pressed before it would lose focus afterwards.
+  await lede.evaluate((node) => {
+    const { editor } = node as HTMLElement & { editor: Editor };
+    editor.commands.setTextSelection(editor.state.doc.content.size);
+    editor.view.focus();
+  });
   return lede;
 }
 
