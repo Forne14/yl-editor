@@ -688,8 +688,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           kind === "publish" ? strings.publish : strings.discard,
           async () => {
             if (running) return;
-            // `min` isn't enforced on typed values, and the clock may have passed this time since it was typed.
-            if (inPast()) {
+            // `min` isn't enforced on typed values, and the clock may have passed this time since it was typed. A
+            // half-typed date reads as no date, so it would publish now.
+            if (inPast() || publishAt?.validity.badInput === true) {
               syncConfirm();
               return;
             }
@@ -784,19 +785,45 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           kind === "publish" ? "primary" : "danger",
         );
         const cancel = button(strings.cancel, () => sheet.close(), "ghost");
+        const actions = element("div", { class: "cms-sheet__actions" }, [cancel, confirm]);
         if (publishAt) {
           publishAt.min = localInputValue(new Date());
           publishAt.addEventListener("input", syncConfirm);
           publishAt.addEventListener("change", syncConfirm);
           // Clearing a date's last segments changes no `value`, so no `input` fires; the key's release still says so.
           publishAt.addEventListener("keyup", syncConfirm);
-          publishAt.addEventListener("blur", () => {
+          const settleLeft = () => {
+            // Escape, Cancel or Close may have ended the sheet: nobody is left to tell.
+            if (!isOpen) return;
             if (publishAt.validity.badInput) incompleteLeft = true;
             syncConfirm();
+          };
+          // A press on Cancel or Publish blurs the input before its click. The line would push the buttons down under
+          // the pointer and lose that click, so it waits until the press is over.
+          let pressing = false;
+          let afterPress: (() => void) | undefined;
+          const release = () => {
+            window.removeEventListener("pointerup", release, true);
+            window.removeEventListener("pointercancel", release, true);
+            pressing = false;
+            const run = afterPress;
+            afterPress = undefined;
+            // After the click that this release dispatches.
+            if (run) setTimeout(run, 0);
+          };
+          actions.addEventListener("pointerdown", () => {
+            if (pressing) return;
+            pressing = true;
+            window.addEventListener("pointerup", release, true);
+            window.addEventListener("pointercancel", release, true);
+          });
+          publishAt.addEventListener("blur", () => {
+            if (pressing) afterPress = settleLeft;
+            else setTimeout(settleLeft, 0);
           });
           body.append(element("label", { class: "cms-field-label" }, [strings.publishAt, publishAt]), pastNote);
         }
-        body.append(element("div", { class: "cms-sheet__actions" }, [cancel, confirm]));
+        body.append(actions);
         return () => {
           isOpen = false;
           for (const [key, row] of rows) if (row.review && key !== inFlight) session.endReview(key, row.review);

@@ -2436,6 +2436,12 @@ describe("scheduling", () => {
       Object.defineProperty(input, "validity", { value: { badInput: bad }, configurable: true });
     };
 
+    /** Focus leaves the input; what it shows waits a task, past any click that caused it. */
+    const leave = async (input: HTMLInputElement) => {
+      input.dispatchEvent(new FocusEvent("blur"));
+      await settle();
+    };
+
     async function openHalfTyped() {
       serve({ "pages/home": { payload: { title: "Hello" } } });
       await mount({ scheduling: true });
@@ -2457,7 +2463,7 @@ describe("scheduling", () => {
 
     test("leaving the input says why, marks it invalid and announces it once", async () => {
       const { sheet, input } = await openHalfTyped();
-      input.dispatchEvent(new FocusEvent("blur"));
+      await leave(input);
       const reason = sheet.querySelector(".cms-error");
       expect(reason?.textContent).toBe(
         "That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.",
@@ -2474,7 +2480,7 @@ describe("scheduling", () => {
 
     test("emptying the segments clears the line on the key's release, and Publish comes back", async () => {
       const { sheet, input } = await openHalfTyped();
-      input.dispatchEvent(new FocusEvent("blur"));
+      await leave(input);
       halfType(input, false);
       // Clearing a datetime's last segments changes no `value`, so no `input` fires.
       input.dispatchEvent(new Event("keyup"));
@@ -2488,17 +2494,53 @@ describe("scheduling", () => {
       const { input } = await openHalfTyped();
       vi.setSystemTime(new Date(2030, 5, 1, 9, 45));
       input.dispatchEvent(new Event("keyup"));
-      input.dispatchEvent(new FocusEvent("blur"));
+      await leave(input);
       expect(input.min).toBe("2030-06-01T09:30");
       halfType(input, false);
       type(input, "2030-06-01T10:00");
       expect(input.min).toBe("2030-06-01T09:45");
     });
 
+    test("a press on Cancel that blurs it shows nothing until the press is over, so the button stays put", async () => {
+      const { sheet, input } = await openHalfTyped();
+      const cancel = buttonNamed("Cancel", sheet);
+      cancel.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      await leave(input);
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      window.dispatchEvent(new Event("pointerup"));
+      await settle();
+      expect(sheet.textContent).toContain(INCOMPLETE);
+    });
+
+    test("closing the sheet as focus leaves announces nothing", async () => {
+      const { sheet, input } = await openHalfTyped();
+      const live = document.querySelector(".cms-live") as HTMLElement;
+      live.textContent = "";
+      const cancel = buttonNamed("Cancel", sheet);
+      cancel.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      input.dispatchEvent(new FocusEvent("blur"));
+      window.dispatchEvent(new Event("pointerup"));
+      cancel.click();
+      await settle();
+      expect(sheet.hidden).toBe(true);
+      expect(live.textContent).toBe("");
+    });
+
+    test("Confirm refuses a half-typed date even when the button was left enabled", async () => {
+      const { sheet } = await openHalfTyped();
+      const confirm = buttonNamed("Publish", sheet);
+      confirm.disabled = false;
+      confirm.click();
+      await settle();
+      expect(posts("publish")).toEqual([]);
+      expect(sheet.hidden).toBe(false);
+      expect(confirm.disabled).toBe(true);
+    });
+
     test("completing it swaps the line for the time's own check", async () => {
       vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
       const { sheet, input } = await openHalfTyped();
-      input.dispatchEvent(new FocusEvent("blur"));
+      await leave(input);
       halfType(input, false);
       type(input, "2030-06-01T09:00");
       expect(sheet.textContent).not.toContain(INCOMPLETE);

@@ -246,8 +246,9 @@ actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `resto
 `unpublished`, `schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`,
 `firstPublish`, `noDifferences`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`,
 `loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `bulkStopped`,
-`scheduleInPast`, `scheduleIncomplete`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`, `bulkLeftOut`. The number and date
-widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept` (leaving one).
+`scheduleInPast`, `scheduleIncomplete`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`, `bulkLeftOut`.
+The number and date widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept`
+(leaving one).
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.

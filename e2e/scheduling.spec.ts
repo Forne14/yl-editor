@@ -234,3 +234,20 @@ test("a half-typed Publish at says why once focus leaves it, and clears when it 
   await expect(confirmButton(page)).toHaveText("Schedule");
   await expect(confirmButton(page)).toBeEnabled();
 });
+
+test("with a half-typed Publish at, one click on Cancel closes the sheet and nothing is announced", async ({
+  page,
+  demo,
+}) => {
+  await demo.openEditor({ scheduling: true });
+  await editText(page, "#about-title", "Cancelled title");
+  await openPublishSheet(page);
+  const input = publishAt(page);
+  await input.focus();
+  await page.keyboard.type("11");
+  expect(await input.evaluate((node: HTMLInputElement) => node.validity.badInput)).toBe(true);
+  // The press blurs the input; a line shown then would push Cancel down under the pointer and lose the click.
+  await sheet(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(sheet(page)).toBeHidden();
+  await expect(page.locator(".cms-live")).not.toContainText("isn’t complete");
+});
