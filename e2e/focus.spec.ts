@@ -80,7 +80,7 @@ test.describe("text fields", () => {
   });
 
   test("Esc on the rich text fallback restores the original markup", async ({ page, demo }) => {
-    await demo.openEditor();
+    await demo.openEditor({ richtext: "fallback" });
     const field = page.locator(".lede");
     await field.click();
     await page.keyboard.type(" Always.");

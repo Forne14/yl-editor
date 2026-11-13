@@ -150,7 +150,13 @@ export interface Demo {
    * Opens `/?edit=1` (with `scheduling=1` when asked) and waits until the chrome has mounted and its first load has
    * finished. On a new page of `context` when one is given.
    */
-  openEditor(options?: { page?: Page; context?: BrowserContext; scheduling?: boolean }): Promise<Page>;
+  openEditor(options?: {
+    page?: Page;
+    context?: BrowserContext;
+    scheduling?: boolean;
+    /** Leave `richtext` to the plain-text fallback instead of the rich text widget. */
+    richtext?: "fallback";
+  }): Promise<Page>;
 }
 
 /** Waits for the island's `ready` (it sets `data-editor-ready` on <html>) and the bar. */
@@ -278,7 +284,10 @@ async function createDemo(
     },
     async openEditor(options = {}) {
       const target = options.page ?? (options.context ? await options.context.newPage() : page);
-      await target.goto(options.scheduling ? "/?edit=1&scheduling=1" : "/?edit=1");
+      const query = new URLSearchParams({ edit: "1" });
+      if (options.scheduling) query.set("scheduling", "1");
+      if (options.richtext) query.set("richtext", options.richtext);
+      await target.goto(`/?${query}`);
       await waitForEditor(target);
       return target;
     },

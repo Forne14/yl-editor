@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `@yl/editor/richtext`: a rich text widget built on TipTap. Register `richTextWidget` (or `createRichTextWidget({
+  strings })`) for `richtext`. It edits the host element in place with a toolbar above it: bold, italic, link, bulleted
+  and numbered lists, H2 and H3 when the field allows them, then Cancel and Done. It has keyboard shortcuts, the ARIA
+  toolbar pattern, a link row that refuses unsafe addresses with a visible reason, and Keep formatting or Plain text
+  after a formatted paste (Ctrl/⌘+Shift+V pastes plain). Pasted formatting outside the set is dropped. `@yl/editor/chrome`
+  never imports it. See `docs/chrome.md` → Rich text.
+- Optional peer dependencies for the widget: `@tiptap/core`, `@tiptap/pm` and `@tiptap/starter-kit` (`^3.33.1`). Only
+  hosts that import `@yl/editor/richtext` need them.
+- `sanitizeRichText(html, { headings })`, `isAllowedHref(href)` and `richText(options)` from `@yl/editor`: the
+  server-side sanitiser for the documented rich text shape, and a zod string schema that applies it on every parse.
+  Links keep only `https:`, `http:`, `mailto:`, `tel:` or a path on the site.
+- `editable()` takes `headings: [2, 3]` for a `richtext` field and writes `data-edit-headings`.
+- Chrome: `chrome.css` styles the toolbar (`.cms-toolbar`, `.cms-tooltip`) and the editable (`.cms-richtext`) with the
+  existing tokens. New `defaultStrings` keys: `formatting`, `bold`, `italic`, `link`, `bulletList`, `orderedList`,
+  `heading`, `subheading`, `linkAddress`, `applyLink`, `removeLink`, `linkRefused`, `pasteOptions`, `pastedFormatted`,
+  `pastedPlain`, `keepFormatting`, `plainText`, `pasteAnnounce`, `headingGlyph`, `linkPlaceholder`, `keyControl`,
+  `keyShift`, `keyAlt`, `keyEnter` and `keyEscape`.
+
 ## [0.5.0] - 2026-11-11
 
 ### Changed

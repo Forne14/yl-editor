@@ -7,6 +7,7 @@ import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canEditAnything } from "./content.ts";
 import { renderPage } from "./render.ts";
+import { richTextBundle } from "./richtext-bundle.ts";
 import { TENANT_ID, existingTenant, tenantFor, type Tenant } from "./tenants.ts";
 import { handleTestHook } from "./test-hooks.ts";
 import { contentSecurityPolicy, html, notFound, sessionOf, tenantIdOf } from "./web.ts";
@@ -81,7 +82,8 @@ async function renderHome(request: Request, tenant: Tenant): Promise<Response> {
   const read = (key: string) => tenant.store.get(key, { draft: editing, unvalidated: true, includeRetired: editing });
   const [home, about, settings] = await Promise.all([read("pages/home"), read("pages/about"), read("settings/site")]);
   const scheduling = url.searchParams.get("scheduling") === "1";
-  return html(renderPage({ home, about, settings }, { session, editing, scheduling }));
+  const richtextFallback = url.searchParams.get("richtext") === "fallback";
+  return html(renderPage({ home, about, settings }, { session, editing, scheduling, richtextFallback }));
 }
 
 async function recordCspReport(request: Request): Promise<Response> {
@@ -108,6 +110,11 @@ async function route(request: Request): Promise<Response> {
   if (pathname.startsWith("/api/content/")) return (await tenantFor(tenantId, sessionOf)).handlers.handle(request);
   if (request.method !== "GET") return notFound();
   if (pathname === "/") return renderHome(request, await tenantFor(tenantId, sessionOf));
+  if (pathname === "/richtext.js") {
+    return new Response(await richTextBundle(), {
+      headers: { "content-type": CONTENT_TYPES[".js"] ?? "text/javascript", "cache-control": "no-cache" },
+    });
+  }
   if (pathname.startsWith("/pkg/")) {
     return (await staticFile(distDirectory, decodeURIComponent(pathname.slice("/pkg/".length)))) ?? notFound();
   }

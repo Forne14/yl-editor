@@ -3,10 +3,14 @@ import { parsePath } from "./path.ts";
 /** The one place the field-type union lives. */
 export type EditFieldType = "text" | "richtext" | "media" | "select" | "number" | "url" | "date" | "tags" | "toggle";
 
-/** Optional extras the chrome reads: the choices for a `select`, and a human label for the badge. */
+/**
+ * Optional extras the chrome reads: the choices for a `select`, a human label for the badge, and the heading levels a
+ * `richtext` field allows (`data-edit-headings`; none by default).
+ */
 export interface EditableAttrs {
   options?: readonly string[];
   label?: string;
+  headings?: readonly (2 | 3)[];
 }
 
 const KEY_ID = /^[A-Za-z0-9_-]+$/;
@@ -37,6 +41,8 @@ export function editable(docKey: string | undefined) {
     const result: Record<string, string> = { "data-edit-field": `${docKey}:${path}`, "data-edit-type": type };
     if (attrs?.options !== undefined) result["data-edit-options"] = JSON.stringify(attrs.options);
     if (attrs?.label !== undefined) result["data-edit-label"] = attrs.label;
+    if (attrs?.headings !== undefined && attrs.headings.length > 0)
+      result["data-edit-headings"] = attrs.headings.join(" ");
     return result;
   };
 }

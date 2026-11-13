@@ -16,7 +16,7 @@ import type {
   WidgetHandle,
 } from "./types.ts";
 import { Sheet, Toast } from "./ui.ts";
-import { createDefaultWidgets, missingWidget, provideStatus } from "./widgets.ts";
+import { createDefaultWidgets, missingWidget, provideStatus, provideStrings } from "./widgets.ts";
 
 interface ActiveWidget {
   record: FieldRecord;
@@ -332,6 +332,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     };
     // An error toast stays until dismissed or resolved (a failed save's Retry, a conflict's choice): an info toast
     // replacing it would take the unsaved change out of view when it hides itself.
+    provideStrings(context, strings);
     provideStatus(context, (message) => {
       if (toast.showingError) toast.announce(message);
       else toast.show(message, "info");

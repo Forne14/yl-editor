@@ -41,7 +41,6 @@ export function openPopover(anchor: HTMLElement, label: string, onLeave?: () => 
 }
 
 function openChromePopover(anchor: HTMLElement, label: string, options: PopoverOptions = {}): Popover {
-  const { onLeave } = options;
   const titleId = uniqueId("cms-popover-title");
   const root = element("div", { class: "cms-root cms-popover", role: "dialog", "aria-labelledby": titleId }, [
     element("p", { class: "cms-popover__title", id: titleId }, [label]),
@@ -50,7 +49,39 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
   const view = anchor.ownerDocument.defaultView;
   root.style.setProperty("--cms-popover-top", `${rect.bottom + (view?.scrollY ?? 0)}px`);
   root.style.setProperty("--cms-popover-left", `${rect.left + (view?.scrollX ?? 0)}px`);
+  const tracker = trackLeaving(anchor, root, options.onLeave, { keepFocus: options.keepFocus });
+  anchor.ownerDocument.body.append(root);
+  return {
+    root,
+    close() {
+      tracker.close();
+      root.remove();
+    },
+  };
+}
+
+export interface LeaveOptions {
+  /** See `PopoverOptions.keepFocus`. */
+  keepFocus?: boolean | undefined;
+  /**
+   * Focus and presses inside `anchor` count as inside too, and focus leaving `anchor` for elsewhere is leaving: for a
+   * widget edited in place with its controls in `root`, such as the rich text toolbar.
+   */
+  anchorIsInside?: boolean;
+}
+
+/**
+ * Calls `onLeave` at most once, when the editor leaves `root` (and `anchor`): the rules `openPopover` documents. A
+ * shared part of the chrome, not a public export: `index.ts` doesn't re-export it.
+ */
+export function trackLeaving(
+  anchor: HTMLElement,
+  root: HTMLElement,
+  onLeave: (() => void) | undefined,
+  options: LeaveOptions = {},
+): { close(): void } {
   const doc = anchor.ownerDocument;
+  const inside = (node: Node) => root.contains(node) || (options.anchorIsInside === true && anchor.contains(node));
   let closed = false;
   let left = false;
   // Whether the latest press landed inside the popover. Safari doesn't focus a button or checkbox on a click, so a
@@ -126,7 +157,7 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
   // empty stretch of the root has that target too, but a click there drops focus, which `handleFocusOut` catches.
   const handlePointerDown = (event: PointerEvent) => {
     const target = event.target instanceof Node ? event.target : null;
-    pressInside = target !== null && root.contains(target);
+    pressInside = target !== null && inside(target);
     clearPressTimer();
     outsidePress = undefined;
     focusTakenFrom = undefined;
@@ -170,7 +201,7 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
   };
   const handleFocusOut = (event: FocusEvent) => {
     const next = event.relatedTarget;
-    if (next instanceof Node && root.contains(next)) return;
+    if (next instanceof Node && inside(next)) return;
     if (outsidePress !== undefined) {
       // The press decides: it leaves if it completes, and hands focus back if it isn't leaving.
       const control = event.target instanceof HTMLElement ? event.target : undefined;
@@ -186,13 +217,14 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
     // keeps `activeElement` on the control, so it commits nothing.
     afterFocusSettles(() => {
       const current = doc.activeElement;
-      if (pressInside || (current && root.contains(current))) return;
+      if (pressInside || (current && inside(current))) return;
       leave();
     });
   };
   if (options.keepFocus) root.addEventListener("mousedown", handleMouseDown);
   if (onLeave) {
     root.addEventListener("focusout", handleFocusOut);
+    if (options.anchorIsInside) anchor.addEventListener("focusout", handleFocusOut);
     doc.addEventListener("pointerdown", handlePointerDown, true);
     doc.addEventListener("pointerup", handlePointerUp, true);
     doc.addEventListener("pointercancel", handlePointerCancel, true);
@@ -200,22 +232,20 @@ function openChromePopover(anchor: HTMLElement, label: string, options: PopoverO
     doc.addEventListener("click", handleClick, true);
     doc.addEventListener("keydown", handleKeyDown, true);
   }
-  doc.body.append(root);
   return {
-    root,
     close() {
       closed = true;
       if (settleTimer !== undefined) clearTimeout(settleTimer);
       clearPressTimer();
       root.removeEventListener("mousedown", handleMouseDown);
       root.removeEventListener("focusout", handleFocusOut);
+      anchor.removeEventListener("focusout", handleFocusOut);
       doc.removeEventListener("pointerdown", handlePointerDown, true);
       doc.removeEventListener("pointerup", handlePointerUp, true);
       doc.removeEventListener("pointercancel", handlePointerCancel, true);
       doc.removeEventListener("contextmenu", handleContextMenu, true);
       doc.removeEventListener("click", handleClick, true);
       doc.removeEventListener("keydown", handleKeyDown, true);
-      root.remove();
     },
   };
 }
@@ -233,13 +263,27 @@ export function provideStatus(ctx: WidgetContext, show: (message: string) => voi
   (ctx as StatusContext)[STATUS] = show;
 }
 
+const STRINGS = Symbol("cms-strings");
+
+type StringsContext = WidgetContext & { [STRINGS]?: Strings };
+
+/** Hands the editor's strings (defaults plus the host's overrides) to widgets mounted for `ctx`. */
+export function provideStrings(ctx: WidgetContext, strings: Strings): void {
+  (ctx as StringsContext)[STRINGS] = strings;
+}
+
+/** The strings `mountEditor` was given, or the defaults for a context built elsewhere. */
+export function contextStrings(ctx: WidgetContext): Strings {
+  return (ctx as StringsContext)[STRINGS] ?? defaultStrings;
+}
+
 /** An info toast where the chrome provides one; a context built elsewhere only announces it. */
 function showStatus(ctx: WidgetContext, message: string): void {
   ((ctx as StatusContext)[STATUS] ?? ctx.announce)(message);
 }
 
 /** Commit-or-cancel bookkeeping every widget needs: only the first outcome counts. */
-function once(ctx: WidgetContext) {
+export function once(ctx: WidgetContext) {
   let settled = false;
   return {
     commit(next: unknown) {
@@ -255,7 +299,7 @@ function once(ctx: WidgetContext) {
   };
 }
 
-function fieldLabel(ctx: WidgetContext): string {
+export function fieldLabel(ctx: WidgetContext): string {
   return ctx.field.label ?? ctx.field.path;
 }
 

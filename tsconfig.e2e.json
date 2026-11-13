@@ -10,7 +10,8 @@
       "@yl/editor/contract": ["./src/contract.ts"],
       "@yl/editor/access": ["./src/access/index.ts"],
       "@yl/editor/http": ["./src/http/index.ts"],
-      "@yl/editor/chrome": ["./src/chrome/index.ts"]
+      "@yl/editor/chrome": ["./src/chrome/index.ts"],
+      "@yl/editor/richtext": ["./src/richtext/index.ts"]
     }
   },
   "include": ["examples/**/*.ts", "e2e/**/*.ts", "playwright.config.ts"]

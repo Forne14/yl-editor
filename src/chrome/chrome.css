@@ -434,6 +434,151 @@
   border-radius: var(--cms-radius);
 }
 
+/* ---------- Rich text (@yl/editor/richtext) ---------- */
+
+/* The host element itself is the editable; these are the few rules ProseMirror needs to behave. */
+:where(.cms-richtext) {
+  white-space: pre-wrap;
+  white-space: break-spaces;
+  overflow-wrap: break-word;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0;
+}
+
+:where(.cms-richtext img[class~="ProseMirror-separator"]) {
+  display: inline;
+  inline-size: 0;
+  block-size: 0;
+  margin: 0;
+  border: none;
+}
+
+/* The toolbar is a .cms-root itself, so the [hidden] rule above, which reaches descendants, doesn't cover it. */
+.cms-toolbar[hidden] {
+  display: none;
+}
+
+/* Above the field, over the badge, which sits in the same place. */
+:where(.cms-toolbar) {
+  position: fixed;
+  top: var(--cms-toolbar-top, 0);
+  left: var(--cms-toolbar-left, 0);
+  z-index: calc(var(--cms-z) + 1);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-1);
+  max-width: calc(100vw - 2 * var(--cms-space-4));
+  padding: var(--cms-space-1);
+  transform: translateY(calc(-100% - var(--cms-space-1)));
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  box-shadow: var(--cms-shadow);
+}
+
+:where(.cms-toolbar__btn) {
+  position: relative;
+  padding: 0 var(--cms-space-2);
+  border-color: transparent;
+  background: transparent;
+}
+
+:where(.cms-toolbar__btn:hover) {
+  border-color: var(--cms-border);
+}
+
+:where(.cms-toolbar__btn[aria-pressed="true"]) {
+  border-color: var(--cms-accent);
+  background: var(--cms-accent);
+  color: var(--cms-accent-fg);
+}
+
+:where(.cms-toolbar__btn svg) {
+  inline-size: 1.15em;
+  block-size: 1.15em;
+}
+
+:where(.cms-toolbar__italic) {
+  font-family: Georgia, serif;
+  font-style: italic;
+}
+
+:where(.cms-toolbar__sep) {
+  align-self: stretch;
+  margin-block: var(--cms-space-2);
+  border-inline-start: thin solid var(--cms-border);
+}
+
+:where(.cms-toolbar__group, .cms-toolbar__actions) {
+  display: flex;
+  gap: var(--cms-space-1);
+}
+
+:where(.cms-toolbar__actions) {
+  margin-inline-start: auto;
+}
+
+:where(.cms-toolbar__paste) {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-2);
+  padding: var(--cms-space-1) var(--cms-space-2);
+  border-block-start: thin solid var(--cms-border);
+  font-size: var(--cms-size-sm);
+}
+
+:where(.cms-toolbar__paste p) {
+  margin: 0 auto 0 0;
+  color: var(--cms-muted);
+}
+
+:where(.cms-toolbar__link) {
+  display: grid;
+  flex: 1 0 100%;
+  gap: var(--cms-space-2);
+  padding: var(--cms-space-2);
+  border-block-start: thin solid var(--cms-border);
+}
+
+:where(.cms-toolbar__link .cms-field-label) {
+  margin: 0;
+}
+
+:where(.cms-toolbar__link-row) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cms-space-2);
+}
+
+:where(.cms-toolbar__link-row .cms-input) {
+  flex: 1 1 14em;
+  width: auto;
+}
+
+:where(.cms-tooltip) {
+  position: absolute;
+  top: calc(var(--cms-tooltip-top, 100%) + var(--cms-space-2));
+  left: var(--cms-tooltip-left, 50%);
+  z-index: 1;
+  transform: translateX(-50%);
+  padding: var(--cms-space-1) var(--cms-space-2);
+  border-radius: var(--cms-radius);
+  background: var(--cms-fg);
+  color: var(--cms-bg);
+  font-size: var(--cms-size-sm);
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+:where(.cms-tooltip kbd) {
+  margin-inline-start: var(--cms-space-2);
+  font: inherit;
+  opacity: 0.75;
+}
+
 /* ---------- Motion ---------- */
 
 :where(.cms-toast, .cms-sheet, .cms-popover, .cms-badge) {
@@ -471,5 +616,14 @@
 
   :where(.cms-bar__actions .cms-btn) {
     flex: 1 1 auto;
+  }
+
+  :where(.cms-toolbar) {
+    inset-inline: 0;
+    top: 0;
+    left: 0;
+    max-width: none;
+    transform: none;
+    border-radius: 0 0 var(--cms-radius) var(--cms-radius);
   }
 }
