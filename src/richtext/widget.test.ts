@@ -317,6 +317,25 @@ describe("links", () => {
     expect(toolbar().querySelector<HTMLElement>(".cms-toolbar__link")?.hidden).toBe(true);
   });
 
+  test("the link wraps the browser's selection even before ProseMirror has read it", () => {
+    handle = richTextWidget.mount(context().ctx);
+    editorOf(host).commands.setTextSelection(editorOf(host).state.doc.content.size);
+    // A selection made by the keyboard reaches ProseMirror only on the next selectionchange; set it with none.
+    const text = host.querySelector("p")?.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    const selection = document.getSelection() as Selection;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    press(host, "k", { ctrlKey: true });
+    expect(document.activeElement?.tagName).toBe("INPUT");
+    const input = toolbar().querySelector<HTMLInputElement>(".cms-toolbar__link input") as HTMLInputElement;
+    input.value = "/fresh";
+    press(input, "Enter");
+    expect(host.querySelector("a")?.textContent).toBe("Fresh");
+  });
+
   test("on an existing link the row starts from its address and offers Remove link", () => {
     handle = richTextWidget.mount(context('<p>See <a href="/bread">bread</a></p>').ctx);
     editorOf(host).commands.setTextSelection(7);

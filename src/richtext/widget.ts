@@ -497,7 +497,32 @@ function mountRichText(ctx: WidgetContext, strings: Strings): WidgetHandle {
 
   // ---------- Link row ----------
 
+  /**
+   * ProseMirror reads a selection made with the keyboard on the next `selectionchange`, so a shortcut pressed straight
+   * after Shift+Home would see the old one. The link row is about to take focus and restore ProseMirror's selection
+   * later, so it reads the browser's first.
+   */
+  function takeBrowserSelection(): void {
+    const selection = doc.getSelection();
+    const { anchorNode, focusNode } = selection ?? {};
+    if (!selection || !anchorNode || !focusNode || !target.contains(anchorNode) || !target.contains(focusNode)) return;
+    const editorView = editor.view;
+    try {
+      const anchor = editorView.posAtDOM(anchorNode, selection.anchorOffset);
+      const head = editorView.posAtDOM(focusNode, selection.focusOffset);
+      const current = editorView.state.selection;
+      if (current.anchor === anchor && current.head === head) return;
+      const { doc: content } = editorView.state;
+      editorView.dispatch(
+        editorView.state.tr.setSelection(TextSelection.between(content.resolve(anchor), content.resolve(head))),
+      );
+    } catch {
+      // A position ProseMirror can't map keeps the selection it has.
+    }
+  }
+
   function openLinkRow(): void {
+    takeBrowserSelection();
     hideTooltip();
     const inLink = editor.isActive("link");
     if (inLink) editor.chain().extendMarkRange("link").run();
