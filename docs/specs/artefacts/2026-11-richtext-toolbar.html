@@ -9,6 +9,11 @@
 
     <!-- PROPOSED ADDITIONS to chrome.css. Tokens only, every rule in :where(), no raw values. -->
     <style id="proposed">
+      /* .cms-root [hidden] only reaches descendants, and the toolbar is a .cms-root itself. */
+      .cms-toolbar[hidden] {
+        display: none;
+      }
+
       :where(.cms-toolbar) {
         position: fixed;
         top: var(--cms-toolbar-top, 0);
@@ -59,8 +64,44 @@
         border-inline-start: thin solid var(--cms-border);
       }
 
-      :where(.cms-toolbar__done) {
+      :where(.cms-root, .cms-field) {
+        /* New token next to --cms-size-sm and --cms-size-md: a host's own type scale sets all three. */
+        --cms-size-lg: 1.25rem;
+      }
+
+      :where(.cms-toolbar__glyph-heading) {
+        font-size: var(--cms-size-lg);
+      }
+
+      :where(.cms-toolbar__glyph-subheading) {
+        font-size: var(--cms-size-md);
+      }
+
+      :where(.cms-toolbar__group) {
+        display: flex;
+        gap: var(--cms-space-1);
+      }
+
+      :where(.cms-toolbar__actions) {
+        display: flex;
+        gap: var(--cms-space-1);
         margin-inline-start: auto;
+      }
+
+      :where(.cms-toolbar__paste) {
+        display: flex;
+        flex: 1 0 100%;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-block-start: thin solid var(--cms-border);
+        font-size: var(--cms-size-sm);
+      }
+
+      :where(.cms-toolbar__paste p) {
+        margin: 0 auto 0 0;
+        color: var(--cms-muted);
       }
 
       :where(.cms-toolbar__link) {
@@ -153,7 +194,7 @@
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 470px), 1fr));
         gap: 16px;
       }
       .cell {
@@ -265,7 +306,7 @@
       .cell.span2 {
         grid-column: span 2;
       }
-      @media (max-width: 760px) {
+      @media (max-width: 980px) {
         .cell.span2 {
           grid-column: auto;
         }
@@ -382,17 +423,21 @@
         This is the <code>@yl/editor/richtext</code> widget. The editor types straight into the host element, so the
         page's own typography stays, as with the text widget. A toolbar floats just above the field, where the badge
         sits today. It holds the fixed formatting set (bold, italic, link, bulleted and numbered lists, and headings
-        when the field turns them on), then <strong>Done</strong>. It uses only existing <code>--cms-*</code> tokens and
-        adds five classes to <code>chrome.css</code> (the block marked <code>proposed</code> in this file's head). Its
-        position comes in as <code>--cms-toolbar-top</code> and <code>--cms-toolbar-left</code>, the same way as the
-        badge and popover, so it needs no inline styles.
+        when the field turns them on), then <strong>Cancel</strong> and <strong>Done</strong>. It uses the
+        <code>--cms-*</code> tokens, plus one new size token, and adds a handful of classes to
+        <code>chrome.css</code> (the block marked <code>proposed</code> in this file's head). Its position comes in as
+        <code>--cms-toolbar-top</code> and <code>--cms-toolbar-left</code>, the same way as the badge and popover, so it
+        needs no inline styles. Hosts restyle it the way they restyle the rest of the chrome: every rule is in
+        <code>:where()</code>, so any host selector or token override wins.
       </p>
 
       <h2>1. Try it</h2>
       <p class="note">
-        Click the text, or Tab to it and press Enter. The demo uses the browser's <code>execCommand</code> rather than
-        TipTap, so formatting and paste details are approximate. Focus order, keyboard, pressed states, link entry and
-        tooltips behave as proposed. The box under the field shows the HTML that would be stored.
+        Click the text, or Tab to it and press Enter. Paste something with formatting from another page to see the paste
+        options; Ctrl/⌘ + Shift + V pastes plain text straight away. The demo uses the browser's
+        <code>execCommand</code> rather than TipTap, so formatting and paste details are approximate. Focus order,
+        keyboard, pressed states, link entry and tooltips, Cancel and paste options behave as proposed. The box under
+        the field shows the HTML that would be stored.
       </p>
       <div class="grid">
         <div class="cell wide">
@@ -492,37 +537,70 @@
                 </svg>
               </button>
               <span class="cms-toolbar__sep" aria-hidden="true"></span>
-              <button
-                type="button"
-                class="cms-btn cms-toolbar__btn"
-                data-cmd="h2"
-                aria-pressed="false"
-                aria-label="Heading"
-                aria-keyshortcuts="Control+Alt+2 Meta+Alt+2"
-                tabindex="-1"
+              <span class="cms-toolbar__group"
+                ><button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  data-cmd="h2"
+                  aria-pressed="false"
+                  aria-label="Heading"
+                  aria-keyshortcuts="Control+Alt+2 Meta+Alt+2"
+                  tabindex="-1"
+                >
+                  <span class="cms-toolbar__glyph-heading" aria-hidden="true">Aa</span>
+                </button>
+                <button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  data-cmd="h3"
+                  aria-pressed="false"
+                  aria-label="Subheading"
+                  aria-keyshortcuts="Control+Alt+3 Meta+Alt+3"
+                  tabindex="-1"
+                >
+                  <span class="cms-toolbar__glyph-subheading" aria-hidden="true">Aa</span>
+                </button></span
               >
-                H2
-              </button>
-              <button
-                type="button"
-                class="cms-btn cms-toolbar__btn"
-                data-cmd="h3"
-                aria-pressed="false"
-                aria-label="Subheading"
-                aria-keyshortcuts="Control+Alt+3 Meta+Alt+3"
-                tabindex="-1"
+              <span class="cms-toolbar__actions"
+                ><button
+                  type="button"
+                  class="cms-btn cms-btn--ghost"
+                  data-cmd="cancel"
+                  aria-keyshortcuts="Escape"
+                  tabindex="-1"
+                >
+                  Cancel</button
+                ><button
+                  type="button"
+                  class="cms-btn cms-btn--primary"
+                  data-cmd="done"
+                  aria-keyshortcuts="Control+Enter Meta+Enter"
+                  tabindex="-1"
+                >
+                  Done
+                </button></span
               >
-                H3
-              </button>
-              <button
-                type="button"
-                class="cms-btn cms-btn--primary cms-toolbar__done"
-                data-cmd="done"
-                aria-keyshortcuts="Control+Enter Meta+Enter"
-                tabindex="-1"
-              >
-                Done
-              </button>
+              <div class="cms-toolbar__paste" role="group" aria-label="Paste options" id="pasterow" hidden>
+                <p id="pastemsg">Pasted with formatting.</p>
+                <button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  aria-pressed="true"
+                  data-cmd="keep"
+                  tabindex="-1"
+                >
+                  Keep formatting</button
+                ><button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  aria-pressed="false"
+                  data-cmd="plain"
+                  aria-keyshortcuts="Control+Shift+V Meta+Shift+V"
+                  tabindex="-1"
+                >
+                  Plain text
+                </button>
+              </div>
               <div class="cms-toolbar__link" id="linkrow" hidden>
                 <label class="cms-field-label">
                   Link address
@@ -561,8 +639,8 @@
           </div>
           <div class="out" id="out" aria-live="off"></div>
           <p class="caption">
-            Esc cancels and puts the field back as it was. Done or Ctrl/⌘ + Enter commits, and so does clicking anywhere
-            outside the field and toolbar, as with every widget.
+            Cancel or Esc puts the field back as it was and writes nothing. Done or Ctrl/⌘ + Enter commits, and so does
+            clicking anywhere outside the field and toolbar, as with every widget.
           </p>
         </div>
       </div>
@@ -628,7 +706,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
           </div>
           <div class="host">
             <div class="cms-field cms-field--editing"><p>Our sourdough now proves for 48 hours.</p></div>
@@ -690,7 +771,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
           </div>
           <div class="host">
             <div class="cms-field cms-field--editing">
@@ -774,7 +858,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done" tabindex="-1">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost" tabindex="-1">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary" tabindex="-1">Done</button></span
+            >
           </div>
           <p class="caption">
             The tooltip shows the name and shortcut on hover or keyboard focus, using ⌘ on Apple devices and Ctrl
@@ -844,7 +931,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
             <div class="cms-toolbar__link">
               <label class="cms-field-label"
                 >Link address
@@ -928,7 +1018,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
             <div class="cms-toolbar__link">
               <label class="cms-field-label"
                 >Link address
@@ -1008,7 +1101,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
             <div class="cms-toolbar__link">
               <label class="cms-field-label"
                 >Link address
@@ -1035,6 +1131,153 @@
           </p>
         </div>
 
+        <div class="cell">
+          <h3>Paste options · just pasted formatted text <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (paste)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__paste" role="group" aria-label="Paste options">
+              <p>Pasted with formatting.</p>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true">Keep formatting</button
+              ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false">Plain text</button>
+            </div>
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing">
+              <p>Our <strong>rye</strong> uses <a href="/flour">stoneground flour</a>.</p>
+            </div>
+          </div>
+          <p class="caption">
+            Shown only when the paste kept some formatting. Ctrl/⌘ + V keeps the formatting the field allows and drops
+            the rest. The row goes away as soon as you type or click in the text. A screen reader hears “Pasted with
+            formatting. Press Alt+F10 for paste options.”, and Alt+F10 lands on Plain text while the row is up.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Paste options · switched to plain text <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (paste plain)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__paste" role="group" aria-label="Paste options">
+              <p>Pasted as plain text.</p>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false">Keep formatting</button
+              ><button type="button" class="cms-btn cms-toolbar__btn sim-focus" aria-pressed="true">Plain text</button>
+            </div>
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing"><p>Our rye uses stoneground flour.</p></div>
+          </div>
+          <p class="caption">
+            Plain text replaces the paste with its text; Keep formatting puts it back. Ctrl/⌘ + Shift + V pastes plain
+            text without the row (Safari's own ⌥⇧⌘V does the same).
+          </p>
+        </div>
         <div class="cell span2">
           <h3>Headings turned on · caret in a subheading <span class="tag">new</span></h3>
           <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (headings)">
@@ -1090,11 +1333,18 @@
               </svg>
             </button>
             <span class="cms-toolbar__sep" aria-hidden="true"></span>
-            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">H2</button>
-            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Subheading">
-              H3
-            </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__group"
+              ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">
+                <span class="cms-toolbar__glyph-heading" aria-hidden="true">Aa</span>
+              </button>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Subheading">
+                <span class="cms-toolbar__glyph-subheading" aria-hidden="true">Aa</span>
+              </button></span
+            >
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
           </div>
           <div class="host">
             <div class="cms-field cms-field--editing">
@@ -1103,8 +1353,10 @@
             </div>
           </div>
           <p class="caption">
-            Pressing a pressed heading turns it back into a paragraph. A field turns headings on with
-            <code>data-edit-headings="2 3"</code> (the levels it allows; h2 and h3 at most).
+            The bigger Aa is Heading, the smaller Subheading. Their sizes are <code>--cms-size-lg</code> and
+            <code>--cms-size-md</code>, so they follow a host's own type scale. Pressing a pressed heading turns it back
+            into a paragraph. A field turns headings on with <code>data-edit-headings="2 3"</code> (the levels it
+            allows; h2 and h3 at most).
           </p>
         </div>
 
@@ -1162,7 +1414,10 @@
                 />
               </svg>
             </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
           </div>
           <div class="host">
             <div class="cms-field cms-field--editing">
@@ -1226,18 +1481,26 @@
               </svg>
             </button>
             <span class="cms-toolbar__sep" aria-hidden="true"></span>
-            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">H2</button>
-            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Subheading">
-              H3
-            </button>
-            <button type="button" class="cms-btn cms-btn--primary cms-toolbar__done">Done</button>
+            <span class="cms-toolbar__group"
+              ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">
+                <span class="cms-toolbar__glyph-heading" aria-hidden="true">Aa</span>
+              </button>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Subheading">
+                <span class="cms-toolbar__glyph-subheading" aria-hidden="true">Aa</span>
+              </button></span
+            >
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
           </div>
           <div class="host">
             <h3 class="narrow-h">At 375px</h3>
             <div class="cms-field cms-field--editing"><p>Our sourdough now proves for 48 hours.</p></div>
             <p class="caption sys">
               Under 40em the toolbar docks to the top of the viewport, full width, and wraps if it must. The bottom of
-              the screen belongs to the on-screen keyboard and the bar. Every button stays 44px.
+              the screen belongs to the on-screen keyboard and the bar. Every button stays 44px. Cancel and Done keep to
+              the end of the last row.
             </p>
           </div>
         </div>
@@ -1294,8 +1557,18 @@
           </tr>
           <tr>
             <td>Text</td>
+            <td><kbd>Ctrl/⌘ ⇧ V</kbd></td>
+            <td>Paste as plain text</td>
+          </tr>
+          <tr>
+            <td>Text, paste options up</td>
+            <td><kbd>Alt F10</kbd></td>
+            <td>Focus Plain text in the paste options</td>
+          </tr>
+          <tr>
+            <td>Text</td>
             <td><kbd>Esc</kbd></td>
-            <td>Cancel: put the field back as it was and write nothing</td>
+            <td>Cancel: put the field back as it was and write nothing. The Cancel button does the same, for touch</td>
           </tr>
           <tr>
             <td>Toolbar</td>
@@ -1382,28 +1655,45 @@
             <td><code>linkRefused</code></td>
             <td>Use an address that starts with https://, http://, mailto:, tel: or /.</td>
           </tr>
+          <tr>
+            <td><code>pasteOptions</code></td>
+            <td>Paste options</td>
+          </tr>
+          <tr>
+            <td><code>pastedFormatted</code></td>
+            <td>Pasted with formatting.</td>
+          </tr>
+          <tr>
+            <td><code>pastedPlain</code></td>
+            <td>Pasted as plain text.</td>
+          </tr>
+          <tr>
+            <td><code>keepFormatting</code></td>
+            <td>Keep formatting</td>
+          </tr>
+          <tr>
+            <td><code>plainText</code></td>
+            <td>Plain text</td>
+          </tr>
+          <tr>
+            <td><code>pasteAnnounce</code></td>
+            <td>Pasted with formatting. Press Alt+F10 for paste options.</td>
+          </tr>
         </tbody>
       </table>
       <p class="note">
-        Done reuses <code>done</code>. The H2 and H3 glyphs and the B and I letters are drawn, not read out. Their names
-        come from the strings above.
+        Done and Cancel reuse <code>done</code> and <code>cancel</code>. The Aa glyphs and the B and I letters are
+        drawn, not read out. Their names come from the strings above.
       </p>
 
-      <h2>5. Your call</h2>
+      <h2>5. Decided on the first round</h2>
       <div class="ask">
         <p>
-          <strong>a. Paste.</strong> The prototype drops formatting outside the set without a word, as the issue says.
-          The alternative is a one-line info toast, “Some formatting was removed from what you pasted.”, which would add
-          one more string. My lean is silent: the result is visible right there in the field.
+          <strong>a. Paste.</strong> Formatting outside the set is dropped silently. Paste options offer Keep formatting
+          or Plain text after a formatted paste, and Ctrl/⌘ + Shift + V pastes plain.
         </p>
-        <p>
-          <strong>b. Cancel on touch.</strong> On a phone there's no Esc key. The text widget has the same gap today, so
-          this follows it: Done only. A Cancel button next to Done would fix it for both, as its own ticket.
-        </p>
-        <p>
-          <strong>c. Heading glyphs.</strong> H2 and H3 echo the markup an editor never sees. “Aa” in two sizes is the
-          other option. I went with H2 and H3 because they don't need a tooltip to tell apart.
-        </p>
+        <p><strong>b. Cancel.</strong> Folded into this ticket: a Cancel button next to Done.</p>
+        <p><strong>c. Heading glyphs.</strong> Aa in two sizes, taken from the size tokens a host sets.</p>
       </div>
     </main>
 
@@ -1418,7 +1708,10 @@
         const linkerr = document.getElementById("linkerr");
         const linkremove = document.getElementById("linkremove");
         const linkBtn = tb.querySelector('[data-cmd="link"]');
-        const buttons = [...tb.querySelectorAll(":scope > button")];
+        const all = () => [...tb.querySelectorAll("button[data-cmd]")].filter((b) => !b.closest("[hidden]"));
+        const pasterow = document.getElementById("pasterow");
+        const pastemsg = document.getElementById("pastemsg");
+        let pasted = null;
         const mac = /Mac|iPhone|iPad/.test(navigator.platform);
         const mod = mac ? "⌘" : "Ctrl+";
         const keys = {
@@ -1430,6 +1723,8 @@
           h2: mod + (mac ? "⌥2" : "Alt+2"),
           h3: mod + (mac ? "⌥3" : "Alt+3"),
           done: mod + (mac ? "↩" : "Enter"),
+          cancel: "Esc",
+          plain: mod + (mac ? "⇧V" : "Shift+V"),
         };
         let original = field.innerHTML;
         let editing = false;
@@ -1465,14 +1760,16 @@
           field.removeAttribute("aria-multiline");
           field.setAttribute("aria-label", "Intro, press Enter to edit");
           tb.hidden = true;
+          hidePaste();
           closeLink(false);
           hideTip();
           show();
         }
         function rove(i, focus = true) {
-          active = (i + buttons.length) % buttons.length;
-          buttons.forEach((b, n) => (b.tabIndex = n === active ? 0 : -1));
-          if (focus) buttons[active].focus();
+          const bs = all();
+          active = (i + bs.length) % bs.length;
+          bs.forEach((b, n) => (b.tabIndex = n === active ? 0 : -1));
+          if (focus) bs[active].focus();
         }
         function inLink() {
           const sel = getSelection();
@@ -1502,7 +1799,7 @@
             h2: block() === "h2",
             h3: block() === "h3",
           };
-          for (const b of buttons)
+          for (const b of all())
             if (b.dataset.cmd in state) b.setAttribute("aria-pressed", String(state[b.dataset.cmd]));
         }
         function saveSel() {
@@ -1519,6 +1816,11 @@
         }
         function run(cmd) {
           if (cmd === "done") return stop(true);
+          if (cmd === "cancel") {
+            stop(false);
+            return field.focus();
+          }
+          if (cmd === "keep" || cmd === "plain") return switchPaste(cmd);
           if (cmd === "link") return openLink();
           restoreSel();
           if (cmd === "h2" || cmd === "h3") document.execCommand("formatBlock", false, block() === cmd ? "p" : cmd);
@@ -1568,6 +1870,7 @@
         }
         function showTip(b) {
           hideTip();
+          if (!keys[b.dataset.cmd]) return;
           const label = b.getAttribute("aria-label") || b.textContent.trim();
           tip = document.createElement("span");
           tip.className = "cms-tooltip";
@@ -1583,9 +1886,112 @@
           tip = null;
         }
 
+        const ALLOWED = new Set(["STRONG", "B", "EM", "I", "A", "UL", "OL", "LI", "P", "H2", "H3", "BR"]);
+        function clean(html) {
+          const t = document.createElement("template");
+          t.innerHTML = html;
+          const walk = (node) => {
+            for (const c of [...node.childNodes]) {
+              if (c.nodeType === 8) c.remove();
+              else if (c.nodeType === 1) {
+                walk(c);
+                if (["SCRIPT", "STYLE", "META", "TITLE"].includes(c.nodeName)) c.remove();
+                else if (!ALLOWED.has(c.nodeName)) c.replaceWith(...c.childNodes);
+                else
+                  for (const a of [...c.attributes])
+                    if (!(c.nodeName === "A" && a.name === "href" && /^(https?:\/\/|mailto:|tel:|\/)/i.test(a.value)))
+                      c.removeAttribute(a.name);
+              }
+            }
+          };
+          walk(t.content);
+          return t.innerHTML;
+        }
+        let plainNext = false;
+        const live = document.createElement("div");
+        live.className = "cms-live";
+        live.setAttribute("aria-live", "polite");
+        document.body.append(live);
+        function showPaste(kept) {
+          pasterow.hidden = false;
+          pastemsg.textContent = kept ? "Pasted with formatting." : "Pasted as plain text.";
+          pasterow.querySelector('[data-cmd="keep"]').setAttribute("aria-pressed", String(kept));
+          pasterow.querySelector('[data-cmd="plain"]').setAttribute("aria-pressed", String(!kept));
+        }
+        function hidePaste() {
+          if (!pasterow.hidden) {
+            pasterow.hidden = true;
+            if (!all()[active]) rove(0, false);
+          }
+          pasted = null;
+        }
+        function path(node) {
+          const out = [];
+          while (node && node !== field) {
+            out.unshift([...node.parentNode.childNodes].indexOf(node));
+            node = node.parentNode;
+          }
+          return out;
+        }
+        function at(steps) {
+          let n = field;
+          for (const i of steps) n = n.childNodes[i];
+          return n;
+        }
+        function switchPaste(cmd) {
+          if (!pasted || pasted.mode === cmd) return;
+          const fromToolbar = tb.contains(document.activeElement);
+          field.innerHTML = pasted.before;
+          const r = document.createRange();
+          r.setStart(at(pasted.caret[0]), pasted.caret[1]);
+          savedRange = r;
+          restoreSel();
+          if (cmd === "plain") document.execCommand("insertText", false, pasted.text);
+          else document.execCommand("insertHTML", false, pasted.html);
+          pasted.mode = cmd;
+          showPaste(cmd === "keep");
+          saveSel();
+          show();
+          // Stay on the row so the editor can switch back and forth.
+          if (fromToolbar) rove(all().indexOf(pasterow.querySelector(`[data-cmd="${cmd}"]`)));
+        }
+        field.addEventListener("paste", (e) => {
+          if (!editing) return;
+          e.preventDefault();
+          const text = e.clipboardData.getData("text/plain");
+          const html = clean(e.clipboardData.getData("text/html") || "");
+          const formatted = /<(strong|b|em|i|a|ul|ol|h2|h3)\b/i.test(html);
+          hidePaste();
+          const sel = getSelection();
+          if (!sel.isCollapsed) document.execCommand("delete");
+          const before = field.innerHTML;
+          const caret = [path(sel.anchorNode), sel.anchorOffset];
+          if (plainNext || !formatted) {
+            document.execCommand("insertText", false, text);
+          } else {
+            document.execCommand("insertHTML", false, html);
+            pasted = { text, html, before, caret, mode: "keep" };
+            showPaste(true);
+            live.textContent = "";
+            setTimeout(() => (live.textContent = "Pasted with formatting. Press Alt+F10 for paste options."), 50);
+          }
+          plainNext = false;
+          saveSel();
+          show();
+        });
+        field.addEventListener("pointerdown", () => editing && hidePaste());
         field.addEventListener("click", start);
         field.addEventListener("keydown", (e) => {
           const m = e.metaKey || e.ctrlKey;
+          if (editing && m && e.shiftKey && e.key.toLowerCase() === "v") plainNext = true;
+          else if (
+            editing &&
+            !pasterow.hidden &&
+            !(e.altKey && e.key === "F10") &&
+            !["Shift", "Control", "Meta", "Alt"].includes(e.key) &&
+            !(m && e.key.toLowerCase() === "v")
+          )
+            hidePaste();
           if (!editing) {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -1621,7 +2027,9 @@
           ) {
             e.preventDefault();
             saveSel();
-            rove(active);
+            if (e.altKey && e.key === "F10" && !pasterow.hidden)
+              rove(all().indexOf(pasterow.querySelector('[data-cmd="plain"]')));
+            else rove(active);
           } else if (e.key === "Tab") {
             e.preventDefault();
             document.execCommand(e.shiftKey ? "outdent" : "indent");
@@ -1635,13 +2043,14 @@
         });
         field.addEventListener("input", show);
 
-        buttons.forEach((b, i) => {
+        tb.querySelectorAll("button[data-cmd]").forEach((b) => {
+          const i = () => all().indexOf(b);
           b.addEventListener("mousedown", (e) => {
             saveSel();
             e.preventDefault();
           });
           b.addEventListener("click", () => {
-            rove(i, false);
+            rove(i(), false);
             run(b.dataset.cmd);
           });
           b.addEventListener("focus", () => showTip(b));
@@ -1649,10 +2058,11 @@
           b.addEventListener("mouseenter", () => showTip(b));
           b.addEventListener("mouseleave", () => document.activeElement !== b && hideTip());
           b.addEventListener("keydown", (e) => {
-            if (e.key === "ArrowRight") rove(i + 1);
-            else if (e.key === "ArrowLeft") rove(i - 1);
+            if (e.key === "ArrowRight") rove(i() + 1);
+            else if (e.key === "ArrowLeft") rove(i() - 1);
             else if (e.key === "Home") rove(0);
-            else if (e.key === "End") rove(buttons.length - 1);
+            else if (e.key === "End") rove(all().length - 1);
+            else if (e.key === "Enter" || e.key === " ") b.click();
             else if (e.key === "Escape") {
               e.preventDefault();
               if (tip) hideTip();
