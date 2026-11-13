@@ -343,7 +343,13 @@ What it doesn't do:
   widget does that through its `WidgetContext`, and the chrome returns focus when the widget closes.
 - With no `onLeave` it listens to nothing.
 
-A rich text widget built on TipTap, as a sketch:
+### Rich text
+
+Decided in #29: the package will ship a rich text widget as `@yl/editor/richtext`. It is built on TipTap, which hosts
+install as an optional peer dependency. It allows a fixed set of formatting: bold, italic, links, lists, and headings
+when the field turns them on. The stored HTML shape will be documented, and a server-side sanitiser will enforce it,
+because the server must not trust HTML from the client. The build is #37, and its toolbar needs an approved prototype first. Until
+it ships, `richtext` falls back to the text widget, and a host can register its own widget, as in this sketch:
 
 ```ts
 import { Editor } from "@tiptap/core";
