@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Publish at message</title>
+    <!-- The real chrome stylesheet. Open this file straight from the repo; it looks the same in every browser. -->
+    <link rel="stylesheet" href="../../../src/chrome/chrome.css" />
+    <style>
+      /* Prototype page only. The proposal adds no CSS: it reuses .cms-diff, .cms-error and the sheet. */
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 48px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 70ch;
+        margin: 4px 0 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 16px;
+      }
+      .cell {
+        border-radius: 10px;
+        padding: 16px;
+        background: #ffffff;
+        border: 1px solid #e3e5eb;
+      }
+      .cell.dark {
+        background: #0f1116;
+        border-color: #2a2d36;
+      }
+      .cell h3 {
+        margin: 0 0 12px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .cell.dark h3 {
+        color: #aab0bf;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .cell.dark .tag {
+        background: #1f2a44;
+        color: #9dbbff;
+      }
+      /* Popovers and toasts are positioned surfaces in the chrome; here they sit in the flow. */
+      .cell .cms-popover,
+      .cell .cms-sheet,
+      .cell .cms-toast {
+        position: static;
+        transform: none;
+        width: auto;
+        max-width: none;
+        max-height: none;
+        box-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+      }
+      .cell.dark .cms-root {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        color-scheme: dark;
+      }
+      .cell:not(.dark) .cms-root {
+        color-scheme: light;
+      }
+      /* A still picture of the focused input, so the ring shows without interaction. */
+      .sim-focus {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      .caption {
+        margin: 10px 0 0;
+        font-size: 0.8rem;
+        color: #5b6170;
+      }
+      .cell.dark .caption {
+        color: #aab0bf;
+      }
+      .narrow {
+        max-width: 343px;
+      }
+      code {
+        font-size: 0.85em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Why Publish is disabled for a half-typed “Publish at”</h1>
+      <p class="lead">
+        With <code>scheduling: true</code>, the Publish sheet has a “Publish at” input. A half-typed date and time
+        (<code>validity.badInput</code>) disables Publish, but nothing says why: no line, no <code>aria-invalid</code>,
+        no announcement (#26, WCAG 3.3.1). A time in the past already gets a red line under the input. The proposal
+        shows a reason in that same place, with one new string, <code>scheduleIncomplete</code>. It adds no CSS. Inputs
+        are drawn as text so the half-typed value stays visible on this page.
+      </p>
+
+      <h2>1. The message</h2>
+      <p class="note">
+        Same node and style as the past-time line. The input gets <code>aria-invalid="true"</code> and already points at
+        the line with <code>aria-describedby</code>. The line goes away as soon as the value is complete or empty, and
+        Publish comes back on. The text is announced once when it appears, like the past-time line.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Today · half-typed</h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input"
+                  type="text"
+                  value="14/11/2026, --:--"
+                  aria-describedby="today-note"
+                  aria-label="Publish at (today)"
+                />
+              </label>
+              <div class="cms-diff" id="today-note" hidden></div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+          <p class="caption">Publish is greyed out and nothing says why.</p>
+        </div>
+        <div class="cell">
+          <h3>Proposed · half-typed <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input"
+                  type="text"
+                  value="14/11/2026, --:--"
+                  aria-invalid="true"
+                  aria-describedby="light-note"
+                  aria-label="Publish at (light)"
+                />
+              </label>
+              <div class="cms-diff" id="light-note">
+                <p class="cms-error">
+                  That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.
+                </p>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+          <p class="caption">The new <code>scheduleIncomplete</code> string.</p>
+        </div>
+        <div class="cell dark">
+          <h3>Proposed · dark <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input"
+                  type="text"
+                  value="14/11/2026, --:--"
+                  aria-invalid="true"
+                  aria-describedby="dark-note"
+                  aria-label="Publish at (dark)"
+                />
+              </label>
+              <div class="cms-diff" id="dark-note">
+                <p class="cms-error">
+                  That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.
+                </p>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <h2>2. When it appears</h2>
+      <p class="note">
+        Recommended: <b>A</b>. While someone is typing, every date is half-typed for a moment, so a line that appears on
+        the first keystroke (B) would flash red at everyone who fills the field normally. With A the line appears when
+        focus leaves “Publish at” while it is still half-typed (Tab to Publish, or a click elsewhere), and it clears
+        live, on the keystroke that completes or empties the value.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>A · while typing (recommended)</h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input sim-focus"
+                  type="text"
+                  value="14/11/2026, 09:--"
+                  aria-describedby="a1-note"
+                  aria-label="Publish at (a1)"
+                />
+              </label>
+              <div class="cms-diff" id="a1-note" hidden></div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+          <p class="caption">Mid-edit: no line yet. Publish is disabled as today.</p>
+        </div>
+        <div class="cell">
+          <h3>A · after leaving the input (recommended) <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input"
+                  type="text"
+                  value="14/11/2026, 09:--"
+                  aria-invalid="true"
+                  aria-describedby="a2-note"
+                  aria-label="Publish at (a2)"
+                />
+              </label>
+              <div class="cms-diff" id="a2-note">
+                <p class="cms-error">
+                  That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.
+                </p>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+          <p class="caption">Focus moved on with the value half-typed: the line appears.</p>
+        </div>
+        <div class="cell">
+          <h3>B · live, from the first keystroke <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input sim-focus"
+                  type="text"
+                  value="14/mm/yyyy, --:--"
+                  aria-invalid="true"
+                  aria-describedby="b1-note"
+                  aria-label="Publish at (b1)"
+                />
+              </label>
+              <div class="cms-diff" id="b1-note">
+                <p class="cms-error">
+                  That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.
+                </p>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+          <p class="caption">The line shows while the editor is still typing.</p>
+        </div>
+      </div>
+
+      <h2>3. Next to the existing past-time line</h2>
+      <p class="note">
+        The two messages share the slot and never show together: a half-typed value has no time to compare. The proposal
+        also adds <code>aria-invalid="true"</code> to the past-time case, which has none today. That changes nothing on
+        screen.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Existing · past time</h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input"
+                  type="text"
+                  value="14/11/2026, 08:00"
+                  aria-invalid="true"
+                  aria-describedby="past-note"
+                  aria-label="Publish at (past)"
+                />
+              </label>
+              <div class="cms-diff" id="past-note">
+                <p class="cms-error">
+                  That time is in the past, so it would never be scheduled. Pick a later time, or clear it to publish
+                  now.
+                </p>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+          <p class="caption"><code>scheduleInPast</code>, unchanged; gains <code>aria-invalid</code>.</p>
+        </div>
+        <div class="cell">
+          <h3>Proposed · half-typed <span class="tag">new</span></h3>
+          <section class="cms-root cms-panel cms-sheet" role="presentation">
+            <header class="cms-sheet__header">
+              <h2 class="cms-sheet__title">Publish these documents?</h2>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </header>
+            <div class="cms-sheet__body">
+              <ul class="cms-list">
+                <li><b>home</b> · 2 changes</li>
+              </ul>
+              <label class="cms-field-label"
+                >Publish at (optional)
+                <input
+                  class="cms-input"
+                  type="text"
+                  value="14/11/2026, --:--"
+                  aria-invalid="true"
+                  aria-describedby="inc2-note"
+                  aria-label="Publish at (inc2)"
+                />
+              </label>
+              <div class="cms-diff" id="inc2-note">
+                <p class="cms-error">
+                  That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.
+                </p>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="cell">
+          <h3>Proposed · at 375px <span class="tag">new</span></h3>
+          <div class="narrow">
+            <section class="cms-root cms-panel cms-sheet" role="presentation">
+              <header class="cms-sheet__header">
+                <h2 class="cms-sheet__title">Publish these documents?</h2>
+                <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+              </header>
+              <div class="cms-sheet__body">
+                <ul class="cms-list">
+                  <li><b>home</b> · 2 changes</li>
+                </ul>
+                <label class="cms-field-label"
+                  >Publish at (optional)
+                  <input
+                    class="cms-input"
+                    type="text"
+                    value="14/11/2026, --:--"
+                    aria-invalid="true"
+                    aria-describedby="narrow-note"
+                    aria-label="Publish at (narrow)"
+                  />
+                </label>
+                <div class="cms-diff" id="narrow-note">
+                  <p class="cms-error">
+                    That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.
+                  </p>
+                </div>
+                <div class="cms-sheet__actions">
+                  <button type="button" class="cms-btn cms-btn--ghost sim-focus">Cancel</button>
+                  <button type="button" class="cms-btn cms-btn--primary" disabled>Publish</button>
+                </div>
+              </div>
+            </section>
+          </div>
+          <p class="caption">The line wraps inside the sheet.</p>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

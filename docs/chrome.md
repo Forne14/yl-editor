@@ -233,8 +233,11 @@ tells anyone. See docs/http.md.
 
 When set, the button reads Schedule and sends `at` as an ISO string with offset. The document stays in the change count
 until it goes live. Past times are refused: the input carries `min`, and because `min` isn't enforced on typed values or
-by a clock that has moved on, the time is checked again on every change and at Confirm. For a past time, as for a
-half-typed date, the button is disabled; for a past time a line says why.
+by a clock that has moved on, the time is checked again on every change and at Confirm. A past time or a half-typed
+date disables the button, and a line under the input says why: `scheduleInPast` at once, `scheduleIncomplete` once
+focus leaves the input while it is still half-typed (every date is half-typed while it is typed). The input gets
+`aria-invalid="true"` and is described by the line, which is announced once when it appears. The line clears on the
+keystroke that finishes or empties the date.
 
 ### Strings
 
@@ -243,8 +246,9 @@ actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `resto
 `unpublished`, `schedule`, `publishAt`, `scheduled`, `scheduledFor`, `publishNow`, `loadingChanges`, `changesFailed`,
 `firstPublish`, `noDifferences`, `diffRoot`, `diffAdded`, `diffRemoved`, `diffChanged`, `loadFieldFailed`,
 `loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `bulkStopped`,
-`scheduleInPast`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`, `bulkLeftOut`. The number and date
-widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept` (leaving one).
+`scheduleInPast`, `scheduleIncomplete`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`, `bulkLeftOut`.
+The number and date widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept`
+(leaving one).
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.
