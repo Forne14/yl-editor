@@ -27,6 +27,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `pastedPlain`, `keepFormatting`, `plainText`, `pasteAnnounce`, `headingGlyph`, `linkPlaceholder`, `keyControl`,
   `keyShift`, `keyAlt`, `keyEnter` and `keyEscape`.
 
+### Fixed
+
+- Chrome: Discard, Restore, a conflict catch-up and Take theirs now repaint a `richtext` field. The new value is
+  sanitised to the stored shape (and the field's `data-edit-headings`), parsed in an inert document and imported, with
+  no `innerHTML` on the page; when the path is gone the field is emptied. Before, a rich text field kept showing the
+  replaced HTML until a reload. A value that isn't a string empties it, as it does plain text. Take theirs closes a widget reopened on the field first,
+  so its content doesn't come back over theirs. See `docs/chrome.md` →
+  Behaviour.
+
 ## [0.5.0] - 2026-11-11
 
 ### Changed
