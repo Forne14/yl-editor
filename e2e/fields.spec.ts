@@ -48,7 +48,7 @@ test.describe("each field type saves a draft that survives a reload", () => {
   });
 
   test("richtext: falls back to plain text with a note, and saves the text", async ({ page, demo }) => {
-    await demo.openEditor();
+    await demo.openEditor({ richtext: "fallback" });
     const field = page.locator(".lede");
     await expect(field.locator("strong")).toHaveText("every morning");
     await field.click();
@@ -56,9 +56,11 @@ test.describe("each field type saves a draft that survives a reload", () => {
     await page.keyboard.type(" Always.");
     await page.keyboard.press("Enter");
     await expect(page.locator(".cms-popover--note")).toHaveCount(0);
-    await expectDraft(demo, "lede", "Fresh bread every morning. Always.");
+    // The demo's schema sanitises rich text, which puts loose text in a paragraph.
+    await expectDraft(demo, "lede", "<p>Fresh bread every morning. Always.</p>");
 
-    await reloadEditor(page);
+    await page.goto("/?edit=1&richtext=fallback");
+    await expect(page.locator("html")).toHaveAttribute("data-editor-ready", "true");
     await expect(page.locator(".lede")).toHaveText("Fresh bread every morning. Always.");
   });
 

@@ -43,12 +43,13 @@ carry `data-edit-value` (JSON), which is used only when the stored value is miss
 
 ### `editable(docKey)(path, type, attrs?)`
 
-| Attribute           | Source                 | Meaning                                      |
-| ------------------- | ---------------------- | -------------------------------------------- |
-| `data-edit-field`   | `"<docKey>:<path>"`    | Which document and which dotted payload path |
-| `data-edit-type`    | `type`                 | One of the `EditFieldType` union             |
-| `data-edit-options` | `attrs.options` (JSON) | Choices for a `select`                       |
-| `data-edit-label`   | `attrs.label`          | Human name shown in the badge                |
+| Attribute            | Source                 | Meaning                                                              |
+| -------------------- | ---------------------- | -------------------------------------------------------------------- |
+| `data-edit-field`    | `"<docKey>:<path>"`    | Which document and which dotted payload path                         |
+| `data-edit-type`     | `type`                 | One of the `EditFieldType` union                                     |
+| `data-edit-options`  | `attrs.options` (JSON) | Choices for a `select`                                               |
+| `data-edit-label`    | `attrs.label`          | Human name shown in the badge                                        |
+| `data-edit-headings` | `attrs.headings`       | Heading levels a `richtext` field allows (`"2 3"`); omitted for none |
 
 `EditFieldType` is `"text" | "richtext" | "media" | "select" | "number" | "url" | "date" | "tags" | "toggle"`.
 
@@ -314,7 +315,7 @@ queue and status. Only the first `commit` or `cancel` counts, and committing an 
 The defaults: `text` (plain-text contenteditable; paste and drop are reduced to text), `number`, `url`, `date`
 (`<input type="date">`), `toggle`, `select` (a native `<select>` from `data-edit-options`) and `tags` (chips and a
 text input; commas split). `richtext` falls back to the text widget with a visible note asking the host to register
-a rich widget. `media` has no default. A type with nothing registered shows "No editor registered for <type>"; it
+a rich widget, such as the one in `@yl/editor/richtext` (see Rich text below). `media` has no default. A type with nothing registered shows "No editor registered for <type>"; it
 never throws.
 
 `openPopover(anchor, label, onLeave?)` is exported for host widgets that want the same themed popover. It appends a
@@ -345,47 +346,93 @@ What it doesn't do:
 
 ### Rich text
 
-Decided in #29: the package will ship a rich text widget as `@yl/editor/richtext`. It is built on TipTap, which hosts
-install as an optional peer dependency. It allows a fixed set of formatting: bold, italic, links, lists, and headings
-when the field turns them on. The stored HTML shape will be documented, and a server-side sanitiser will enforce it,
-because the server must not trust HTML from the client. The build is #37, and its toolbar needs an approved prototype first. Until
-it ships, `richtext` falls back to the text widget, and a host can register its own widget, as in this sketch:
+`@yl/editor/richtext` is the rich text widget (decided in #29, built in #37). It is built on TipTap, which hosts install
+as optional peer dependencies: `@tiptap/core`, `@tiptap/pm` and `@tiptap/starter-kit` (3.x). `@yl/editor/chrome` never
+imports it, so a host that doesn't register it never loads TipTap. Register it for `richtext`:
 
 ```ts
-import { Editor } from "@tiptap/core";
-import StarterKit from "@tiptap/starter-kit";
-import type { Widget } from "@yl/editor/chrome";
+import "@yl/editor/chrome/chrome.css";
+import { mountEditor } from "@yl/editor/chrome";
+import { richTextWidget } from "@yl/editor/richtext";
 
-export const tiptapWidget: Widget = {
-  mount(ctx) {
-    const original = ctx.element.innerHTML;
-    ctx.element.replaceChildren();
-    const editor = new Editor({
-      element: ctx.element,
-      extensions: [StarterKit],
-      content: typeof ctx.value === "string" ? ctx.value : original,
-      onBlur: () => void ctx.commit(editor.getHTML()),
-    });
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      ctx.cancel();
-    };
-    ctx.element.addEventListener("keydown", onKey);
-    return {
-      focus: () => editor.commands.focus("end"),
-      destroy() {
-        ctx.element.removeEventListener("keydown", onKey);
-        const html = editor.getHTML();
-        editor.destroy();
-        ctx.element.innerHTML = html || original;
-      },
-    };
-  },
-};
-
-mountEditor({ widgets: { richtext: tiptapWidget } });
+mountEditor({ widgets: { richtext: richTextWidget } });
 ```
+
+It reads its words from the `strings` given to `mountEditor`. `createRichTextWidget({ strings })` overrides some for this
+widget only. Its CSS is in `chrome.css`, themed by the same tokens.
+
+**Editing.** The editor types into the host element itself, so the page's own typography stays. A toolbar
+(`.cms-toolbar`, `role="toolbar"`, named "Formatting for <label>") floats just above the field. It holds Bold, Italic,
+Link, Bulleted list, Numbered list, H2 and H3 (only the levels the field allows, from `data-edit-headings`), then Cancel
+and Done. A button shows its state with `aria-pressed`. Under 40em the toolbar docks to the top of the viewport. Its
+position comes in through `--cms-toolbar-top` and `--cms-toolbar-left`, set with `style.setProperty`, so it needs no
+inline styles. The design is `docs/specs/artefacts/2026-11-richtext-toolbar.html`.
+
+**Committing.** Done, Ctrl/⌘+Enter and leaving the field and toolbar (a click elsewhere, or focus moving out of both)
+commit. Cancel and Esc in the text put the field back as it was and write nothing. Leaving untouched writes nothing,
+unless the last save failed. The committed value is the stored shape below, and the field shows it.
+
+**Keyboard.** It follows the ARIA toolbar pattern, and nothing traps focus.
+
+| Where           | Key                            | Does                                                           |
+| --------------- | ------------------------------ | -------------------------------------------------------------- |
+| Text            | Ctrl/⌘ B, Ctrl/⌘ I             | Bold, italic                                                   |
+| Text            | Ctrl/⌘ K                       | Open the link row                                              |
+| Text            | Ctrl/⌘ ⇧ 8, Ctrl/⌘ ⇧ 7         | Bulleted list, numbered list                                   |
+| Text            | Ctrl/⌘ ⌥ 2, Ctrl/⌘ ⌥ 3         | H2, H3, when the field allows them                             |
+| Text            | Ctrl/⌘ ⇧ V                     | Paste as plain text                                            |
+| Text            | Alt F10, or Tab outside a list | Focus the toolbar (Plain text while the paste options are up)  |
+| Text, in a list | Tab, ⇧ Tab                     | Nest or un-nest the item                                       |
+| Text            | Ctrl/⌘ Enter                   | Done                                                           |
+| Text            | Esc                            | Cancel                                                         |
+| Toolbar         | ← → Home End                   | Move between buttons, wrapping at the ends                     |
+| Toolbar         | Enter, Space                   | Press the button; focus goes back to the text, except for Link |
+| Toolbar         | Esc                            | Hide the tooltip if one shows, else back to the text           |
+| Toolbar         | ⇧ Tab / Tab                    | Back to the text, or on past the toolbar (which commits)       |
+| Link row        | Enter / Esc                    | Apply, or close the row; either way back to the text           |
+
+A tooltip shows each button's name and shortcut on hover and keyboard focus. It is `aria-hidden`: screen readers get
+the name from `aria-label` and the shortcut from `aria-keyshortcuts`. The H2 and H3 buttons are named "H2 Heading" and
+"H3 Subheading" (the `heading` and `subheading` strings, visually hidden after the visible text), so a speech user can
+say what they see (WCAG 2.5.3).
+
+**Links.** Link (or Ctrl/⌘ K) opens a row inside the toolbar with the address input, focused. On a link it starts from
+its address, selects the whole link and offers Remove link. A bare domain (`example.com`) gets `https://`. An address
+that isn't `https:`, `http:`, `mailto:`, `tel:` or a path starting with one `/` is refused with the `linkRefused` line
+under the input (`aria-invalid`, `aria-describedby`). With nothing selected, the address is inserted as its own text.
+
+**Paste.** Pasted content keeps the formatting the field allows and drops the rest without a word. When the paste kept
+some formatting, a Paste options row offers Keep formatting and Plain text (`aria-pressed`), and a screen reader hears
+`pasteAnnounce`. Switching replaces the pasted content, and switching back restores it. The row goes away when the
+editor types or clicks in the text. Ctrl/⌘ ⇧ V pastes plain text with no row.
+
+**The stored shape.** A rich text value is an HTML string of:
+
+- blocks: `<p>`, `<h2>` and `<h3>` (only the levels the field allows), `<ul>` and `<ol>`, whose `<li>` hold paragraphs
+  and nested lists;
+- inside blocks: text, `<strong>`, `<em>`, `<br>` and `<a href>`;
+- no other element and no other attribute. An `href` is `https:`, `http:`, `mailto:`, `tel:` or a path starting with
+  one `/`. Text is escaped (`&amp;`, `&lt;`, `&gt;`, and `&nbsp;` for a no-break space);
+- `""` for a value with no text.
+
+**The server half.** The server must not trust HTML from a client, so `@yl/editor` exports the sanitiser that enforces
+this shape whichever widget wrote the value:
+
+```ts
+import { richText, sanitizeRichText } from "@yl/editor";
+
+const pageSchema = z.object({ lede: richText({ headings: [2, 3] }).optional() });
+sanitizeRichText('<p onclick="x">Hi<script>…</script></p>'); // "<p>Hi</p>"
+```
+
+`richText(options)` is a zod string schema that runs `sanitizeRichText` on every parse, so a write stores the clean
+shape (in a store that keeps the parsed payload, as the SQLite store does) and a validated read serves it.
+`sanitizeRichText(html, { headings })` rewrites any HTML into the shape: `b` and `i` become `strong` and `em`, a heading
+the field doesn't allow becomes a paragraph, loose text is put in paragraphs, and any other element is dropped but
+keeps its text. Scripts, styles, embedded documents (`iframe`, `object`, `embed`), `template`, `svg` and `math` go
+with their content. A link to anything else keeps its text and loses the link. It needs no DOM, and running it twice
+gives the same result. Named entities beyond the common few (`&amp;`, `&nbsp;`, typographic quotes and dashes) are kept
+as written text. `isAllowedHref(href)` is the link rule on its own.
 
 ## Panels
 
@@ -483,5 +530,7 @@ also on `data-cms-state`, and the toast's kind on `data-kind`.
 
 The chrome ships no inline scripts and builds every node with `createElement` and text nodes (no `innerHTML`). The
 only inline styles it sets are computed custom properties (`--cms-badge-top`, `--cms-badge-left`,
-`--cms-popover-top`, `--cms-popover-left`) for positioning, which a `style-src` policy permits through the CSSOM.
+`--cms-popover-top`, `--cms-popover-left`, `--cms-toolbar-top`, `--cms-toolbar-left`) for positioning, which a
+`style-src` policy permits through the CSSOM. The rich text widget turns off TipTap's injected `<style>` tag
+(`injectCSS: false`); the few rules ProseMirror needs are in `chrome.css` under `.cms-richtext`.
 It loads nothing from other origins and makes requests only to `base`.

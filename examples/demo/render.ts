@@ -43,6 +43,8 @@ export interface RenderOptions {
   /** Render the editor: editable attributes, the stylesheet and the island. */
   editing: boolean;
   scheduling: boolean;
+  /** Leave `richtext` to the default widget, the plain-text fallback, instead of `@yl/editor/richtext`. */
+  richtextFallback?: boolean;
 }
 
 export function renderPage(documents: PageDocuments, options: RenderOptions): string {
@@ -70,6 +72,7 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
     ? attributes({
         "data-actor-label": `Editing as ${ROLE_LABELS[options.session.role]}`,
         ...(options.scheduling ? { "data-scheduling": "1" } : {}),
+        ...(options.richtextFallback ? { "data-richtext": "fallback" } : {}),
       })
     : "";
 
@@ -82,7 +85,7 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
     <main class="page">
       <section class="hero" aria-labelledby="home-title">
         <h1 id="home-title"${attributes(homeField("title", "text", { label: "Heading" }))}>${escapeHtml(text(home["title"]))}</h1>
-        <div class="lede"${attributes(homeField("lede", "richtext", { label: "Lede" }))}>${text(home["lede"])}</div>
+        <div class="lede"${attributes(homeField("lede", "richtext", { label: "Lede", headings: [2, 3] }))}>${text(home["lede"])}</div>
       </section>
       <dl class="facts">
         <dt>Open</dt>

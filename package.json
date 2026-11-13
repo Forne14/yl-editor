@@ -48,6 +48,10 @@
       "types": "./dist/chrome/index.d.ts",
       "import": "./dist/chrome/index.js"
     },
+    "./richtext": {
+      "types": "./dist/richtext/index.d.ts",
+      "import": "./dist/richtext/index.js"
+    },
     "./chrome/chrome.css": "./dist/chrome/chrome.css"
   },
   "scripts": {
@@ -61,11 +65,23 @@
     "test:e2e": "npm run build && playwright test"
   },
   "peerDependencies": {
+    "@tiptap/core": "^3.33.1",
+    "@tiptap/pm": "^3.33.1",
+    "@tiptap/starter-kit": "^3.33.1",
     "better-sqlite3": ">=13",
     "vitest": ">=4",
     "zod": "^4"
   },
   "peerDependenciesMeta": {
+    "@tiptap/core": {
+      "optional": true
+    },
+    "@tiptap/pm": {
+      "optional": true
+    },
+    "@tiptap/starter-kit": {
+      "optional": true
+    },
     "better-sqlite3": {
       "optional": true
     },
@@ -77,6 +93,9 @@
     "@axe-core/playwright": "^4.14.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.65.0",
+    "@tiptap/core": "^3.33.1",
+    "@tiptap/pm": "^3.33.1",
+    "@tiptap/starter-kit": "^3.33.1",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.19.2",
     "better-sqlite3": "^13.0.3",
@@ -84,6 +103,7 @@
     "globals": "^17.14.0",
     "happy-dom": "^21.0.4",
     "prettier": "^3.9.10",
+    "rolldown": "^1.2.16",
     "typescript": "~6.0.0",
     "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.4",

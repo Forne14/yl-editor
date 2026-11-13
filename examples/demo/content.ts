@@ -1,6 +1,6 @@
 // The demo site's content model: two document types, their schemas, the default seed, and who may do what.
 import { createAccessEngine, documentAccess, type Catalogue } from "@yl/editor/access";
-import type { RegistryEntry, SchemaRegistry } from "@yl/editor";
+import { richText, type RegistryEntry, type SchemaRegistry } from "@yl/editor";
 import { z } from "zod";
 
 export const STATUS_OPTIONS = ["draft", "live", "archived"] as const;
@@ -8,7 +8,8 @@ export const STATUS_OPTIONS = ["draft", "live", "archived"] as const;
 /** Lenient on purpose: every value a default widget can commit validates, so only raw seeds make invalid drafts. */
 export const pageSchema = z.object({
   title: z.string(),
-  lede: z.string().optional(),
+  // Sanitised on every write and validated read, so the page can render it as HTML.
+  lede: richText({ headings: [2, 3] }).optional(),
   live: z.boolean().optional(),
   status: z.enum(STATUS_OPTIONS).optional(),
   price: z.number().nullable().optional(),

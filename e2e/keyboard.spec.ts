@@ -167,7 +167,7 @@ test.describe("every widget by keyboard", () => {
     demo,
     browserName,
   }) => {
-    await demo.openEditor();
+    await demo.openEditor({ richtext: "fallback" });
     const lede = page.locator(".lede");
     await tabTo(page, browserName, lede);
     await page.keyboard.press("Enter");
@@ -179,7 +179,8 @@ test.describe("every widget by keyboard", () => {
     await expect(page.locator(".cms-popover")).toHaveCount(0);
     await expect(lede).toHaveAttribute("data-cms-state", "saved");
     await expect(lede).toBeFocused();
-    expect((await draftOf(demo, "pages/home"))["lede"]).toBe("Rye on Sundays.");
+    // The demo's schema sanitises rich text, which puts loose text in a paragraph.
+    expect((await draftOf(demo, "pages/home"))["lede"]).toBe("<p>Rye on Sundays.</p>");
   });
 
   test("toggle: Enter opens on the switch, Space commits, focus returns to the field", async ({
