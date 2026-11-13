@@ -64,19 +64,6 @@
         border-inline-start: thin solid var(--cms-border);
       }
 
-      :where(.cms-root, .cms-field) {
-        /* New token next to --cms-size-sm and --cms-size-md: a host's own type scale sets all three. */
-        --cms-size-lg: 1.25rem;
-      }
-
-      :where(.cms-toolbar__glyph-heading) {
-        font-size: var(--cms-size-lg);
-      }
-
-      :where(.cms-toolbar__glyph-subheading) {
-        font-size: var(--cms-size-md);
-      }
-
       :where(.cms-toolbar__group) {
         display: flex;
         gap: var(--cms-space-1);
@@ -423,12 +410,12 @@
         This is the <code>@yl/editor/richtext</code> widget. The editor types straight into the host element, so the
         page's own typography stays, as with the text widget. A toolbar floats just above the field, where the badge
         sits today. It holds the fixed formatting set (bold, italic, link, bulleted and numbered lists, and headings
-        when the field turns them on), then <strong>Cancel</strong> and <strong>Done</strong>. It uses the
-        <code>--cms-*</code> tokens, plus one new size token, and adds a handful of classes to
-        <code>chrome.css</code> (the block marked <code>proposed</code> in this file's head). Its position comes in as
-        <code>--cms-toolbar-top</code> and <code>--cms-toolbar-left</code>, the same way as the badge and popover, so it
-        needs no inline styles. Hosts restyle it the way they restyle the rest of the chrome: every rule is in
-        <code>:where()</code>, so any host selector or token override wins.
+        when the field turns them on), then <strong>Cancel</strong> and <strong>Done</strong>. It uses only existing
+        <code>--cms-*</code> tokens and adds a handful of classes to <code>chrome.css</code> (the block marked
+        <code>proposed</code> in this file's head). Its position comes in as <code>--cms-toolbar-top</code> and
+        <code>--cms-toolbar-left</code>, the same way as the badge and popover, so it needs no inline styles. Hosts
+        restyle it the way they restyle the rest of the chrome: every rule is in <code>:where()</code>, so any host
+        selector or token override wins.
       </p>
 
       <h2>1. Try it</h2>
@@ -547,7 +534,7 @@
                   aria-keyshortcuts="Control+Alt+2 Meta+Alt+2"
                   tabindex="-1"
                 >
-                  <span class="cms-toolbar__glyph-heading" aria-hidden="true">Aa</span>
+                  H2
                 </button>
                 <button
                   type="button"
@@ -558,7 +545,7 @@
                   aria-keyshortcuts="Control+Alt+3 Meta+Alt+3"
                   tabindex="-1"
                 >
-                  <span class="cms-toolbar__glyph-subheading" aria-hidden="true">Aa</span>
+                  H3
                 </button></span
               >
               <span class="cms-toolbar__actions"
@@ -1335,10 +1322,10 @@
             <span class="cms-toolbar__sep" aria-hidden="true"></span>
             <span class="cms-toolbar__group"
               ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">
-                <span class="cms-toolbar__glyph-heading" aria-hidden="true">Aa</span>
+                H2
               </button>
               <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Subheading">
-                <span class="cms-toolbar__glyph-subheading" aria-hidden="true">Aa</span>
+                H3
               </button></span
             >
             <span class="cms-toolbar__actions"
@@ -1353,10 +1340,8 @@
             </div>
           </div>
           <p class="caption">
-            The bigger Aa is Heading, the smaller Subheading. Their sizes are <code>--cms-size-lg</code> and
-            <code>--cms-size-md</code>, so they follow a host's own type scale. Pressing a pressed heading turns it back
-            into a paragraph. A field turns headings on with <code>data-edit-headings="2 3"</code> (the levels it
-            allows; h2 and h3 at most).
+            Pressing a pressed heading turns it back into a paragraph. A field turns headings on with
+            <code>data-edit-headings="2 3"</code> (the levels it allows; h2 and h3 at most).
           </p>
         </div>
 
@@ -1483,10 +1468,10 @@
             <span class="cms-toolbar__sep" aria-hidden="true"></span>
             <span class="cms-toolbar__group"
               ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">
-                <span class="cms-toolbar__glyph-heading" aria-hidden="true">Aa</span>
+                H2
               </button>
               <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Subheading">
-                <span class="cms-toolbar__glyph-subheading" aria-hidden="true">Aa</span>
+                H3
               </button></span
             >
             <span class="cms-toolbar__actions"
@@ -1682,18 +1667,21 @@
         </tbody>
       </table>
       <p class="note">
-        Done and Cancel reuse <code>done</code> and <code>cancel</code>. The Aa glyphs and the B and I letters are
-        drawn, not read out. Their names come from the strings above.
+        Done and Cancel reuse <code>done</code> and <code>cancel</code>. The H2 and H3 glyphs and the B and I letters
+        are drawn, not read out. Their names come from the strings above.
       </p>
 
-      <h2>5. Decided on the first round</h2>
+      <h2>5. Decided (approved 2026-11-13)</h2>
       <div class="ask">
         <p>
           <strong>a. Paste.</strong> Formatting outside the set is dropped silently. Paste options offer Keep formatting
           or Plain text after a formatted paste, and Ctrl/⌘ + Shift + V pastes plain.
         </p>
         <p><strong>b. Cancel.</strong> Folded into this ticket: a Cancel button next to Done.</p>
-        <p><strong>c. Heading glyphs.</strong> Aa in two sizes, taken from the size tokens a host sets.</p>
+        <p>
+          <strong>c. Heading glyphs.</strong> H2 and H3. Aa in two sizes was tried in round 2 and dropped: it read as a
+          size control, not a choice between heading and subheading.
+        </p>
       </div>
     </main>
 
