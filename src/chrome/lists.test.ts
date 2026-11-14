@@ -1,19 +1,24 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { editable, type EditableListAttrs } from "../editable.ts";
+import { editable, itemPath, type EditableListAttrs } from "../editable.ts";
 import { applyArrayOp, parsePath } from "../path.ts";
 import type { ArrayOp } from "../types.ts";
 import { mountEditor } from "./index.ts";
 import type { EditorHandle, EditorOptions } from "./types.ts";
 
 interface Artist {
-  _key: string;
+  _key?: string;
   name: string;
 }
 
 const KEY = "artist/list";
 const LIST = `${KEY}:artists`;
 let artists: Artist[];
+/** A second list in the same document, rendered when set. */
+let crew: Artist[] | undefined;
+/** What Discard leaves; the stub answers a field save with 500 while `failFields` is set. */
+let published: Artist[];
+let failFields: boolean;
 let version: number;
 let canEdit: boolean;
 let listAttrs: EditableListAttrs;
@@ -22,19 +27,23 @@ let arrayAnswer: (() => Response) | undefined;
 let pageAnswer: (() => Response) | undefined;
 let handle: EditorHandle | undefined;
 
-function renderList(): string {
+function renderOne(path: string, entries: Artist[]): string {
   const edit = editable(KEY);
   const attrs = (record: Record<string, string>) =>
     Object.entries(record)
       .map(([name, value]) => ` ${name}="${value}"`)
       .join("");
-  const items = artists
+  const items = entries
     .map(
       (artist, index) =>
-        `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists[_key=${artist._key}].name`, "text"))}>${artist.name}</h3></li>`,
+        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3></li>`,
     )
     .join("");
-  return `<ul${attrs(edit.list("artists", listAttrs))}>${items}</ul>`;
+  return `<ul${attrs(edit.list(path, listAttrs))}>${items}</ul>`;
+}
+
+function renderList(): string {
+  return renderOne("artists", artists) + (crew ? renderOne("crew", crew) : "");
 }
 
 function wireDocument() {
@@ -43,7 +52,7 @@ function wireDocument() {
     key: KEY,
     type: "page",
     slug: "list",
-    payload: { artists },
+    payload: { artists, ...(crew ? { crew } : {}) },
     isDraft: true,
     publishedAt: null,
     draftUpdatedAt: null,
@@ -82,7 +91,20 @@ function installFetch(): void {
         const body = JSON.parse(String(init.body)) as { op: ArrayOp; expectedVersion: unknown };
         arrayCalls.push({ op: body.op, expectedVersion: body.expectedVersion });
         if (arrayAnswer) return arrayAnswer();
-        artists = applyArrayOp({ artists }, parsePath("artists"), body.op).artists;
+        const body2 = JSON.parse(String(init.body)) as { path: string };
+        const next = applyArrayOp({ artists, crew }, parsePath(body2.path), body.op);
+        artists = next.artists;
+        crew = next.crew;
+        version += 1;
+        return json({ document: wireDocument() });
+      }
+      if (route === "POST /api/content/field") {
+        if (failFields) return json({ error: { code: "internal", message: "down" } }, 500);
+        version += 1;
+        return json({ document: wireDocument() });
+      }
+      if (route === "POST /api/content/discard") {
+        artists = published.map((artist) => ({ ...artist }));
         version += 1;
         return json({ document: wireDocument() });
       }
@@ -121,6 +143,9 @@ beforeEach(() => {
     { _key: "b", name: "Tobias" },
   ];
   version = 4;
+  crew = undefined;
+  published = artists.map((artist) => ({ ...artist }));
+  failFields = false;
   canEdit = true;
   listAttrs = { label: "Artists", noun: "artist", plural: "artists", min: 1, max: 3, itemLabel: "name" };
   arrayCalls = [];
@@ -259,7 +284,12 @@ describe("list operations", () => {
     await mount();
     const add = addButton() as HTMLButtonElement;
     expect(add.getAttribute("aria-disabled")).toBe("true");
-    const reason = document.getElementById(add.getAttribute("aria-describedby") ?? "");
+    const described = (add.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent);
+    // The tag, which the outline hides from assistive technology, then the reason.
+    expect(described[0]).toBe("Artists · 3 of 3");
+    const reason = { textContent: described[1] };
     expect(reason?.textContent).toBe("Maximum of 3 artists. Remove one to add another.");
     add.click();
     await settle();
@@ -319,5 +349,68 @@ describe("list operations", () => {
     await settle();
     expect(document.querySelector(".cms-toast")?.textContent).toContain("has changed since this page loaded");
     expect(names()).toEqual(["Someone else", "Mara", "Tobias"]);
+  });
+});
+
+describe("after review", () => {
+  test("Undo in a list, and Ctrl+Z there, put back that list's removal, not the newest anywhere", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    crew = [
+      { _key: "c1", name: "Cleo" },
+      { _key: "c2", name: "Dev" },
+    ];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    const crewList = () => document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:crew"]`) as HTMLElement;
+    crewList().querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    expect(crew?.map((member) => member.name)).toEqual(["Dev"]);
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
+    expect(crew?.map((member) => member.name)).toEqual(["Dev"]);
+  });
+
+  test("Discard brings the list's markup back to what is stored", async () => {
+    await mount();
+    addButton()?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias", "New artist"]);
+    (document.activeElement as HTMLElement | null)?.blur();
+    await settle();
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
+    expect(items()[0]?.querySelector(".cms-item__tools")).not.toBeNull();
+  });
+
+  test("a value that failed to save survives the list's new markup, with its failed state", async () => {
+    await mount();
+    failFields = true;
+    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
+    tobias.click();
+    tobias.textContent = "Tobi";
+    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    toolButton(0, "down").click();
+    await settle();
+    const moved = items()[0]?.querySelector("h3");
+    expect(moved?.textContent).toBe("Tobi");
+    expect(moved?.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("a list addressed by index stays unkeyed: Duplicate adds no _key", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    listAttrs = { ...listAttrs, duplicate: true };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "duplicate").click();
+    await settle();
+    const op = arrayCalls[0]?.op as Extract<ArrayOp, { kind: "insert" }>;
+    expect(op).toEqual({ kind: "insert", index: 1, value: { name: "Mara" } });
+    expect(items()[1]?.querySelector("h3")?.classList.contains("cms-field--editing")).toBe(true);
   });
 });

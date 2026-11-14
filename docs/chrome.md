@@ -272,8 +272,9 @@ mountEditor({
 });
 ```
 
-A list with no `newItem` offers no Add but can still move, duplicate and remove. When `newItem` returns no `_key`, the
-chrome adds one (10 characters of `[a-z0-9]`); Duplicate gives the copy a new one too. These are the only items the
+A list with no `newItem` offers no Add but can still move, duplicate and remove. In a keyed list (or an empty one), when
+`newItem` returns no `_key` the chrome adds one (10 characters of `[a-z0-9]`), and Duplicate gives the copy a new one.
+A list addressed by index stays unkeyed: neither adds a `_key` there. These are the only items the
 chrome creates (see docs/paths.md).
 
 **How it behaves.**
@@ -294,7 +295,7 @@ chrome creates (see docs/paths.md).
   `aria-disabled="true"` and announces why when pressed. Add's reason is also on screen beside it.
 - Remove takes effect at once. For 15 seconds a toast offers Undo, and so does a button in the list's last row, right
   after the items, so Tab from the list reaches it (`.cms-list__undo`). Ctrl+Z or ⌘Z with focus in the list (not in a
-  field being edited) undoes the last removal at any time. Undo inserts the same item, `_key` and all, where it was. Discard and
+  field being edited) undoes that list's last removal at any time; the list's own Undo also undoes that list's. Undo inserts the same item, `_key` and all, where it was. Discard and
   Restore forget the removals of their document.
 - Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
   that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
@@ -304,7 +305,10 @@ chrome creates (see docs/paths.md).
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
 - **The chrome can write the data but not your markup**, so after each write it requests the page again
-  (`GET location.href`, same-origin credentials), finds the element with the same `data-edit-list` and swaps it in.
+  (`GET location.href`, same-origin credentials, `cache: "no-store"`), finds every element with the same
+  `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a conflict
+  replaces the document's content. A field value still saving or failed, and its state, are put back on the new
+  markup.
   Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
   list, a toast (`listReload`) offers Reload.
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.

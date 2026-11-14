@@ -4,6 +4,7 @@
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
 import { element, uniqueId } from "./dom.ts";
+import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
 export interface ListInfo {
@@ -60,12 +61,6 @@ const KEYED_ITEM = /\[_key=([A-Za-z0-9_-]+)\]$/;
 function count(value: string | undefined, fallback: number): number {
   const parsed = value === undefined ? Number.NaN : Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function splitAddress(address: string): { key: string; path: string } | null {
-  const separator = address.lastIndexOf(":");
-  if (separator <= 0 || separator === address.length - 1) return null;
-  return { key: address.slice(0, separator), path: address.slice(separator + 1) };
 }
 
 export function parseList(target: HTMLElement): ListInfo | null {
@@ -378,6 +373,10 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     bands.push(band);
   });
 
+  // The tag is drawn on the outline, which is aria-hidden; Add carries the same words as its description.
+  const tagCopy = element("span", { class: "cms-visually-hidden", id: uniqueId("cms-list-tag") }, [
+    tag.textContent ?? "",
+  ]);
   const reasonId = uniqueId("cms-list-reason");
   const reason = element("span", { class: "cms-list__reason", id: reasonId }, [
     full && handlers.canAdd ? fullReason : "",
@@ -391,13 +390,13 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       type: "button",
       class: "cms-btn cms-list__add-button",
       "aria-disabled": full ? "true" : undefined,
-      "aria-describedby": full ? reasonId : undefined,
+      "aria-describedby": full ? `${tagCopy.id} ${reasonId}` : tagCopy.id,
       "data-reason": full ? fullReason : undefined,
     });
     add.append(icon("add"), format(strings.listAdd, { noun: info.noun }));
     add.addEventListener("click", () => handlers.add());
     record.addButton = add;
-    addChildren.push(element("div", { class: "cms-list__add-line" }, [add, reason]));
+    addChildren.push(element("div", { class: "cms-list__add-line" }, [add, reason, tagCopy]));
   }
   const undo = element("button", { type: "button", class: "cms-btn cms-list__undo", hidden: !handlers.canUndo }, [
     strings.undo,

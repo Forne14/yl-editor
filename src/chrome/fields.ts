@@ -21,13 +21,18 @@ export interface FieldRecord {
   detach?: () => void;
 }
 
-export function parseField(target: HTMLElement): FieldInfo | null {
-  const address = target.dataset.editField ?? "";
+/** `<docKey>:<path>`, split on the last colon: the grammar of `data-edit-field`, `data-edit-list` and `data-edit-item`. */
+export function splitAddress(address: string): { key: string; path: string } | null {
   const separator = address.lastIndexOf(":");
   if (separator <= 0 || separator === address.length - 1) return null;
+  return { key: address.slice(0, separator), path: address.slice(separator + 1) };
+}
+
+export function parseField(target: HTMLElement): FieldInfo | null {
+  const address = splitAddress(target.dataset.editField ?? "");
+  if (!address) return null;
   const info: FieldInfo = {
-    key: address.slice(0, separator),
-    path: address.slice(separator + 1),
+    ...address,
     // Kept as written: an unknown type still gets a highlight and a "No editor registered" message.
     type: (target.dataset.editType ?? "text") as EditFieldType,
   };

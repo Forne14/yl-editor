@@ -412,7 +412,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     attachList(list, strings, {
       canAdd: options.lists?.[list.id]?.newItem !== undefined,
       canUndo: removalTimer !== undefined && removals.some((removal) => removal.listId === list.id),
-      undo: () => void undoRemoval(),
+      undo: () => void undoRemoval(list.id),
       add: () => void addItem(list),
       act: (item, action, pressed) => void actOnItem(list, item, action, pressed),
     });
@@ -453,14 +453,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           written = true;
         }),
       );
-    } catch (error) {
-      if (!isConflict(error)) {
-        busyLists.delete(list.id);
-        return false;
-      }
+    } catch {
+      // Shown by `lifecycle`. A conflict has repainted the document, its lists included.
+      busyLists.delete(list.id);
+      return false;
     }
     try {
-      await swapList(list);
+      // Nothing written (the item had already moved or gone): the page already shows what is stored.
+      if (written) await swapLists(key);
     } finally {
       busyLists.delete(list.id);
     }
@@ -471,33 +471,52 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * D8: the chrome can write the data but not the host's markup for it, so it asks the page again and swaps in the
    * list's new element. The page must render the draft for an editor, as it does on a reload.
    */
-  async function swapList(list: ListRecord): Promise<void> {
-    let fresh: Element | null = null;
+  async function swapLists(key: string): Promise<void> {
+    const targets = lists.filter((list) => list.info.key === key);
+    if (targets.length === 0) return;
+    let page: Document | undefined;
     try {
+      // Never a cached copy: it would lack the write just made.
       const response = await fetch(location.href, {
         credentials: "same-origin",
+        cache: "no-store",
         headers: { Accept: "text/html" },
       });
-      if (response.ok) {
-        const page = new DOMParser().parseFromString(await response.text(), "text/html");
-        fresh =
-          [...page.querySelectorAll("[data-edit-list]")].find(
-            (candidate) => candidate.getAttribute("data-edit-list") === list.id,
-          ) ?? null;
-      }
+      if (response.ok) page = new DOMParser().parseFromString(await response.text(), "text/html");
     } catch {
       // Reported below.
     }
     if (destroyed) return;
-    if (!fresh || !list.element.isConnected) {
+    const swapped: Element[] = [];
+    let missing = false;
+    for (const list of targets) {
+      const fresh = [...(page?.querySelectorAll("[data-edit-list]") ?? [])].find(
+        (candidate) => candidate.getAttribute("data-edit-list") === list.id,
+      );
+      if (!fresh || !list.element.isConnected) {
+        missing = true;
+        continue;
+      }
+      list.detach?.();
+      const node = document.importNode(fresh, true);
+      list.element.replaceWith(node);
+      swapped.push(node);
+    }
+    if (missing) {
       toast.show(strings.listReload, "error", [
         { label: strings.reload, onClick: () => location.reload(), variant: "primary" },
       ]);
-      return;
     }
-    list.detach?.();
-    list.element.replaceWith(document.importNode(fresh, true));
+    if (swapped.length === 0) return;
     rescan();
+    // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state.
+    for (const record of fields) {
+      if (!swapped.some((node) => node.contains(record.element))) continue;
+      const committed = session.committedValue(record.info.key, record.info.path);
+      if (committed) render(record, committed.value);
+      const state = session.slot(record.info.key, record.info.path).state;
+      if (state !== "idle") showState(record, state);
+    }
   }
 
   function listById(id: string): ListRecord | undefined {
@@ -559,8 +578,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (!make) return;
     const made = make();
     const value: Record<string, unknown> = { ...made };
-    if (typeof value["_key"] !== "string") value["_key"] = newItemKey();
-    const itemKey = String(value["_key"]);
+    // A list addressed by index stays that way: a _key there would be one keyed item among unkeyed ones.
+    const keyed = list.items.length === 0 || list.items.some((entry) => entry.itemKey !== undefined);
+    if (keyed && typeof value["_key"] !== "string") value["_key"] = newItemKey();
+    const itemKey = typeof value["_key"] === "string" ? value["_key"] : undefined;
     const ok = await listWrite(list, format(strings.listAdd, { noun: list.info.noun }), (items) => ({
       kind: "insert",
       index: items.length,
@@ -568,7 +589,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }));
     if (!ok) return;
     const fresh = listById(list.id);
-    const item = itemByKey(fresh, itemKey);
+    const item = itemByKey(fresh, itemKey) ?? (itemKey === undefined ? fresh?.items.at(-1) : undefined);
     if (!fresh || !item) return;
     toast.announce(
       format(strings.itemAdded, {
@@ -611,16 +632,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       return;
     }
     if (action === "duplicate") {
-      const itemKey = newItemKey();
+      const itemKey = item.itemKey === undefined ? undefined : newItemKey();
+      let copiedTo = -1;
       const ok = await listWrite(list, pressed.getAttribute("aria-label") ?? action, (items) => {
         const from = storedIndex(items, item);
         const original = items[from];
         if (from < 0 || typeof original !== "object" || original === null) return undefined;
-        return { kind: "insert", index: from + 1, value: { ...(original as object), _key: itemKey } };
+        copiedTo = from + 1;
+        const value = itemKey === undefined ? { ...(original as object) } : { ...(original as object), _key: itemKey };
+        return { kind: "insert", index: copiedTo, value };
       });
       if (!ok) return;
       const fresh = listById(list.id);
-      const copy = itemByKey(fresh, itemKey);
+      const copy = itemByKey(fresh, itemKey) ?? (itemKey === undefined ? fresh?.items[copiedTo] : undefined);
       if (!fresh || !copy) return;
       toast.announce(
         format(strings.itemDuplicated, {
@@ -674,16 +698,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
   }
 
-  async function undoRemoval(): Promise<void> {
-    const last = removals.pop();
+  /** Undoes the newest removal, or the newest from `listId` when the press came from that list. */
+  async function undoRemoval(listId?: string): Promise<void> {
+    const at = listId === undefined ? removals.length - 1 : removals.findLastIndex((entry) => entry.listId === listId);
+    const last = at < 0 ? undefined : removals.splice(at, 1)[0];
     if (!last) return;
+    const putBack = () => {
+      removals.splice(Math.min(at, removals.length), 0, last);
+      showRemovalToast(last.name);
+    };
     if (removalToast !== undefined) toast.hideIf(removalToast);
     if (removalTimer !== undefined) clearTimeout(removalTimer);
     removalTimer = undefined;
     const list = listById(last.listId);
     if (!list || busyLists.has(list.id)) {
-      if (!list) return;
-      removals.push(last);
+      if (list) putBack();
       return;
     }
     const ok = await listWrite(list, strings.undo, (items) => ({
@@ -692,7 +721,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       value: last.value,
     }));
     if (!ok) {
-      removals.push(last);
+      putBack();
       return;
     }
     const fresh = listById(last.listId);
@@ -754,9 +783,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (!editing || key.defaultPrevented || key.key.toLowerCase() !== "z" || !(key.ctrlKey || key.metaKey)) return;
     if (key.shiftKey || key.altKey || removals.length === 0 || !(event.target instanceof Element)) return;
     const target = event.target;
-    if (!target.closest(".cms-list") || target.closest("input, textarea, select, [contenteditable]")) return;
+    const inList = target.closest<HTMLElement>(".cms-list");
+    if (!inList || target.closest("input, textarea, select, [contenteditable]")) return;
+    const list = lists.find((entry) => entry.element === inList);
+    if (!list || !removals.some((removal) => removal.listId === list.id)) return;
     event.preventDefault();
-    void undoRemoval();
+    void undoRemoval(list.id);
   });
   disposer.listen(scanRoot, "mouseover", (event) => {
     const record = fieldFrom(event);
@@ -1377,6 +1409,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       render(record, valueAtPath(payload, record.info.path), true);
       showState(record, "idle");
     }
+    // A list's items may have come or gone with the content: only the page can draw them.
+    void swapLists(key);
   }
 
   /**
@@ -1529,6 +1563,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** After the chrome swapped a list's markup: the documents are known, only the elements are new. */
   function rescan(): void {
+    // A field still opening (waiting on its fetch) would open on an element that is gone.
+    openTicket += 1;
     closeActive(false, true);
     scan();
     dress();
