@@ -80,10 +80,16 @@ async function renderHome(request: Request, tenant: Tenant): Promise<Response> {
   const editing = url.searchParams.get("edit") === "1" && canEditAnything(session);
   // Editors see drafts; visitors see what is live. Unvalidated, so a broken row renders instead of failing the page.
   const read = (key: string) => tenant.store.get(key, { draft: editing, unvalidated: true, includeRetired: editing });
-  const [home, about, settings] = await Promise.all([read("pages/home"), read("pages/about"), read("settings/site")]);
+  const lists = url.searchParams.get("lists") === "1";
+  const [home, about, settings, team] = await Promise.all([
+    read("pages/home"),
+    read("pages/about"),
+    read("settings/site"),
+    lists ? read("pages/team") : null,
+  ]);
   const scheduling = url.searchParams.get("scheduling") === "1";
   const richtextFallback = url.searchParams.get("richtext") === "fallback";
-  return html(renderPage({ home, about, settings }, { session, editing, scheduling, richtextFallback }));
+  return html(renderPage({ home, about, settings, team }, { session, editing, scheduling, richtextFallback, lists }));
 }
 
 async function recordCspReport(request: Request): Promise<Response> {

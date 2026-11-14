@@ -39,7 +39,7 @@ Index paths break under concurrent edits: if someone moves `items.0` below `item
 - `setAt` and `applyArrayOp` resolve key segments the same way, anywhere in the path. A key segment with no matching element throws `PathError` (`No item with _key=<id>`), as does a key segment into a non-array. Inputs are never mutated.
 - `setAt` with a key segment as the last segment replaces that whole element.
 
-**`_key` is the host's responsibility.** The editor never generates, checks or rewrites `_key` values; the sqlite store does not add them either. If you want keyed paths, store a `_key` on each array item (unique within its array; duplicates resolve to the first match) and keep it when the item is edited, moved or replaced. Items inserted with an `ArrayOp` should carry their own `_key`.
+**`_key` is the host's responsibility.** The store and the paths never generate, check or rewrite `_key` values; the sqlite store does not add them either. The one exception is the chrome's list editing (docs/chrome.md → Lists): an item it creates with Add or Duplicate gets a fresh `_key` when it has none. If you want keyed paths, store a `_key` on each array item (unique within its array; duplicates resolve to the first match) and keep it when the item is edited, moved or replaced. Items inserted with an `ArrayOp` should carry their own `_key`.
 
 When rendering list items, build paths with `itemPath`, which picks the keyed form when it can:
 

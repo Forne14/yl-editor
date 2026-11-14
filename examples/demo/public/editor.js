@@ -5,7 +5,8 @@ import { mountEditor } from "/pkg/chrome/index.js";
 
 const { actorLabel, scheduling, richtext } = document.body.dataset;
 const widgets = richtext === "fallback" ? {} : { richtext: (await import("/richtext.js")).richTextWidget };
-const editor = mountEditor({ actorLabel, scheduling: scheduling === "1", widgets });
+const lists = { "pages/team:team": { newItem: () => ({ name: "New member", role: "" }) } };
+const editor = mountEditor({ actorLabel, scheduling: scheduling === "1", widgets, lists });
 
 // Specs reach the handle through `window.demoEditor` and wait on `data-editor-ready` instead of sleeping.
 window.demoEditor = editor;

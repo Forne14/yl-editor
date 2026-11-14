@@ -95,6 +95,14 @@ export interface Panel {
   mount(root: HTMLElement, api: EditorApi): { destroy(): void };
 }
 
+/** How the chrome adds to one keyed list (see docs/chrome.md, "Lists"). */
+export interface ListOptions {
+  /** The new item's starting value. The chrome adds a `_key` when it has none. Without it the list offers no Add. */
+  newItem?: () => Record<string, unknown>;
+  /** The field name, relative to the item, to open after Add or Duplicate. Default: the item's first field. */
+  focusField?: string;
+}
+
 export interface EditorOptions {
   /** Where the content API lives. Default `/api/content`. */
   base?: string;
@@ -110,6 +118,8 @@ export interface EditorOptions {
    * `publish-due`: turn it on only if something does, and read `failed` from its response. See docs/chrome.md.
    */
   scheduling?: boolean;
+  /** Per keyed list, by its `data-edit-list` address (`"<docKey>:<path>"`). */
+  lists?: Record<string, ListOptions>;
   /** Called when the user presses Done. */
   onExit?: () => void;
 }

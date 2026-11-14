@@ -2,8 +2,19 @@
 import { diffPayloads, type DiffEntry } from "../diff.ts";
 import { renderRichText } from "../richtext/render.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
+import type { WireArrayOp } from "../http/wire-types.ts";
 import { Disposer, button, element, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
+import {
+  attachList,
+  itemName,
+  newItemKey,
+  scanLists,
+  storedIndex,
+  type ItemAction,
+  type ItemRecord,
+  type ListRecord,
+} from "./lists.ts";
 import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
@@ -145,6 +156,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   let fields: FieldRecord[] = [];
   let byElement = new Map<HTMLElement, FieldRecord>();
+  let lists: ListRecord[] = [];
+  /** The reason fields are locked after the last load failed, until one succeeds. */
+  let loadError: string | undefined;
+  /** Lists with an operation on its way: a second press waits for the page to show the first. */
+  const busyLists = new Set<string>();
+  /** Removals that Undo puts back, newest last. */
+  const removals: { listId: string; key: string; path: string; value: unknown; index: number; name: string }[] = [];
+  let removalToast: number | undefined;
+  let removalTimer: ReturnType<typeof setTimeout> | undefined;
   let active: ActiveWidget | null = null;
   let editing = true;
   let destroyed = false;
@@ -367,6 +387,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     enterButton.hidden = next;
     if (next) {
       for (const record of fields) attachRecord(record);
+      for (const list of lists) attachListRecord(list);
       enterButton.blur();
     } else {
       openTicket += 1;
@@ -374,6 +395,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       sheet.close(false);
       badge.hide();
       for (const record of fields) record.detach?.();
+      for (const list of lists) list.detach?.();
       enterButton.focus();
     }
   }
@@ -381,6 +403,352 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   function attachRecord(record: FieldRecord): void {
     descriptions.append(record.description);
     attach(record, strings.pressEnterToEdit);
+  }
+
+  /** A list is dressed only while its document may be edited; otherwise its fields show why they are locked. */
+  function attachListRecord(list: ListRecord): void {
+    list.detach?.();
+    if (session.documents.get(list.info.key)?.access.edit !== true) return;
+    attachList(list, strings, {
+      canAdd: options.lists?.[list.id]?.newItem !== undefined,
+      canUndo: removalTimer !== undefined && removals.some((removal) => removal.listId === list.id),
+      undo: () => void undoRemoval(list.id),
+      add: () => void addItem(list),
+      act: (item, action, pressed) => void actOnItem(list, item, action, pressed),
+    });
+  }
+
+  /** The stored array at the list's path, after the writes queued before this one. */
+  async function storedItems(list: ListRecord): Promise<unknown[]> {
+    const payload = (await session.document(list.info.key)).payload;
+    const items = valueAtPath(payload, list.info.path);
+    return Array.isArray(items) ? items : [];
+  }
+
+  /**
+   * One array operation on the document's write chain, then the page's new markup for the list. `build` sees the
+   * stored array at the moment the write goes out, so an index is never stale. Returns false when nothing was written;
+   * the failure has been shown. A conflict catches the page up, as for the other actions.
+   */
+  async function listWrite(
+    list: ListRecord,
+    action: string,
+    build: (items: unknown[]) => WireArrayOp | undefined,
+  ): Promise<boolean> {
+    const { key, path } = list.info;
+    closeActive(false, true);
+    busyLists.add(list.id);
+    let written = false;
+    try {
+      await lifecycle(
+        action,
+        key,
+        guarded(key, async (expectedVersion) => {
+          const op = build(await storedItems(list));
+          if (!op) return;
+          const document = await client.array(key, path, op, expectedVersion);
+          session.applyWrite(expectedVersion, document);
+          session.touch(key, [path]);
+          updateBar();
+          written = true;
+        }),
+      );
+    } catch {
+      // Shown by `lifecycle`. A conflict has repainted the document, its lists included.
+      busyLists.delete(list.id);
+      return false;
+    }
+    try {
+      // Nothing written (the item had already moved or gone): the page already shows what is stored.
+      if (written) await swapLists(key);
+    } finally {
+      busyLists.delete(list.id);
+    }
+    return written;
+  }
+
+  /**
+   * D8: the chrome can write the data but not the host's markup for it, so it asks the page again and swaps in the
+   * list's new element. The page must render the draft for an editor, as it does on a reload.
+   */
+  async function swapLists(key: string): Promise<void> {
+    const targets = lists.filter((list) => list.info.key === key);
+    if (targets.length === 0) return;
+    let page: Document | undefined;
+    try {
+      // Never a cached copy: it would lack the write just made.
+      const response = await fetch(location.href, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "text/html" },
+      });
+      if (response.ok) page = new DOMParser().parseFromString(await response.text(), "text/html");
+    } catch {
+      // Reported below.
+    }
+    if (destroyed) return;
+    const swapped: Element[] = [];
+    let missing = false;
+    for (const list of targets) {
+      const fresh = [...(page?.querySelectorAll("[data-edit-list]") ?? [])].find(
+        (candidate) => candidate.getAttribute("data-edit-list") === list.id,
+      );
+      if (!fresh || !list.element.isConnected) {
+        missing = true;
+        continue;
+      }
+      list.detach?.();
+      const node = document.importNode(fresh, true);
+      list.element.replaceWith(node);
+      swapped.push(node);
+    }
+    if (missing) {
+      toast.show(strings.listReload, "error", [
+        { label: strings.reload, onClick: () => location.reload(), variant: "primary" },
+      ]);
+    }
+    if (swapped.length === 0) return;
+    rescan();
+    // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state.
+    for (const record of fields) {
+      if (!swapped.some((node) => node.contains(record.element))) continue;
+      const committed = session.committedValue(record.info.key, record.info.path);
+      if (committed) render(record, committed.value);
+      const state = session.slot(record.info.key, record.info.path).state;
+      if (state !== "idle") showState(record, state);
+    }
+  }
+
+  function listById(id: string): ListRecord | undefined {
+    return lists.find((list) => list.id === id);
+  }
+
+  function itemByKey(list: ListRecord | undefined, itemKey: string | undefined): ItemRecord | undefined {
+    return itemKey === undefined ? undefined : list?.items.find((item) => item.itemKey === itemKey);
+  }
+
+  /** Focus an item's toolbar: `preferred` if it is there and not inert, else its first button that isn't. */
+  function focusTools(item: ItemRecord | undefined, preferred?: ItemAction): void {
+    const tools = item?.element.querySelector<HTMLElement>(":scope > .cms-item__tools");
+    if (!tools) return;
+    const buttons = [...tools.querySelectorAll<HTMLButtonElement>("button[data-action]")];
+    const target =
+      buttons.find((node) => node.dataset.action === preferred && node.getAttribute("aria-disabled") !== "true") ??
+      buttons.find((node) => node.getAttribute("aria-disabled") !== "true") ??
+      buttons[0];
+    if (!target) return;
+    for (const node of buttons) node.tabIndex = node === target ? 0 : -1;
+    // Without hover the toolbar's buttons show only while the item is open: focus its chip instead.
+    const chip = tools.querySelector<HTMLButtonElement>(".cms-item__chip");
+    if (chip && getComputedStyle(target).display === "none") chip.focus();
+    else target.focus();
+  }
+
+  /**
+   * Opens the new item's first field, or the one the host named, for typing. A field edited in place starts with its
+   * text selected, so typing replaces the new item's default rather than adding to it.
+   */
+  async function openFirstField(list: ListRecord, item: ItemRecord): Promise<void> {
+    const wanted = options.lists?.[list.id]?.focusField;
+    const candidates = fields.filter((record) => item.element.contains(record.element));
+    const record =
+      (wanted !== undefined && candidates.find((entry) => entry.info.path === `${item.path}.${wanted}`)) ||
+      candidates[0];
+    if (!record) {
+      focusTools(item);
+      return;
+    }
+    await openField(record);
+    if (active?.record !== record || !record.element.isContentEditable) return;
+    const selection = document.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(record.element);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  async function addItem(list: ListRecord): Promise<void> {
+    if (busyLists.has(list.id)) return;
+    const reason = list.addButton?.dataset.reason;
+    if (reason) {
+      toast.announce(reason);
+      return;
+    }
+    const make = options.lists?.[list.id]?.newItem;
+    if (!make) return;
+    const made = make();
+    const value: Record<string, unknown> = { ...made };
+    // A list addressed by index stays that way: a _key there would be one keyed item among unkeyed ones.
+    const keyed = list.items.length === 0 || list.items.some((entry) => entry.itemKey !== undefined);
+    if (keyed && typeof value["_key"] !== "string") value["_key"] = newItemKey();
+    const itemKey = typeof value["_key"] === "string" ? value["_key"] : undefined;
+    const ok = await listWrite(list, format(strings.listAdd, { noun: list.info.noun }), (items) => ({
+      kind: "insert",
+      index: items.length,
+      value,
+    }));
+    if (!ok) return;
+    const fresh = listById(list.id);
+    const item = itemByKey(fresh, itemKey) ?? (itemKey === undefined ? fresh?.items.at(-1) : undefined);
+    if (!fresh || !item) return;
+    toast.announce(
+      format(strings.itemAdded, {
+        item: itemName(fresh, item, strings),
+        position: fresh.items.indexOf(item) + 1,
+        count: fresh.items.length,
+      }),
+    );
+    await openFirstField(fresh, item);
+  }
+
+  async function actOnItem(
+    list: ListRecord,
+    item: ItemRecord,
+    action: ItemAction,
+    pressed: HTMLButtonElement,
+  ): Promise<void> {
+    const reason = pressed.dataset.reason;
+    if (pressed.getAttribute("aria-disabled") === "true") {
+      if (reason) toast.announce(reason);
+      return;
+    }
+    if (busyLists.has(list.id)) return;
+    const name = itemName(list, item, strings);
+    if (action === "up" || action === "down") {
+      const step = action === "up" ? -1 : 1;
+      const ok = await listWrite(list, pressed.getAttribute("aria-label") ?? action, (items) => {
+        const from = storedIndex(items, item);
+        const to = from + step;
+        return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
+      });
+      if (!ok) return;
+      const fresh = listById(list.id);
+      const moved = itemByKey(fresh, item.itemKey) ?? fresh?.items[list.items.indexOf(item) + step];
+      if (!fresh || !moved) return;
+      toast.announce(
+        format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
+      );
+      focusTools(moved, action);
+      return;
+    }
+    if (action === "duplicate") {
+      const itemKey = item.itemKey === undefined ? undefined : newItemKey();
+      let copiedTo = -1;
+      const ok = await listWrite(list, pressed.getAttribute("aria-label") ?? action, (items) => {
+        const from = storedIndex(items, item);
+        const original = items[from];
+        if (from < 0 || typeof original !== "object" || original === null) return undefined;
+        copiedTo = from + 1;
+        const value = itemKey === undefined ? { ...(original as object) } : { ...(original as object), _key: itemKey };
+        return { kind: "insert", index: copiedTo, value };
+      });
+      if (!ok) return;
+      const fresh = listById(list.id);
+      const copy = itemByKey(fresh, itemKey) ?? (itemKey === undefined ? fresh?.items[copiedTo] : undefined);
+      if (!fresh || !copy) return;
+      toast.announce(
+        format(strings.itemDuplicated, {
+          item: name,
+          position: fresh.items.indexOf(copy) + 1,
+          count: fresh.items.length,
+        }),
+      );
+      await openFirstField(fresh, copy);
+      return;
+    }
+    const position = list.items.indexOf(item);
+    let removed: { value: unknown; index: number } | undefined;
+    const ok = await listWrite(list, pressed.getAttribute("aria-label") ?? action, (items) => {
+      const index = storedIndex(items, item);
+      if (index < 0) return undefined;
+      removed = { value: items[index], index };
+      return { kind: "remove", index };
+    });
+    if (!ok || !removed) return;
+    removals.push({ listId: list.id, key: list.info.key, path: list.info.path, name, ...removed });
+    const fresh = listById(list.id);
+    showRemovalToast(name);
+    toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
+    const next = fresh?.items[position] ?? fresh?.items[position - 1];
+    if (next) focusTools(next);
+    else fresh?.addButton?.focus();
+  }
+
+  const UNDO_MS = 15000;
+
+  function showRemovalToast(name: string): void {
+    if (removalTimer !== undefined) clearTimeout(removalTimer);
+    const token = toast.show(format(strings.removedToast, { item: name }), "info", [
+      { label: strings.undo, onClick: () => void undoRemoval(), variant: "primary" },
+    ]);
+    removalToast = token;
+    removalTimer = setTimeout(() => {
+      removalTimer = undefined;
+      toast.hideIf(token);
+      syncUndoButtons();
+    }, UNDO_MS);
+    syncUndoButtons();
+  }
+
+  /** Each list's Undo shows while one of its removals can still be undone with a visible button. */
+  function syncUndoButtons(): void {
+    for (const list of lists) {
+      if (!list.undoButton) continue;
+      list.undoButton.hidden = removalTimer === undefined || !removals.some((removal) => removal.listId === list.id);
+    }
+  }
+
+  /** Undoes the newest removal, or the newest from `listId` when the press came from that list. */
+  async function undoRemoval(listId?: string): Promise<void> {
+    const at = listId === undefined ? removals.length - 1 : removals.findLastIndex((entry) => entry.listId === listId);
+    const last = at < 0 ? undefined : removals.splice(at, 1)[0];
+    if (!last) return;
+    const putBack = () => {
+      removals.splice(Math.min(at, removals.length), 0, last);
+      showRemovalToast(last.name);
+    };
+    if (removalToast !== undefined) toast.hideIf(removalToast);
+    if (removalTimer !== undefined) clearTimeout(removalTimer);
+    removalTimer = undefined;
+    const list = listById(last.listId);
+    if (!list || busyLists.has(list.id)) {
+      if (list) putBack();
+      return;
+    }
+    const ok = await listWrite(list, strings.undo, (items) => ({
+      kind: "insert",
+      index: Math.min(last.index, items.length),
+      value: last.value,
+    }));
+    if (!ok) {
+      putBack();
+      return;
+    }
+    const fresh = listById(last.listId);
+    const itemKey =
+      typeof last.value === "object" && last.value !== null
+        ? (last.value as Record<string, unknown>)["_key"]
+        : undefined;
+    const restored = itemByKey(fresh, typeof itemKey === "string" ? itemKey : undefined) ?? fresh?.items[last.index];
+    if (!fresh || !restored) return;
+    toast.announce(
+      format(strings.itemRestored, {
+        item: last.name,
+        position: fresh.items.indexOf(restored) + 1,
+        count: fresh.items.length,
+      }),
+    );
+    focusTools(restored);
+    const previous = removals.at(-1);
+    if (previous) showRemovalToast(previous.name);
+    else syncUndoButtons();
+  }
+
+  /** Content replaced by a lifecycle write: the removals Undo would put back no longer apply to it. */
+  function forgetRemovals(key: string): void {
+    for (let index = removals.length - 1; index >= 0; index -= 1) {
+      if (removals[index]?.key === key) removals.splice(index, 1);
+    }
   }
 
   function fieldFrom(event: Event): FieldRecord | undefined {
@@ -409,6 +777,18 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if ((event as KeyboardEvent).key !== "Enter") return;
     event.preventDefault();
     void openField(record);
+  });
+  disposer.listen(scanRoot, "keydown", (event) => {
+    const key = event as KeyboardEvent;
+    if (!editing || key.defaultPrevented || key.key.toLowerCase() !== "z" || !(key.ctrlKey || key.metaKey)) return;
+    if (key.shiftKey || key.altKey || removals.length === 0 || !(event.target instanceof Element)) return;
+    const target = event.target;
+    const inList = target.closest<HTMLElement>(".cms-list");
+    if (!inList || target.closest("input, textarea, select, [contenteditable]")) return;
+    const list = lists.find((entry) => entry.element === inList);
+    if (!list || !removals.some((removal) => removal.listId === list.id)) return;
+    event.preventDefault();
+    void undoRemoval(list.id);
   });
   disposer.listen(scanRoot, "mouseover", (event) => {
     const record = fieldFrom(event);
@@ -1029,6 +1409,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       render(record, valueAtPath(payload, record.info.path), true);
       showState(record, "idle");
     }
+    // A list's items may have come or gone with the content: only the page can draw them.
+    void swapLists(key);
   }
 
   /**
@@ -1088,10 +1470,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       guarded(key, async (expectedVersion) => {
         const written = await client.discard(key, { expectedVersion });
         session.clearFailed(key);
+        forgetRemovals(key);
         session.settle(key, written);
         if (written) repaint(key, written.payload, true);
         else {
           // Never published: the store deleted it, so there is nothing left to edit.
+          for (const list of lists) if (list.info.key === key) list.detach?.();
           for (const record of fields) {
             if (record.info.key !== key) continue;
             if (active?.record === record) closeActive(false);
@@ -1136,6 +1520,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         const written = await client.restoreRevision(key, revisionId, { expectedVersion });
         session.applyWrite(expectedVersion, written);
         session.clearFailed(key);
+        forgetRemovals(key);
         session.touch(
           key,
           diffPayloads(before, written.payload).map((entry) => entry.path),
@@ -1145,6 +1530,44 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       }),
     );
     toast.show(format(strings.restored, { key }), "saved");
+  }
+
+  /** Takes the page's fields and lists afresh. A field's emptied state carries over to the same element. */
+  function scan(): void {
+    for (const record of fields) record.detach?.();
+    for (const list of lists) list.detach?.();
+    const previous = byElement;
+    fields = scanFields(scanRoot);
+    byElement = new Map(fields.map((record) => [record.element, record]));
+    for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
+    lists = scanLists(scanRoot);
+  }
+
+  /** Marks each field editable or locked from what the session knows, and dresses fields and lists while editing. */
+  function dress(): void {
+    for (const record of fields) {
+      const state = session.documents.get(record.info.key);
+      record.editable = state?.access.edit === true;
+      record.reason = record.editable
+        ? undefined
+        : loadError
+          ? strings.loadFailed
+          : state
+            ? strings.notEditable
+            : strings.unknownDocument;
+      if (editing) attachRecord(record);
+    }
+    if (editing) for (const list of lists) attachListRecord(list);
+    updateBar();
+  }
+
+  /** After the chrome swapped a list's markup: the documents are known, only the elements are new. */
+  function rescan(): void {
+    // A field still opening (waiting on its fetch) would open on an element that is gone.
+    openTicket += 1;
+    closeActive(false, true);
+    scan();
+    dress();
   }
 
   const api: EditorApi = {
@@ -1168,14 +1591,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     async refresh() {
       openTicket += 1;
       closeActive(false, true);
-      for (const record of fields) record.detach?.();
-      const previous = byElement;
-      fields = scanFields(scanRoot);
-      byElement = new Map(fields.map((record) => [record.element, record]));
-      for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
-      let loadError: string | undefined;
+      scan();
+      loadError = undefined;
       try {
-        await session.load([...groupByDocument(fields).keys()]);
+        await session.load([...new Set([...groupByDocument(fields).keys(), ...lists.map((list) => list.info.key)])]);
         // The failure is resolved; its toast goes, unless something newer has replaced it.
         if (loadFailureToast !== undefined) toast.hideIf(loadFailureToast);
         loadFailureToast = undefined;
@@ -1186,19 +1605,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         ]);
       }
       if (destroyed) return;
-      for (const record of fields) {
-        const state = session.documents.get(record.info.key);
-        record.editable = state?.access.edit === true;
-        record.reason = record.editable
-          ? undefined
-          : loadError
-            ? strings.loadFailed
-            : state
-              ? strings.notEditable
-              : strings.unknownDocument;
-        if (editing) attachRecord(record);
-      }
-      updateBar();
+      dress();
     },
     status: (message: string, kind: StatusKind = "info") => {
       toast.show(message, kind);
@@ -1220,6 +1627,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       toast.clearTimer();
       toast.cancelAnnounce();
       for (const record of fields) record.detach?.();
+      for (const list of lists) list.detach?.();
+      if (removalTimer !== undefined) clearTimeout(removalTimer);
       disposer.dispose();
       chrome.remove();
     },

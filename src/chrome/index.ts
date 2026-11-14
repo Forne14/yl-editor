@@ -4,7 +4,7 @@ export { mountEditor } from "./mount.ts";
 export { createDefaultWidgets, defaultWidgets, missingWidget, openPopover, type Popover } from "./widgets.ts";
 export { createContentClient, ContentRequestError, type ContentClient } from "../http/client.ts";
 export { defaultStrings, type Strings } from "./strings.ts";
-export type { EditableAttrs, EditFieldType } from "../editable.ts";
+export type { EditableAttrs, EditableListAttrs, EditFieldType } from "../editable.ts";
 export type {
   DocumentState,
   DocumentSummary,
@@ -13,6 +13,7 @@ export type {
   EditorOptions,
   ErrorCode,
   FieldInfo,
+  ListOptions,
   Panel,
   StatusKind,
   Widget,

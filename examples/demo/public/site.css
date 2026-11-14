@@ -42,3 +42,27 @@ body {
   margin: 3rem auto 0;
   font-size: 0.875rem;
 }
+
+.team {
+  display: grid;
+  gap: 1rem;
+  margin: 2rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team__member {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: 1rem;
+}
+
+/* While editing, room between members for each one's toolbar on the line between them. */
+.team.cms-list {
+  gap: 3.75rem;
+  margin-top: 3.5rem;
+}
+
+.team__name {
+  font-weight: bold;
+}

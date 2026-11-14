@@ -1,6 +1,6 @@
 // Server-side rendering of the demo page. Visitors get the published view and no editor markup; editors get the
 // draft view, `editable()` attributes on every field and the island.
-import { editable, type StoredDocument } from "@yl/editor";
+import { editable, itemPath, type StoredDocument } from "@yl/editor";
 import { ROLE_LABELS, STATUS_OPTIONS, type Session } from "./content.ts";
 
 export const escapeHtml = (value: string): string =>
@@ -35,6 +35,8 @@ export function formatDate(value: unknown): string {
 export interface PageDocuments {
   home: StoredDocument | null;
   about: StoredDocument | null;
+  /** Rendered only with `lists`, so the specs that walk the whole page see the page they expect. */
+  team?: StoredDocument | null;
   settings: StoredDocument | null;
 }
 
@@ -43,6 +45,8 @@ export interface RenderOptions {
   /** Render the editor: editable attributes, the stylesheet and the island. */
   editing: boolean;
   scheduling: boolean;
+  /** Render the `pages/team` keyed list (`?lists=1`). */
+  lists?: boolean;
   /** Leave `richtext` to the default widget, the plain-text fallback, instead of `@yl/editor/richtext`. */
   richtextFallback?: boolean;
 }
@@ -56,6 +60,24 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
   const about = payloadOf(documents.about);
   const settings = payloadOf(documents.settings);
   const tags = Array.isArray(home["tags"]) ? home["tags"].map(text) : [];
+  const teamField = editable(editing ? "pages/team" : undefined);
+  const teamPayload = payloadOf(documents.team ?? null);
+  const team = Array.isArray(teamPayload["team"]) ? (teamPayload["team"] as unknown[]) : [];
+  const teamItems = team
+    .map((member, index) => {
+      const record = typeof member === "object" && member !== null ? (member as Record<string, unknown>) : {};
+      const path = (name: string) => `${itemPath("team", member, index)}.${name}`;
+      return `<li class="team__member"${attributes(teamField.item("team", member, index))}><span class="team__name"${attributes(teamField(path("name"), "text", { label: "Name" }))}>${escapeHtml(text(record["name"]))}</span><span class="team__role"${attributes(teamField(path("role"), "text", { label: "Role" }))}>${escapeHtml(text(record["role"]))}</span></li>`;
+    })
+    .join("");
+  const teamList = teamField.list("team", {
+    label: "Team",
+    noun: "member",
+    plural: "members",
+    max: 4,
+    duplicate: true,
+    itemLabel: "name",
+  });
 
   const head = [
     `<meta charset="utf-8">`,
@@ -104,7 +126,14 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
       <section class="about" aria-labelledby="about-title">
         <h2 id="about-title"${attributes(aboutField("title", "text", { label: "About heading" }))}>${escapeHtml(text(about["title"]))}</h2>
         <p id="about-body"${attributes(aboutField("body", "text", { label: "About text" }))}>${escapeHtml(text(about["body"]))}</p>
-      </section>
+      </section>${
+        options.lists
+          ? `
+      <section class="team-section" aria-label="Team">
+        <ul class="team" id="team-list"${attributes(teamList)}>${teamItems}</ul>
+      </section>`
+          : ""
+      }
     </main>
     <footer class="footer">
       <p id="site-footer"${attributes(settingsField("footer", "text", { label: "Footer" }))}>${escapeHtml(text(settings["footer"]))}</p>

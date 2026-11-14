@@ -36,6 +36,9 @@
   --cms-z: 1000;
   --cms-control-h: 44px;
   --cms-sheet-max-h: 70vh;
+  --cms-list-pad: 12px;
+  --cms-list-line: thin dashed var(--cms-accent);
+  --cms-list-tint: color-mix(in srgb, var(--cms-accent) 7%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -579,7 +582,232 @@
   opacity: 0.75;
 }
 
+/* ---------- Lists: [data-edit-list] and its items ----------
+ * One dashed outline per list (.cms-list__frame). Inside it a single dashed line separates one item from the next
+ * (each band's top edge) and one field from the next inside an item (.cms-item__sep). Nothing nests or crosses: fields
+ * in a list lose their own outline, and their states are solid and inset, inside their cell. Every position comes from
+ * custom properties the chrome sets from the boxes on the page. */
+
+:where(.cms-list) {
+  position: relative;
+}
+
+:where(.cms-list__frame) {
+  position: absolute;
+  top: var(--cms-frame-top, 0);
+  right: calc(-1 * var(--cms-list-pad));
+  left: calc(-1 * var(--cms-list-pad));
+  height: var(--cms-frame-height, 100%);
+  margin: 0;
+  padding: 0;
+  border: var(--cms-outline);
+  border-radius: var(--cms-radius);
+  list-style: none;
+  pointer-events: none;
+}
+
+/* The list's name and count sit on the outline's top edge, like a fieldset legend. */
+:where(.cms-list__tag) {
+  position: absolute;
+  top: 0;
+  left: var(--cms-list-pad);
+  z-index: 2;
+  transform: translateY(-50%);
+  padding: var(--cms-space-1) var(--cms-space-2);
+  border-radius: var(--cms-radius);
+  background: var(--cms-accent);
+  color: var(--cms-accent-fg);
+  font-size: var(--cms-size-sm);
+  white-space: nowrap;
+}
+
+:where(.cms-item) {
+  position: relative;
+  isolation: isolate;
+}
+
+/* From the line above the item to the line below it, the full width of the outline. */
+:where(.cms-item__band) {
+  position: absolute;
+  top: var(--cms-band-top, 0);
+  bottom: var(--cms-band-bottom, 0);
+  left: var(--cms-band-left, 0);
+  z-index: -1;
+  width: var(--cms-band-width, 100%);
+  pointer-events: none;
+}
+
+:where(.cms-item + .cms-item, .cms-item + .cms-list__add) > .cms-item__band {
+  border-top: var(--cms-list-line);
+}
+
+:where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-cms-open]) > .cms-item__band {
+  background: var(--cms-list-tint);
+}
+
+:where(.cms-item__sep) {
+  position: absolute;
+  top: var(--cms-sep-top);
+  left: var(--cms-sep-x);
+  pointer-events: none;
+}
+
+:where(.cms-item__sep--v) {
+  height: var(--cms-sep-length);
+  border-left: var(--cms-list-line);
+}
+
+:where(.cms-item__sep--h) {
+  width: var(--cms-sep-length);
+  border-top: var(--cms-list-line);
+}
+
+:where(.cms-item .cms-field) {
+  outline: none;
+}
+
+:where(.cms-item .cms-field:hover) {
+  outline: thin solid var(--cms-fg);
+  outline-offset: calc(-1 * var(--cms-space-1) / 4);
+}
+
+:where(.cms-item .cms-field--editing, .cms-item .cms-field--saving, .cms-item .cms-field--failed) {
+  outline: medium solid var(--cms-accent);
+  outline-offset: calc(-1 * var(--cms-space-1) / 2);
+}
+
+:where(.cms-item .cms-field--saving) {
+  outline-color: var(--cms-warning);
+}
+
+:where(.cms-item .cms-field--failed) {
+  outline-color: var(--cms-danger);
+}
+
+:where(.cms-item .cms-field:focus-visible) {
+  outline: medium solid var(--cms-accent);
+  outline-offset: calc(-3 * var(--cms-space-1) / 4);
+}
+
+/* An item's toolbar sits on its top line, at the right, centred on it. */
+:where(.cms-item__tools) {
+  position: absolute;
+  right: var(--cms-tools-right, 0);
+  bottom: calc(100% + var(--cms-tools-above, 0) - var(--cms-control-h) / 2);
+  z-index: 2;
+  display: flex;
+  gap: var(--cms-space-1);
+  border-radius: var(--cms-radius);
+  background: var(--cms-bg);
+  box-shadow: var(--cms-shadow);
+  opacity: 0;
+  pointer-events: none;
+}
+
+:where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-cms-open]) > .cms-item__tools {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+:where(.cms-item__tools .cms-btn) {
+  padding: 0;
+  border: 0;
+}
+
+:where(.cms-item__remove) {
+  color: var(--cms-danger);
+}
+
+:where(.cms-btn[aria-disabled="true"]) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:where(.cms-item__chip) {
+  display: none;
+  padding: 0 var(--cms-space-3);
+  border: thin solid var(--cms-border);
+  font-size: var(--cms-size-sm);
+}
+
+:where(.cms-item__chip-open) {
+  display: none;
+}
+
+:where(.cms-item[data-cms-open] .cms-item__chip-closed) {
+  display: none;
+}
+
+:where(.cms-item[data-cms-open] .cms-item__chip-open) {
+  display: inline;
+}
+
+/* Without hover (touch), each item shows a chip on its line; tapping it opens the toolbar. */
+@media (hover: none) {
+  :where(.cms-item__tools) {
+    opacity: 1;
+    pointer-events: auto;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  :where(.cms-item__chip) {
+    display: inline-flex;
+    background: var(--cms-bg);
+  }
+
+  :where(.cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+    display: none;
+  }
+
+  :where(.cms-item[data-cms-open]) > .cms-item__tools {
+    background: var(--cms-bg);
+    box-shadow: var(--cms-shadow);
+  }
+
+  :where(.cms-item[data-cms-open] > .cms-item__tools > .cms-btn) {
+    display: inline-flex;
+  }
+
+  :where(.cms-item:hover:not([data-cms-open], :focus-within)) > .cms-item__band {
+    background: none;
+  }
+}
+
+/* The Add row: the list's last row, under the last line. A solid button: a dashed one would be a box in the outline. */
+:where(.cms-list__add) {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.cms-list__add-line) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cms-space-2) var(--cms-space-3);
+}
+
+:where(.cms-list__add-button) {
+  color: var(--cms-accent);
+}
+
+:where(.cms-list__empty) {
+  margin: 0 0 var(--cms-space-3);
+  color: var(--cms-muted);
+}
+
+:where(.cms-list__reason) {
+  color: var(--cms-muted);
+  font-size: var(--cms-size-sm);
+}
+
 /* ---------- Motion ---------- */
+
+:where(.cms-item__tools) {
+  transition: opacity 120ms linear;
+}
 
 :where(.cms-toast, .cms-sheet, .cms-popover, .cms-badge) {
   transition:

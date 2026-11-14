@@ -49,3 +49,47 @@ test("emits a rich text field's heading levels, and nothing for an empty list", 
   expect(editable("pages/home")("lede", "richtext", { headings: [2, 3] })["data-edit-headings"]).toBe("2 3");
   expect(editable("pages/home")("lede", "richtext", { headings: [] })).not.toHaveProperty("data-edit-headings");
 });
+
+test("list and item render nothing outside edit mode", () => {
+  const edit = editable(undefined);
+  expect(edit.list("artists", { label: "Artists", max: 6 })).toEqual({});
+  expect(edit.item("artists", { _key: "a1" }, 0)).toEqual({});
+});
+test("list emits its address and only the attributes given", () =>
+  expect(
+    editable("artist/list").list("artists", {
+      label: "Artists",
+      noun: "artist",
+      plural: "artists",
+      min: 1,
+      max: 6,
+      order: "manual",
+      duplicate: true,
+      itemLabel: "name",
+    }),
+  ).toEqual({
+    "data-edit-list": "artist/list:artists",
+    "data-edit-list-label": "Artists",
+    "data-edit-list-noun": "artist",
+    "data-edit-list-plural": "artists",
+    "data-edit-list-min": "1",
+    "data-edit-list-max": "6",
+    "data-edit-list-order": "manual",
+    "data-edit-list-duplicate": "",
+    "data-edit-list-item-label": "name",
+  }));
+test("list without attrs is just the address", () =>
+  expect(editable("event/list").list("events")).toEqual({ "data-edit-list": "event/list:events" }));
+test("item addresses a keyed item by its _key and an unkeyed one by index", () => {
+  expect(editable("artist/list").item("artists", { _key: "a1b2" }, 3)).toEqual({
+    "data-edit-item": "artist/list:artists[_key=a1b2]",
+  });
+  expect(editable("artist/list").item("artists", { name: "x" }, 3)).toEqual({
+    "data-edit-item": "artist/list:artists.3",
+  });
+});
+test("list refuses a malformed path and a bad limit", () => {
+  expect(() => editable("artist/list").list("a..b")).toThrow();
+  expect(() => editable("artist/list").list("artists", { min: 3, max: 2 })).toThrow();
+  expect(() => editable("artist/list").list("artists", { max: -1 })).toThrow();
+});

@@ -17,6 +17,8 @@ export const pageSchema = z.object({
   date: z.string().nullable().optional(),
   link: z.string().nullable().optional(),
   body: z.string().optional(),
+  // A keyed list: the chrome adds, removes, reorders and duplicates its items.
+  team: z.array(z.object({ _key: z.string(), name: z.string(), role: z.string().optional() })).optional(),
 });
 
 export const settingsSchema = z.object({ footer: z.string() });
@@ -54,7 +56,22 @@ export const defaultSeed: readonly SeedContent[] = [
       link: "https://example.com/menu",
     },
   },
-  { type: "page", slug: "about", payload: { title: "About us", body: "A small bakery on the corner." } },
+  {
+    type: "page",
+    slug: "about",
+    payload: { title: "About us", body: "A small bakery on the corner." },
+  },
+  {
+    type: "page",
+    slug: "team",
+    payload: {
+      title: "Team",
+      team: [
+        { _key: "ana", name: "Ana", role: "Baker" },
+        { _key: "ben", name: "Ben", role: "Front of house" },
+      ],
+    },
+  },
   { type: "settings", slug: "site", payload: { footer: "Demo Bakery Ltd" } },
 ];
 
