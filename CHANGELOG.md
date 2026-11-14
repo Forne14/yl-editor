@@ -18,7 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the list's markup from the page, so the page must render the draft for editors. New exports: `Editable`,
   `EditableListAttrs` (from `@yl/editor` and `@yl/editor/chrome`) and `ListOptions` (chrome). New `chrome.css`
   tokens `--cms-list-pad`, `--cms-list-line`, `--cms-list-tint`, and new `defaultStrings` keys listed in
-  `docs/chrome.md` → Strings. See `docs/chrome.md` → Lists.
+  `docs/chrome.md` → Strings. A list change swaps in only the lists' new markup: other fields keep their state and any
+  open editor, focus moves only if the editor hasn't moved on, and a failed value is never retried into another item.
+  See `docs/chrome.md` → Lists.
 - `@yl/editor/richtext`: a rich text widget built on TipTap. Register `richTextWidget` (or `createRichTextWidget({
   strings })`) for `richtext`. It edits the host element in place with a toolbar above it: bold, italic, link, bulleted
   and numbered lists, H2 and H3 when the field allows them, then Cancel and Done. It has keyboard shortcuts, the ARIA

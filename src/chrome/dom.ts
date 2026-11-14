@@ -62,7 +62,9 @@ export function uniqueId(prefix: string): string {
   return `${prefix}-${idCounter}`;
 }
 
-const KEYED_PART = /^(.+)\[_key=([A-Za-z0-9_-]+)\]$/;
+/** A `_key` id, as docs/paths.md defines it: the one copy the browser bundle uses. */
+export const KEY_ID = "[A-Za-z0-9_-]+";
+const KEYED_PART = new RegExp(`^(.+)\\[_key=(${KEY_ID})\\]$`);
 
 function ownChild(node: unknown, segment: string): unknown {
   if (node === null || typeof node !== "object") return undefined;

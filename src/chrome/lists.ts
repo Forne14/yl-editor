@@ -3,7 +3,7 @@
 // crosses (docs/specs/artefacts/2026-11-list-editing.html). The host's elements are borrowed: the chrome adds
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
-import { element, uniqueId } from "./dom.ts";
+import { KEY_ID, element, uniqueId } from "./dom.ts";
 import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
@@ -56,7 +56,13 @@ export interface ListRecord {
   undoButton?: HTMLButtonElement;
 }
 
-const KEYED_ITEM = /\[_key=([A-Za-z0-9_-]+)\]$/;
+const KEYED_ITEM = new RegExp(`\\[_key=(${KEY_ID})\\]$`);
+const LEADING_KEY = new RegExp(`^\\[_key=(${KEY_ID})\\]`);
+
+/** The `_key` an item path's first part after the list names (`[_key=a1].name` → `a1`). */
+export function leadingItemKey(rest: string): string | undefined {
+  return LEADING_KEY.exec(rest)?.[1];
+}
 
 function count(value: string | undefined, fallback: number): number {
   const parsed = value === undefined ? Number.NaN : Number(value);
@@ -464,6 +470,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     });
   };
   let frameRequest: number | undefined;
+  // Coalesced into one paint per frame. The observer's first report still counts: boxes can change between the paint
+  // below and its delivery (a nested list dressed after this one, a web font arriving).
   const schedule = () => {
     if (frameRequest !== undefined) return;
     frameRequest = requestAnimationFrame(() => {
@@ -479,6 +487,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       for (const node of item.element.querySelectorAll("[data-edit-field]")) observer.observe(node);
     }
   }
+  // A viewport change can move `--cms-list-pad` through a media query without resizing any observed box.
   window.addEventListener("resize", schedule);
   record.paint = paint;
   paint();
