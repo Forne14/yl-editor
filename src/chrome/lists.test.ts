@@ -25,6 +25,7 @@ let failFields: boolean;
 const OTHER = "other/list";
 let guests: Artist[] | undefined;
 let otherVersion: number;
+let fieldCalls: string[];
 let version: number;
 let canEdit: boolean;
 let listAttrs: EditableListAttrs;
@@ -134,6 +135,7 @@ function installFetch(): void {
         return json({ document: wireDocument() });
       }
       if (route === "POST /api/content/field") {
+        fieldCalls.push((JSON.parse(String(init.body)) as { path: string }).path);
         if (failFields) return json({ error: { code: "internal", message: "down" } }, 500);
         version += 1;
         return json({ document: wireDocument() });
@@ -186,6 +188,7 @@ beforeEach(() => {
   crew = undefined;
   guests = undefined;
   otherVersion = 2;
+  fieldCalls = [];
   published = artists.map((artist) => ({ ...artist }));
   failFields = false;
   canEdit = true;
@@ -462,24 +465,24 @@ describe("swapping a list's markup touches nothing else", () => {
   const page = () =>
     `<main id="page">${renderList()}<p id="footer" data-edit-field="${KEY}:title" data-edit-type="text">Title</p></main>`;
 
-  test("two lists of one document changed back to back both show their change, with no reload toast", async () => {
+  test("lists of two documents changed back to back both show their change, with no reload toast", async () => {
     listAttrs = { ...listAttrs, min: 0 };
-    crew = [
-      { _key: "c1", name: "Cleo" },
-      { _key: "c2", name: "Dev" },
+    guests = [
+      { _key: "g1", name: "Gus" },
+      { _key: "g2", name: "Hal" },
     ];
     document.body.innerHTML = page();
     await mount();
     toolButton(0, "remove").click();
-    const crewList = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:crew"]`) as HTMLElement;
-    crewList.querySelector<HTMLButtonElement>('[data-action="down"]')?.click();
+    const guestList = document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`) as HTMLElement;
+    guestList.querySelector<HTMLButtonElement>('[data-action="down"]')?.click();
     await settle();
     await settle();
     expect(names()).toEqual(["Tobias"]);
-    const crewNames = [...document.querySelectorAll(`[data-edit-list="${KEY}:crew"] [data-edit-item] h3`)].map(
+    const guestNames = [...document.querySelectorAll(`[data-edit-list="${OTHER}:guests"] [data-edit-item] h3`)].map(
       (node) => node.textContent,
     );
-    expect(crewNames).toEqual(["Dev", "Cleo"]);
+    expect(guestNames).toEqual(["Hal", "Gus"]);
     expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Reload");
   });
 
@@ -629,5 +632,65 @@ describe("third review round", () => {
     toolButton(1, "up").click();
     await settle();
     expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+});
+
+describe("fourth review round", () => {
+  test("a nested list doesn't act while its outer list's document has a write on its way", async () => {
+    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const outerDown = items()[0]?.querySelector<HTMLButtonElement>(':scope > .cms-item__tools [data-action="down"]');
+    const nested = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:artists[_key=a].links"]`);
+    outerDown?.click();
+    nested?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    expect(arrayCalls.map((call) => call.op.kind)).toEqual(["move"]);
+  });
+
+  test("a Retry pressed while a remove is queued doesn't write into the item that moved to its index", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }, { name: "Ines" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    const ines = items()[2]?.querySelector("h3") as HTMLElement;
+    ines.click();
+    ines.textContent = "Ann";
+    ines.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    fieldCalls = [];
+    toolButton(1, "remove").click();
+    const retry = [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")].find(
+      (node) => node.textContent === "Retry",
+    );
+    retry?.click();
+    await settle();
+    expect(fieldCalls).toEqual([]);
+    expect(names()).toEqual(["Mara", "Ines"]);
+  });
+
+  test("a conflict on a list write drops failed values at index paths, which another editor may have moved", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    const mara = items()[0]?.querySelector("h3") as HTMLElement;
+    mara.click();
+    mara.textContent = "Mine";
+    mara.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    arrayAnswer = () => {
+      artists = [{ name: "Tobias" }, { name: "Mara" }];
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    toolButton(1, "remove").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(document.querySelector(".cms-field--failed")).toBeNull();
   });
 });

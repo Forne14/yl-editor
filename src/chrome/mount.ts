@@ -20,6 +20,7 @@ import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
   DocumentState,
+  WireDocument,
   EditorApi,
   EditorHandle,
   EditorOptions,
@@ -160,8 +161,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let lists: ListRecord[] = [];
   /** The reason fields are locked after the last load failed, until one succeeds. */
   let loadError: string | undefined;
-  /** Lists with an operation on its way: a second press waits for the page to show the first. */
-  const busyLists = new Set<string>();
+  /**
+   * Documents with a list write on its way. A swap replaces a document's outermost lists, so the lock is the document:
+   * nothing inside any of its lists (a nested list, another document's list nested in one) acts or opens until the
+   * page shows the write.
+   */
+  const busyDocuments = new Set<string>();
   /** Removals that Undo puts back, newest last. */
   const removals: { listId: string; key: string; path: string; value: unknown; index: number; name: string }[] = [];
   let removalToast: number | undefined;
@@ -306,7 +311,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   async function openField(record: FieldRecord): Promise<void> {
     // Its markup is about to be replaced, and an index path in it may already name another item.
-    if (lists.some((list) => busyLists.has(list.id) && list.element.contains(record.element))) return;
+    if (isBusy(record.element)) return;
     if (!record.editable) {
       toast.show(record.reason ?? strings.notEditable, "info");
       return;
@@ -333,8 +338,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       } catch (error) {
         failure = { error };
       }
-      // A swap may have replaced the element meanwhile: its new record is the one to open.
-      if (ticket !== openTicket || destroyed || !editing || !record.editable || !record.element.isConnected) return;
+      if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
+      if (!record.element.isConnected) {
+        // A swap replaced the element meanwhile: the field's new record is the one to open.
+        const replacement = fields.find((entry) => entry.id === record.id && entry.element.isConnected);
+        if (replacement) void openField(replacement);
+        return;
+      }
       initial = stored === undefined ? editValueAttribute(record) : stored;
       if (failure) {
         const message = errorMessage(failure.error, strings);
@@ -441,7 +451,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   ): Promise<boolean> {
     const { key, path } = list.info;
     closeActive(false, true);
-    busyLists.add(list.id);
+    busyDocuments.add(key);
     let written = false;
     try {
       await lifecycle(
@@ -450,7 +460,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         guarded(key, async (expectedVersion) => {
           const op = build(await storedItems(list));
           if (!op) return;
-          const document = await client.array(key, path, op, expectedVersion);
+          let document: WireDocument;
+          try {
+            document = await client.array(key, path, op, expectedVersion);
+          } catch (error) {
+            // Before `guarded` repaints: another editor's reorder may have moved any index, so no failed or queued
+            // value in the list can be trusted at its path, and none may be painted back.
+            if (isConflict(error) && error.current) dropStrandedSaves(list, undefined, error.current.payload);
+            throw error;
+          }
           session.applyWrite(expectedVersion, document);
           dropStrandedSaves(list, op, document.payload);
           session.touch(key, [path]);
@@ -460,14 +478,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       );
     } catch {
       // Shown by `lifecycle`. A conflict has repainted the document, its lists included.
-      busyLists.delete(list.id);
+      busyDocuments.delete(key);
       return false;
     }
     try {
       // Nothing written (the item had already moved or gone): the page already shows what is stored.
       if (written) await swapLists(key);
     } finally {
-      busyLists.delete(list.id);
+      busyDocuments.delete(key);
     }
     return written;
   }
@@ -475,11 +493,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /**
    * A failed save inside the list is kept for Retry by path. In a list addressed by index, a structural write puts
    * another item at the indices it shifts, so Retry would write into the wrong one; in a keyed list, a removed item's
-   * path is gone. Only those values are dropped; a failed value at an index the write didn't shift stays.
+   * path is gone. Only those values are dropped, failed or queued behind the write (a Retry pressed meanwhile); a value
+   * at an index the write didn't shift stays. Without `op` (a conflict) every index may have moved.
    */
-  function dropStrandedSaves(list: ListRecord, op: WireArrayOp, payload: unknown): void {
+  function dropStrandedSaves(list: ListRecord, op: WireArrayOp | undefined, payload: unknown): void {
     const [low, high] =
-      op.kind === "move" ? [Math.min(op.from, op.to), Math.max(op.from, op.to)] : [op.index, Number.POSITIVE_INFINITY];
+      op === undefined
+        ? [0, Number.POSITIVE_INFINITY]
+        : op.kind === "move"
+          ? [Math.min(op.from, op.to), Math.max(op.from, op.to)]
+          : [op.index, Number.POSITIVE_INFINITY];
     const { key, path } = list.info;
     const stored = valueAtPath(payload, path);
     const keys = new Set(
@@ -487,7 +510,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined,
       ),
     );
-    session.clearFailed(key, (slotPath) => {
+    session.dropSaves(key, (slotPath) => {
       if (!slotPath.startsWith(path)) return false;
       const rest = slotPath.slice(path.length);
       const index = /^\.(\d+)(\.|$)/.exec(rest)?.[1];
@@ -497,22 +520,23 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     });
   }
 
-  /** Per document, the newest swap queued: later ones chain behind it, so two never interleave. */
-  const swaps = new Map<string, Promise<void>>();
-  /** Documents whose lists still need a swap: a queued swap with nothing left to do returns at once. */
-  const swapWanted = new Set<string>();
-
   /**
-   * Swaps in the page's markup for the document's lists. Calls made while one runs share the next run, which fetches
+   * One queue for every swap on the page: a list of one document can hold another's, so an older fetch must never land
+   * after a newer one. Calls made while a swap runs share the next run, which fetches once for every document waiting,
    * after the running one has finished, so it sees every write made before the call.
    */
+  let swapChain: Promise<void> = Promise.resolve();
+  const swapWanted = new Set<string>();
+
   function swapLists(key: string): Promise<void> {
     swapWanted.add(key);
     // A swap that failed must not take the ones queued behind it down with it.
-    const next = (swaps.get(key) ?? Promise.resolve()).then(async () => {
-      if (!swapWanted.delete(key)) return;
+    const next = swapChain.then(async () => {
+      if (swapWanted.size === 0) return;
+      const keys = new Set(swapWanted);
+      swapWanted.clear();
       try {
-        await swapOnce(key);
+        await swapOnce(keys);
       } catch {
         if (!destroyed) {
           toast.show(strings.listReload, "error", [
@@ -521,10 +545,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         }
       }
     });
-    swaps.set(key, next);
-    void next.then(() => {
-      if (swaps.get(key) === next) swaps.delete(key);
-    });
+    swapChain = next;
     return next;
   }
 
@@ -532,8 +553,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * D8: the chrome can write the data but not the host's markup for it, so it asks the page again and swaps in the
    * lists' new elements. The page must render the draft for an editor, as it does on a reload.
    */
-  async function swapOnce(key: string): Promise<void> {
-    if (!lists.some((list) => list.info.key === key)) return;
+  async function swapOnce(keys: ReadonlySet<string>): Promise<void> {
+    if (!lists.some((list) => keys.has(list.info.key))) return;
     let page: Document | undefined;
     try {
       // Never a cached copy: it would lack the write just made.
@@ -548,7 +569,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     if (destroyed) return;
     // Read after the fetch: the lists on the page now. A list inside another of the document's lists comes with it.
-    const own = lists.filter((list) => list.info.key === key && list.element.isConnected);
+    const own = lists.filter((list) => keys.has(list.info.key) && list.element.isConnected);
     const targets = own.filter((list) => !own.some((outer) => outer !== list && outer.element.contains(list.element)));
     const swapped: HTMLElement[] = [];
     let missing = false;
@@ -598,6 +619,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     if (editing) for (const list of addedLists) attachListRecord(list);
     updateBar();
+  }
+
+  /** Whether `node` is inside a list whose document has a write on its way. */
+  function isBusy(node: Element): boolean {
+    return lists.some((list) => busyDocuments.has(list.info.key) && list.element.contains(node));
   }
 
   function listById(id: string): ListRecord | undefined {
@@ -659,7 +685,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   async function addItem(list: ListRecord): Promise<void> {
-    if (busyLists.has(list.id)) return;
+    if (isBusy(list.element)) return;
     const reason = list.addButton?.dataset.reason;
     if (reason) {
       toast.announce(reason);
@@ -703,7 +729,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       if (reason) toast.announce(reason);
       return;
     }
-    if (busyLists.has(list.id)) return;
+    if (isBusy(list.element)) return;
     const name = itemName(list, item, strings);
     if (action === "up" || action === "down") {
       const step = action === "up" ? -1 : 1;
@@ -803,7 +829,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (removalTimer !== undefined) clearTimeout(removalTimer);
     removalTimer = undefined;
     const list = listById(last.listId);
-    if (!list || busyLists.has(list.id)) {
+    if (!list || isBusy(list.element)) {
       if (list) putBack();
       return;
     }
@@ -843,15 +869,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       if (removals[index]?.key === key) removals.splice(index, 1);
     }
     if (removals.length === before) return;
-    // The toast named a removal that is gone: it now offers the newest one left, or goes.
-    const left = removals.at(-1);
-    if (left && removalTimer !== undefined) {
-      showRemovalToast(left.name);
-      return;
+    // The lifecycle's own toast replaces the Undo toast; each list's Undo stays only for its own removals.
+    if (removals.length === 0 && removalTimer !== undefined) {
+      clearTimeout(removalTimer);
+      removalTimer = undefined;
     }
-    if (removalToast !== undefined) toast.hideIf(removalToast);
-    if (removalTimer !== undefined) clearTimeout(removalTimer);
-    removalTimer = undefined;
     syncUndoButtons();
   }
 

@@ -251,16 +251,31 @@ export class Session {
     return slot.state === "failed" ? { value: slot.failedValue } : undefined;
   }
 
-  /**
-   * The document's content was just replaced, so its failed saves are gone: nothing to retry or resend. `only` limits
-   * it to the paths it accepts.
-   */
-  clearFailed(key: string, only?: (path: string) => boolean): void {
+  /** The document's content was just replaced, so its failed saves are gone: nothing to retry or resend. */
+  clearFailed(key: string): void {
     for (const slot of this.slots.values()) {
-      if (slot.key !== key || slot.state !== "failed" || (only && !only(slot.path))) continue;
+      if (slot.key !== key || slot.state !== "failed") continue;
       slot.failedValue = undefined;
       slot.conflict = undefined;
       this.setState(slot, "idle");
+    }
+  }
+
+  /**
+   * Drops the values at the paths `only` accepts, because each path now names something else: a failed value, and a
+   * save queued but not yet sent (one already on the wire went out before the change and is left alone).
+   */
+  dropSaves(key: string, only: (path: string) => boolean): void {
+    for (const slot of this.slots.values()) {
+      if (slot.key !== key || !only(slot.path)) continue;
+      if (slot.state === "failed") {
+        slot.failedValue = undefined;
+        slot.conflict = undefined;
+        this.setState(slot, "idle");
+      } else if (slot.pending && !slot.sending) {
+        slot.pending = undefined;
+        this.setState(slot, "idle");
+      }
     }
   }
 

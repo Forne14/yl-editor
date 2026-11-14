@@ -56,11 +56,14 @@ export interface ListRecord {
   undoButton?: HTMLButtonElement;
 }
 
-const KEYED_ITEM = /\[_key=([A-Za-z0-9_-]+)\]$/;
+/** A `_key` id, as docs/paths.md defines it. */
+const KEY_ID = "[A-Za-z0-9_-]+";
+const KEYED_ITEM = new RegExp(`\\[_key=(${KEY_ID})\\]$`);
+const LEADING_KEY = new RegExp(`^\\[_key=(${KEY_ID})\\]`);
 
 /** The `_key` an item path's first part after the list names (`[_key=a1].name` → `a1`). */
 export function leadingItemKey(rest: string): string | undefined {
-  return /^\[_key=([A-Za-z0-9_-]+)\]/.exec(rest)?.[1];
+  return LEADING_KEY.exec(rest)?.[1];
 }
 
 function count(value: string | undefined, fallback: number): number {
@@ -95,10 +98,9 @@ function scanItems(list: HTMLElement, info: ListInfo): ItemRecord[] {
     if (target.closest(".cms-root") || target.parentElement?.closest("[data-edit-list]") !== list) continue;
     const address = splitAddress(target.dataset.editItem ?? "");
     if (!address || address.key !== info.key) continue;
-    const itemKey = KEYED_ITEM.exec(address.path)?.[1];
     const rest = address.path.slice(info.path.length);
     if (!address.path.startsWith(info.path) || !/^(\[_key=[A-Za-z0-9_-]+\]|\.\d+)$/.test(rest)) continue;
-    items.push({ element: target, path: address.path, itemKey });
+    items.push({ element: target, path: address.path, itemKey: KEYED_ITEM.exec(address.path)?.[1] });
   }
   return items;
 }

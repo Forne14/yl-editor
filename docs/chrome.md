@@ -309,9 +309,10 @@ chrome creates (see docs/paths.md).
   `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a conflict
   replaces the document's content. A field value still saving or failed, and its state, are put back on the new
   markup. Only the lists are swapped (a list nested in another comes with it); every other field keeps its state and
-  any open editor, and swaps for one document run one at a time. In a list addressed by index, a write drops a
+  any open editor, and swaps run one at a time, each fetching after the one before, so an older page never lands over a newer one. In a list addressed by index, a write drops a
   failed value at an index it shifts, so Retry can't write it into the wrong item; values at other indices stay, and
-  removing a keyed item drops its own. While a list's write is on its way, its fields don't open. Focus moves after an operation only if the editor hasn't opened something else meanwhile.
+  removing a keyed item drops its own. While a document's list write is on its way, nothing inside any of its lists (nested ones included) acts or opens.
+  A Retry pressed meanwhile at a shifted index is dropped too, and so is every index value after a conflict. Focus moves after an operation only if the editor hasn't opened something else meanwhile.
   Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
   list, a toast (`listReload`) offers Reload.
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.
