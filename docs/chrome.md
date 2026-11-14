@@ -308,7 +308,10 @@ chrome creates (see docs/paths.md).
   (`GET location.href`, same-origin credentials, `cache: "no-store"`), finds every element with the same
   `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a conflict
   replaces the document's content. A field value still saving or failed, and its state, are put back on the new
-  markup.
+  markup. Only the lists are swapped (a list nested in another comes with it); every other field keeps its state and
+  any open editor, and swaps for one document run one at a time. In a list addressed by index, a move or remove drops
+  a failed value whose path now names another item, so Retry can't write it into the wrong one; so does removing a
+  keyed item. Focus moves after an operation only if the editor hasn't opened something else meanwhile.
   Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
   list, a toast (`listReload`) offers Reload.
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.

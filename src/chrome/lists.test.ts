@@ -9,6 +9,8 @@ import type { EditorHandle, EditorOptions } from "./types.ts";
 interface Artist {
   _key?: string;
   name: string;
+  /** Rendered as a list nested in the item when present. */
+  links?: Artist[];
 }
 
 const KEY = "artist/list";
@@ -36,7 +38,7 @@ function renderOne(path: string, entries: Artist[]): string {
   const items = entries
     .map(
       (artist, index) =>
-        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3></li>`,
+        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3>${artist.links ? renderOne(`${itemPath(path, artist, index)}.links`, artist.links) : ""}</li>`,
     )
     .join("");
   return `<ul${attrs(edit.list(path, listAttrs))}>${items}</ul>`;
@@ -412,5 +414,103 @@ describe("after review", () => {
     const op = arrayCalls[0]?.op as Extract<ArrayOp, { kind: "insert" }>;
     expect(op).toEqual({ kind: "insert", index: 1, value: { name: "Mara" } });
     expect(items()[1]?.querySelector("h3")?.classList.contains("cms-field--editing")).toBe(true);
+  });
+});
+
+describe("swapping a list's markup touches nothing else", () => {
+  const footer = () => document.querySelector<HTMLElement>("#footer") as HTMLElement;
+  const page = () =>
+    `<main id="page">${renderList()}<p id="footer" data-edit-field="${KEY}:title" data-edit-type="text">Title</p></main>`;
+
+  test("two lists of one document changed back to back both show their change, with no reload toast", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    crew = [
+      { _key: "c1", name: "Cleo" },
+      { _key: "c2", name: "Dev" },
+    ];
+    document.body.innerHTML = page();
+    await mount();
+    toolButton(0, "remove").click();
+    const crewList = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:crew"]`) as HTMLElement;
+    crewList.querySelector<HTMLButtonElement>('[data-action="down"]')?.click();
+    await settle();
+    await settle();
+    expect(names()).toEqual(["Tobias"]);
+    const crewNames = [...document.querySelectorAll(`[data-edit-list="${KEY}:crew"] [data-edit-item] h3`)].map(
+      (node) => node.textContent,
+    );
+    expect(crewNames).toEqual(["Dev", "Cleo"]);
+    expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Reload");
+  });
+
+  test("a list nested in an item swaps with its parent, with no reload toast", async () => {
+    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
+    document.body.innerHTML = page();
+    await mount();
+    const tobias = items().find((item) => item.querySelector("h3")?.textContent === "Tobias") as HTMLElement;
+    tobias.querySelector<HTMLButtonElement>(':scope > .cms-item__tools [data-action="up"]')?.click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara", "Site"]);
+    expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Reload");
+    expect(document.querySelectorAll(".cms-list__frame")).toHaveLength(2);
+  });
+
+  test("a failed field outside the list keeps its failed state and its text", async () => {
+    document.body.innerHTML = page();
+    await mount();
+    failFields = true;
+    footer().click();
+    footer().textContent = "Unsaved";
+    footer().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    expect(footer().classList.contains("cms-field--failed")).toBe(true);
+    failFields = false;
+    toolButton(0, "down").click();
+    await settle();
+    expect(footer().classList.contains("cms-field--failed")).toBe(true);
+    expect(footer().textContent).toBe("Unsaved");
+  });
+
+  test("a field being edited elsewhere stays open while the list swaps", async () => {
+    document.body.innerHTML = page();
+    await mount();
+    toolButton(0, "down").click();
+    footer().click();
+    expect(footer().classList.contains("cms-field--editing")).toBe(true);
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(footer().classList.contains("cms-field--editing")).toBe(true);
+  });
+
+  test("in a list addressed by index, a failed value is dropped when a remove moves another item to its path", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }, { name: "Ines" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = page();
+    await mount();
+    failFields = true;
+    const ines = items()[2]?.querySelector("h3") as HTMLElement;
+    ines.click();
+    ines.textContent = "Ann";
+    ines.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    toolButton(1, "remove").click();
+    await settle();
+    // Ines is now at artists.1, and nothing claims artists.2: "Ann" is not painted onto anyone.
+    expect(names()).toEqual(["Mara", "Ines"]);
+    expect(document.querySelector(".cms-field--failed")).toBeNull();
+  });
+
+  test("Discard within the Undo window takes the Undo away", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = page();
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(false);
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Undo");
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
   });
 });

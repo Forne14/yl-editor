@@ -251,10 +251,13 @@ export class Session {
     return slot.state === "failed" ? { value: slot.failedValue } : undefined;
   }
 
-  /** The document's content was just replaced, so its failed saves are gone: nothing to retry or resend. */
-  clearFailed(key: string): void {
+  /**
+   * The document's content was just replaced, so its failed saves are gone: nothing to retry or resend. `only` limits
+   * it to the paths it accepts.
+   */
+  clearFailed(key: string, only?: (path: string) => boolean): void {
     for (const slot of this.slots.values()) {
-      if (slot.key !== key || slot.state !== "failed") continue;
+      if (slot.key !== key || slot.state !== "failed" || (only && !only(slot.path))) continue;
       slot.failedValue = undefined;
       slot.conflict = undefined;
       this.setState(slot, "idle");

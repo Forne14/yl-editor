@@ -330,7 +330,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       } catch (error) {
         failure = { error };
       }
-      if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
+      // A swap may have replaced the element meanwhile: its new record is the one to open.
+      if (ticket !== openTicket || destroyed || !editing || !record.editable || !record.element.isConnected) return;
       initial = stored === undefined ? editValueAttribute(record) : stored;
       if (failure) {
         const message = errorMessage(failure.error, strings);
@@ -448,6 +449,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           if (!op) return;
           const document = await client.array(key, path, op, expectedVersion);
           session.applyWrite(expectedVersion, document);
+          dropStrandedSaves(list, document.payload);
           session.touch(key, [path]);
           updateBar();
           written = true;
@@ -471,9 +473,50 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * D8: the chrome can write the data but not the host's markup for it, so it asks the page again and swaps in the
    * list's new element. The page must render the draft for an editor, as it does on a reload.
    */
-  async function swapLists(key: string): Promise<void> {
-    const targets = lists.filter((list) => list.info.key === key);
-    if (targets.length === 0) return;
+  /**
+   * A failed save inside the list is kept for Retry by path. In a list addressed by index, a structural write puts
+   * another item at that path, so Retry would write into the wrong one; in a keyed list, a removed item's path is gone.
+   * Those values are dropped, and the field shows what is stored.
+   */
+  function dropStrandedSaves(list: ListRecord, payload: unknown): void {
+    const { key, path } = list.info;
+    const stored = valueAtPath(payload, path);
+    const keys = new Set(
+      (Array.isArray(stored) ? stored : []).map((entry) =>
+        typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined,
+      ),
+    );
+    session.clearFailed(key, (slotPath) => {
+      if (slotPath.startsWith(`${path}.`)) return /^\d+(\.|$)/.test(slotPath.slice(path.length + 1));
+      const keyed = /^\[_key=([A-Za-z0-9_-]+)\]/.exec(slotPath.slice(path.length));
+      return slotPath.startsWith(path) && keyed !== null && !keys.has(keyed[1]);
+    });
+  }
+
+  /** Per document, the newest swap queued: later ones chain behind it, so two never interleave. */
+  const swaps = new Map<string, Promise<void>>();
+  /** Documents whose lists still need a swap: a queued swap with nothing left to do returns at once. */
+  const swapWanted = new Set<string>();
+
+  /**
+   * Swaps in the page's markup for the document's lists. Calls made while one runs share the next run, which fetches
+   * after the running one has finished, so it sees every write made before the call.
+   */
+  function swapLists(key: string): Promise<void> {
+    swapWanted.add(key);
+    const next = (swaps.get(key) ?? Promise.resolve()).then(async () => {
+      if (!swapWanted.delete(key)) return;
+      await swapOnce(key);
+    });
+    swaps.set(key, next);
+    void next.finally(() => {
+      if (swaps.get(key) === next) swaps.delete(key);
+    });
+    return next;
+  }
+
+  async function swapOnce(key: string): Promise<void> {
+    if (!lists.some((list) => list.info.key === key)) return;
     let page: Document | undefined;
     try {
       // Never a cached copy: it would lack the write just made.
@@ -487,18 +530,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       // Reported below.
     }
     if (destroyed) return;
-    const swapped: Element[] = [];
+    // Read after the fetch: the lists on the page now. A list inside another of the document's lists comes with it.
+    const own = lists.filter((list) => list.info.key === key && list.element.isConnected);
+    const targets = own.filter((list) => !own.some((outer) => outer !== list && outer.element.contains(list.element)));
+    const swapped: HTMLElement[] = [];
     let missing = false;
     for (const list of targets) {
       const fresh = [...(page?.querySelectorAll("[data-edit-list]") ?? [])].find(
         (candidate) => candidate.getAttribute("data-edit-list") === list.id,
       );
-      if (!fresh || !list.element.isConnected) {
+      if (!fresh) {
         missing = true;
         continue;
       }
       list.detach?.();
-      const node = document.importNode(fresh, true);
+      const node = document.importNode(fresh, true) as HTMLElement;
       list.element.replaceWith(node);
       swapped.push(node);
     }
@@ -507,16 +553,34 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         { label: strings.reload, onClick: () => location.reload(), variant: "primary" },
       ]);
     }
-    if (swapped.length === 0) return;
-    rescan();
-    // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state.
-    for (const record of fields) {
-      if (!swapped.some((node) => node.contains(record.element))) continue;
+    if (swapped.length > 0) rescanWithin(swapped);
+  }
+
+  /**
+   * After a swap: only the swapped elements are new. Records for elements that left the page go; the new elements'
+   * fields and lists are scanned and dressed. Every other field keeps its record, its state and any open widget.
+   */
+  function rescanWithin(nodes: readonly HTMLElement[]): void {
+    if (active && !active.record.element.isConnected) closeActive(false, true);
+    for (const record of fields) if (!record.element.isConnected) record.detach?.();
+    for (const list of lists) if (!list.element.isConnected) list.detach?.();
+    fields = fields.filter((record) => record.element.isConnected);
+    lists = lists.filter((list) => list.element.isConnected);
+    const added = nodes.flatMap((node) => scanFields(node));
+    fields.push(...added);
+    byElement = new Map(fields.map((record) => [record.element, record]));
+    const addedLists = nodes.flatMap((node) => scanLists(node));
+    lists.push(...addedLists);
+    for (const record of added) {
+      dressRecord(record);
+      // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state.
       const committed = session.committedValue(record.info.key, record.info.path);
       if (committed) render(record, committed.value);
       const state = session.slot(record.info.key, record.info.path).state;
       if (state !== "idle") showState(record, state);
     }
+    if (editing) for (const list of addedLists) attachListRecord(list);
+    updateBar();
   }
 
   function listById(id: string): ListRecord | undefined {
@@ -542,6 +606,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const chip = tools.querySelector<HTMLButtonElement>(".cms-item__chip");
     if (chip && getComputedStyle(target).display === "none") chip.focus();
     else target.focus();
+  }
+
+  /**
+   * Whether the chrome may move focus after a list operation: the editor hasn't opened another field or a sheet while
+   * it ran, and focus isn't somewhere else they chose (it fell to the body with the replaced list, or is in a list).
+   */
+  function focusIsFree(): boolean {
+    if (active || sheet.isOpen) return false;
+    const focused = document.activeElement;
+    return focused === null || focused === document.body || focused.closest(".cms-list") !== null;
   }
 
   /**
@@ -598,7 +672,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         count: fresh.items.length,
       }),
     );
-    await openFirstField(fresh, item);
+    if (focusIsFree()) await openFirstField(fresh, item);
   }
 
   async function actOnItem(
@@ -628,7 +702,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       toast.announce(
         format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
       );
-      focusTools(moved, action);
+      if (focusIsFree()) focusTools(moved, action);
       return;
     }
     if (action === "duplicate") {
@@ -653,7 +727,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           count: fresh.items.length,
         }),
       );
-      await openFirstField(fresh, copy);
+      if (focusIsFree()) await openFirstField(fresh, copy);
       return;
     }
     const position = list.items.indexOf(item);
@@ -670,6 +744,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     showRemovalToast(name);
     toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
     const next = fresh?.items[position] ?? fresh?.items[position - 1];
+    if (!focusIsFree()) return;
     if (next) focusTools(next);
     else fresh?.addButton?.focus();
   }
@@ -738,7 +813,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         count: fresh.items.length,
       }),
     );
-    focusTools(restored);
+    if (focusIsFree()) focusTools(restored);
     const previous = removals.at(-1);
     if (previous) showRemovalToast(previous.name);
     else syncUndoButtons();
@@ -746,9 +821,18 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Content replaced by a lifecycle write: the removals Undo would put back no longer apply to it. */
   function forgetRemovals(key: string): void {
+    const before = removals.length;
     for (let index = removals.length - 1; index >= 0; index -= 1) {
       if (removals[index]?.key === key) removals.splice(index, 1);
     }
+    if (removals.length === before) return;
+    // An Undo still on screen would now do nothing.
+    if (removals.length === 0) {
+      if (removalToast !== undefined) toast.hideIf(removalToast);
+      if (removalTimer !== undefined) clearTimeout(removalTimer);
+      removalTimer = undefined;
+    }
+    syncUndoButtons();
   }
 
   function fieldFrom(event: Event): FieldRecord | undefined {
@@ -1545,29 +1629,22 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Marks each field editable or locked from what the session knows, and dresses fields and lists while editing. */
   function dress(): void {
-    for (const record of fields) {
-      const state = session.documents.get(record.info.key);
-      record.editable = state?.access.edit === true;
-      record.reason = record.editable
-        ? undefined
-        : loadError
-          ? strings.loadFailed
-          : state
-            ? strings.notEditable
-            : strings.unknownDocument;
-      if (editing) attachRecord(record);
-    }
+    for (const record of fields) dressRecord(record);
     if (editing) for (const list of lists) attachListRecord(list);
     updateBar();
   }
 
-  /** After the chrome swapped a list's markup: the documents are known, only the elements are new. */
-  function rescan(): void {
-    // A field still opening (waiting on its fetch) would open on an element that is gone.
-    openTicket += 1;
-    closeActive(false, true);
-    scan();
-    dress();
+  function dressRecord(record: FieldRecord): void {
+    const state = session.documents.get(record.info.key);
+    record.editable = state?.access.edit === true;
+    record.reason = record.editable
+      ? undefined
+      : loadError
+        ? strings.loadFailed
+        : state
+          ? strings.notEditable
+          : strings.unknownDocument;
+    if (editing) attachRecord(record);
   }
 
   const api: EditorApi = {
