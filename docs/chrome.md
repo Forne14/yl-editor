@@ -292,8 +292,9 @@ chrome creates (see docs/paths.md).
   same way.
 - An inert button (the first item's Move up, Add at `max`, Remove at `min`) stays focusable with
   `aria-disabled="true"` and announces why when pressed. Add's reason is also on screen beside it.
-- Remove takes effect at once. A toast offers Undo for 15 seconds, and Ctrl+Z or ⌘Z with focus in the list (not in a
-  field being edited) undoes the last removal. Undo inserts the same item, `_key` and all, where it was. Discard and
+- Remove takes effect at once. For 15 seconds a toast offers Undo, and so does a button in the list's last row, right
+  after the items, so Tab from the list reaches it (`.cms-list__undo`). Ctrl+Z or ⌘Z with focus in the list (not in a
+  field being edited) undoes the last removal at any time. Undo inserts the same item, `_key` and all, where it was. Discard and
   Restore forget the removals of their document.
 - Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
   that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the

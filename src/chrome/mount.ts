@@ -411,6 +411,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (session.documents.get(list.info.key)?.access.edit !== true) return;
     attachList(list, strings, {
       canAdd: options.lists?.[list.id]?.newItem !== undefined,
+      canUndo: removalTimer !== undefined && removals.some((removal) => removal.listId === list.id),
+      undo: () => void undoRemoval(),
       add: () => void addItem(list),
       act: (item, action, pressed) => void actOnItem(list, item, action, pressed),
     });
@@ -659,13 +661,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     removalTimer = setTimeout(() => {
       removalTimer = undefined;
       toast.hideIf(token);
+      syncUndoButtons();
     }, UNDO_MS);
+    syncUndoButtons();
+  }
+
+  /** Each list's Undo shows while one of its removals can still be undone with a visible button. */
+  function syncUndoButtons(): void {
+    for (const list of lists) {
+      if (!list.undoButton) continue;
+      list.undoButton.hidden = removalTimer === undefined || !removals.some((removal) => removal.listId === list.id);
+    }
   }
 
   async function undoRemoval(): Promise<void> {
     const last = removals.pop();
     if (!last) return;
     if (removalToast !== undefined) toast.hideIf(removalToast);
+    if (removalTimer !== undefined) clearTimeout(removalTimer);
+    removalTimer = undefined;
     const list = listById(last.listId);
     if (!list || busyLists.has(list.id)) {
       if (!list) return;
@@ -698,6 +712,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     focusTools(restored);
     const previous = removals.at(-1);
     if (previous) showRemovalToast(previous.name);
+    else syncUndoButtons();
   }
 
   /** Content replaced by a lifecycle write: the removals Undo would put back no longer apply to it. */
@@ -1514,6 +1529,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** After the chrome swapped a list's markup: the documents are known, only the elements are new. */
   function rescan(): void {
+    closeActive(false, true);
     scan();
     dress();
   }

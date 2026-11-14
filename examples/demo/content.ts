@@ -59,9 +59,13 @@ export const defaultSeed: readonly SeedContent[] = [
   {
     type: "page",
     slug: "about",
+    payload: { title: "About us", body: "A small bakery on the corner." },
+  },
+  {
+    type: "page",
+    slug: "team",
     payload: {
-      title: "About us",
-      body: "A small bakery on the corner.",
+      title: "Team",
       team: [
         { _key: "ana", name: "Ana", role: "Baker" },
         { _key: "ben", name: "Ben", role: "Front of house" },

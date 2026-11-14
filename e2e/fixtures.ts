@@ -156,6 +156,8 @@ export interface Demo {
     scheduling?: boolean;
     /** Leave `richtext` to the plain-text fallback instead of the rich text widget. */
     richtext?: "fallback";
+    /** Render the `pages/team` keyed list (`lists=1`). */
+    lists?: boolean;
   }): Promise<Page>;
 }
 
@@ -287,6 +289,7 @@ async function createDemo(
       const query = new URLSearchParams({ edit: "1" });
       if (options.scheduling) query.set("scheduling", "1");
       if (options.richtext) query.set("richtext", options.richtext);
+      if (options.lists) query.set("lists", "1");
       await target.goto(`/?${query}`);
       await waitForEditor(target);
       return target;

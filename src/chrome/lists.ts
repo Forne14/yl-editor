@@ -34,6 +34,9 @@ export interface ListHandlers {
   /** Whether Add is offered: the host gave the list a `newItem`. */
   canAdd: boolean;
   add(): void;
+  /** Whether a removal from this list can still be undone: the Add row then offers Undo too. */
+  canUndo: boolean;
+  undo(): void;
   act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement): void;
 }
 
@@ -48,6 +51,8 @@ export interface ListRecord {
   paint: () => void;
   /** The chrome's Add button, while attached and offered. */
   addButton?: HTMLButtonElement;
+  /** Undo in the Add row, right after the items, so Tab from the list reaches it. Hidden when nothing is undoable. */
+  undoButton?: HTMLButtonElement;
 }
 
 const KEYED_ITEM = /\[_key=([A-Za-z0-9_-]+)\]$/;
@@ -394,6 +399,12 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     record.addButton = add;
     addChildren.push(element("div", { class: "cms-list__add-line" }, [add, reason]));
   }
+  const undo = element("button", { type: "button", class: "cms-btn cms-list__undo", hidden: !handlers.canUndo }, [
+    strings.undo,
+  ]);
+  undo.addEventListener("click", () => handlers.undo());
+  record.undoButton = undo;
+  addChildren.push(undo);
   const addBand = element("span", { class: "cms-item__band", "aria-hidden": "true" });
   const addRow = element(childTag, { class: "cms-root cms-list__add" }, [...addChildren, addBand]);
   host.append(addRow);
@@ -488,6 +499,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
     record.detach = undefined;
     record.addButton = undefined;
+    record.undoButton = undefined;
     record.paint = () => undefined;
   };
 }

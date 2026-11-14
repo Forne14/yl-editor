@@ -214,11 +214,15 @@ describe("list operations", () => {
     const undo = [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")].find(
       (node) => node.textContent === "Undo",
     );
+    // The same Undo sits right after the items, so Tab from the list reaches it.
+    const inList = list().querySelector<HTMLButtonElement>(".cms-list__undo");
+    expect(inList?.hidden).toBe(false);
     undo?.click();
     await settle();
     expect(arrayCalls[1]?.op).toEqual({ kind: "insert", index: 0, value: { _key: "a", name: "Mara" } });
     expect(names()).toEqual(["Mara", "Tobias"]);
     expect(liveText()).toBe("Mara restored at position 1 of 2.");
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
   });
 
   test("Ctrl+Z in the list undoes the last removal", async () => {
