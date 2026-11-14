@@ -194,28 +194,37 @@
             specificity, no raw colours or sizes. Hosts restyle them from their own stylesheet like everything else.
          ========================================================================================================== */
 
-      /* The list: a muted dashed outline, so it never reads as an editable field (those are accent blue). */
+      /* The rule (Yassine, 2026-11-11): no dashed outline sits inside or across another. A list is ONE dashed
+         outline. Inside it, a single dashed line separates one item from the next, and one field from the next
+         inside an item. Every line ends where it meets another; none overlaps. States inside the grid (hover,
+         editing, keyboard focus) are solid and drawn inside the cell, so they never touch a dashed line either. */
       :where(.cms-listedit) {
-        outline: thin dashed var(--cms-muted);
-        outline-offset: var(--cms-space-3);
+        --cms-list-gap: calc(var(--cms-control-h) + var(--cms-space-4)); /* room for a 44px toolbar on a line */
+        --cms-list-pad: var(--cms-space-3); /* outline to content, left and right */
+        --cms-list-line: thin dashed var(--cms-accent); /* the separators */
+        --cms-list-tint: color-mix(in srgb, var(--cms-accent) 7%, transparent);
+        position: relative;
+      }
+      /* The one outline. Its top edge sits half a gap above the first row, so the first item's top edge is the
+         same height as every other item's separator, and its toolbar sits on it the same way. */
+      :where(.cms-listedit__frame) {
+        position: absolute;
+        inset: calc(-0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad)) calc(-1 * var(--cms-list-pad));
+        border: var(--cms-outline);
         border-radius: var(--cms-radius);
+        pointer-events: none;
       }
-      :where(.cms-listedit__head) {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--cms-space-3);
-        min-height: var(--cms-control-h);
-        margin-block-end: var(--cms-space-3);
-      }
-      /* Same look as .cms-badge--locked, but in the flow: muted fill, small type. */
+      /* The list's name and count sit ON the outline's top edge, like a fieldset legend: no box of its own. */
       :where(.cms-listedit__tag) {
-        display: inline-flex;
-        gap: var(--cms-space-2);
+        position: absolute;
+        top: calc(-0.5 * var(--cms-list-gap));
+        left: 0;
+        z-index: 1;
+        transform: translateY(-50%);
         padding: var(--cms-space-1) var(--cms-space-2);
         border-radius: var(--cms-radius);
-        background: var(--cms-muted);
-        color: var(--cms-bg);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
         font-family: var(--cms-font);
         font-size: var(--cms-size-sm);
         line-height: var(--cms-line);
@@ -223,16 +232,15 @@
       }
       :where(.cms-listedit__items) {
         display: grid;
-        gap: calc(var(--cms-control-h) + var(--cms-space-4));
+        gap: var(--cms-list-gap);
         margin: 0;
         padding: 0;
         list-style: none;
       }
+      /* Chrome-owned rows (empty message, Add) get the same separator as an item. */
       :where(.cms-listedit__empty) {
-        margin: 0 0 var(--cms-space-3);
-        padding: var(--cms-space-5) var(--cms-space-4);
-        border: thin dashed var(--cms-border);
-        border-radius: var(--cms-radius);
+        margin: 0;
+        padding: var(--cms-space-3) 0;
         color: var(--cms-muted);
         font-family: var(--cms-font);
         font-size: var(--cms-size-md);
@@ -243,8 +251,14 @@
         flex-wrap: wrap;
         align-items: center;
         gap: var(--cms-space-2) var(--cms-space-3);
-        margin-block-start: var(--cms-space-5);
+        margin: calc(0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad) + 2px) 0;
+        padding: calc(0.5 * var(--cms-list-gap)) calc(var(--cms-list-pad) - 2px) 0;
+        border-top: var(--cms-list-line);
         font-family: var(--cms-font);
+      }
+      :where(.cms-listedit__empty + .cms-listedit__add) {
+        margin-top: var(--cms-space-3);
+        padding-top: var(--cms-space-3);
       }
       :where(.cms-listedit__reason) {
         color: var(--cms-muted);
@@ -254,35 +268,80 @@
         opacity: 0.5;
         cursor: not-allowed;
       }
+      /* Add is an ordinary solid button: a dashed button would be a dashed box inside the outline. */
       :where(.cms-btn--add) {
-        border-style: dashed;
-        border-color: var(--cms-accent);
         color: var(--cms-accent);
       }
 
-      /* The item: unmarked at rest. Hover, focus inside, or "open" (touch) outlines it and shows its tools. */
+      /* The item. Its band runs from the line above it to the line below it, the full width of the outline. */
       :where(.cms-item) {
         position: relative;
-        border-radius: var(--cms-radius);
+        isolation: isolate;
       }
-      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) {
-        outline: thin solid var(--cms-accent);
-        outline-offset: var(--cms-space-2);
+      :where(.cms-item__band) {
+        position: absolute;
+        inset: calc(-0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad) + 2px);
+        z-index: -1;
+        pointer-events: none;
       }
-      /* Option B: items outlined all the time. */
-      :where([data-mark="always"] .cms-item) {
-        outline: thin solid var(--cms-border);
-        outline-offset: var(--cms-space-2);
+      :where(.cms-item + .cms-item > .cms-item__band) {
+        border-top: var(--cms-list-line);
+      }
+      /* Hover, focus inside, or open (touch): the band fills with a faint tint. No outline. */
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) > .cms-item__band {
+        background: var(--cms-list-tint);
       }
       :where(.cms-item--dragging) {
         opacity: 0.6;
-        outline-style: dashed;
       }
+      :where(.cms-item--dragging) > .cms-item__band {
+        background: color-mix(in srgb, var(--cms-accent) 16%, transparent);
+      }
+      /* Lines between an item's fields. Placed by the chrome from the fields' boxes, through custom properties
+         (style.setProperty, CSP-safe): --cms-sep-x for a vertical line, --cms-sep-y/-x/-w for a horizontal one. */
+      :where(.cms-item__sep) {
+        position: absolute;
+        pointer-events: none;
+      }
+      :where(.cms-item__sep--v) {
+        top: calc(-0.5 * var(--cms-list-gap) + 2px);
+        bottom: calc(-0.5 * var(--cms-list-gap));
+        left: var(--cms-sep-x);
+        border-left: var(--cms-list-line);
+      }
+      :where(.cms-item__sep--h) {
+        top: var(--cms-sep-y);
+        left: var(--cms-sep-x);
+        width: var(--cms-sep-w);
+        border-top: var(--cms-list-line);
+      }
+      :where([data-cells="off"] .cms-item__sep) {
+        display: none;
+      }
+      /* Fields inside a list have no outline of their own: the lines mark them. Their states are solid and
+         inset, inside the cell. */
+      :where(.cms-item .cms-field) {
+        outline: none;
+      }
+      :where(.cms-item .cms-field:hover) {
+        outline: thin solid var(--cms-fg);
+        outline-offset: -1px;
+      }
+      :where(.cms-item .cms-field--editing, .cms-item .cms-field--editing:hover) {
+        outline: 2px solid var(--cms-accent);
+        outline-offset: -2px;
+      }
+      :where(.cms-item .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: -3px;
+      }
+
+      /* The toolbar sits ON the item's top line, at the right: centred on it, like the tag on the outline. */
       :where(.cms-item__tools) {
         position: absolute;
         inset-inline-end: 0;
-        bottom: calc(100% + var(--cms-space-3));
-        z-index: calc(var(--cms-z) - 1);
+        bottom: calc(100% + 0.5 * var(--cms-list-gap) - 0.5 * var(--cms-control-h));
+        z-index: 1;
         display: flex;
         gap: var(--cms-space-1);
         border-radius: var(--cms-radius);
@@ -316,7 +375,7 @@
       :where(.cms-item__chip-open) {
         display: none;
       }
-      /* Touch: tools collapse to one chip per item (a tap target that doesn't compete with the fields). */
+      /* Touch: tools collapse to one chip per item, on the same line (a tap target clear of the fields). */
       :where([data-input="touch"] .cms-item__tools) {
         opacity: 1;
         pointer-events: auto;
@@ -343,8 +402,8 @@
       :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-open) {
         display: inline;
       }
-      :where([data-input="touch"] .cms-item:hover:not([data-open])) {
-        outline: none;
+      :where([data-input="touch"] .cms-item:hover:not([data-open], :focus-within)) > .cms-item__band {
+        background: none;
       }
 
       /* ==========================================================================================================
@@ -503,7 +562,7 @@
         letter-spacing: 0.02em;
       }
       .host h2 {
-        margin: 40px 0 16px;
+        margin: 48px 0 56px;
         font-size: 1.4rem;
       }
       .host h2:first-of-type {
@@ -676,13 +735,17 @@
         <h2 id="constraint-title">Yassine's constraint (2026-11-11), before any decision below</h2>
         <p>
           <strong>No overlapping dashed outlines.</strong> Closely placed elements are grouped inside one larger dashed
-          outline, with a single dashed separator between them. This draft does not follow that yet: its list outline,
-          item outlines and field outlines can sit inside one another and cross. Rework the marking (D1) and the item
-          states around this rule when #28 is picked up.
+          outline, with a single dashed separator between them.
+        </p>
+        <p>
+          This revision follows it (D1). A list is <em>one</em> dashed outline. A single dashed line separates each item
+          from the next, and each field from the next inside an item, so the list reads as a grid. Every line stops
+          where it meets another, and nothing nests or crosses. Hover, editing and keyboard focus are <em>solid</em> and
+          drawn inside a cell, so they never touch a dashed line. The list's tag and each item's toolbar sit on a line,
+          like a fieldset legend, not in a box of their own.
         </p>
         <p class="note">
-          Status: an unreviewed draft made from the South of the River session. None of the decisions below has been
-          taken.
+          Status: revised 2026-11-14 for the constraint. Waiting on Yassine for D1–D9. Nothing is built yet.
         </p>
       </section>
 
@@ -694,16 +757,19 @@
         <li>
           <p>
             <strong>How is a list marked in edit mode?</strong>
-            <span class="tag rec">Recommend A</span>
+            <span class="tag rec">Recommend A, the grid</span>
           </p>
           <p>
-            A: a thin muted dashed outline round the list with a grey tag (“Artists · 3 of 6”). Items are unmarked until
-            hover or focus. B: also outline every item all the time (demo 1, third frame).
+            A, the grid: one accent dashed outline round the list (the fields' own outline token). Thin dashed lines
+            separate the items and the fields inside each item. Fields in a list have no outline of their own. The tag
+            “Artists · 3 of 6” sits on the top edge. B, rows only: the same outline and item lines, but no lines between
+            fields. A field shows itself only on hover or focus (demo 1, last frame).
           </p>
           <p class="why">
-            Fields already use the accent blue dashed outline. A grey list outline can't be mistaken for an editable
-            field, and A leaves the host's design alone at rest. B is noisier and doubles the outlines on a card that
-            has fields in it.
+            A keeps the at-rest promise every other field makes: you can see what is editable without hovering, which
+            matters on touch where there is no hover. B is calmer and cheaper to build, because the item lines are pure
+            CSS. A's field lines are placed from the fields' boxes (custom properties, CSP-safe) and redrawn on resize.
+            On a phone, B hides which parts of an item can be edited.
           </p>
         </li>
         <li>
@@ -712,9 +778,10 @@
             <span class="tag rec">Recommend floating toolbar</span>
           </p>
           <p>
-            A toolbar floating above the item (outside its content, skinmenu's pattern). Pointer: shown on hover and on
-            focus inside the item. Touch: a 44px chip per item; tap it to open the toolbar. Keyboard: one tab stop per
-            item (a <code>role="toolbar"</code>), arrow keys move between its buttons.
+            A toolbar that sits on the item's top line at the right, centred on it, the way the tag sits on the outline
+            (outside the content, skinmenu's pattern). Pointer: shown on hover and on focus inside the item, which also
+            tints the item's band. Touch: a 44px chip in the same place on every item; tap it to open the toolbar.
+            Keyboard: one tab stop per item (a <code>role="toolbar"</code>), arrow keys move between its buttons.
           </p>
           <p class="why">
             Controls inside the item would restyle host markup. A toolbar per item as 5 tab stops would add 5 stops per
@@ -780,23 +847,43 @@
             would duplicate the markup. Detail in the notes.
           </p>
         </li>
+        <li>
+          <p><strong>The same rule outside lists?</strong> <span class="tag">needs your call</span></p>
+          <p>
+            Plain fields placed close together (a heading over its subtitle) still get one outline each today, and those
+            outlines can cross. The rule as written covers them too. Grouping them takes the same line painter, plus a
+            way to say which fields form a group. I'd make that a ticket of its own after #28 and leave existing fields
+            alone here.
+          </p>
+        </li>
+        <li>
+          <p><strong>Lists laid out in a row or a grid.</strong> <span class="tag">needs your call</span></p>
+          <p>
+            Every demo here is a column. Portfolio's hero slides and project grid run sideways. Proposal: the chrome
+            reads the axis from the items' boxes. In a row the item lines are vertical and the toolbar sits on the
+            item's left line at the top. A wrapping grid gets both, still one outline. That isn't drawn here yet; say if
+            you want it in the prototype before approving.
+          </p>
+        </li>
       </ol>
 
       <h2>1. Edit mode at rest</h2>
       <p class="note">
-        The list has a grey dashed outline and a grey tag with its name and count. Fields keep the blue dashed outline.
-        Items are unmarked. On the phone each item has a small “⋯ n of N” chip (the only way in without hover). The Add
-        button is always at the end of the list. Third frame: the alternative B with every item outlined.
+        One dashed outline per list, with its tag on the top edge. A thin dashed line between items and between the
+        fields inside an item. Fields in a list have no outline of their own. On the phone each item has a small “⋯ n of
+        N” chip on its top line (the only way in without hover). The Add button is the last row, under the last line.
+        Last frame: alternative B, rows only, with no lines between fields.
       </p>
       <div class="pair" data-pair='{"lists":["roster","events"],"roster":3,"events":3}'></div>
       <div
         class="solo"
-        data-pair='{"lists":["roster"],"roster":2,"solo":"desktop","mark":"always","title":"Alternative B · every item outlined"}'
+        data-pair='{"lists":["roster"],"roster":2,"solo":"desktop","cells":false,"title":"Alternative B · rows only, no lines between fields"}'
       ></div>
 
       <h2>2. An item's controls</h2>
       <p class="note">
-        Hover or tab into any item on desktop; tap a chip on the phone. The toolbar is
+        Hover or tab into any item on desktop; tap a chip on the phone. The item's band tints, and the toolbar sits on
+        its top line. The toolbar is
         <strong>Drag handle · Move up · Move down · Duplicate · Remove</strong>, each 44px. Tab enters the toolbar once;
         Left/Right/Home/End move inside it; Tab again goes on to the item's fields. The first item's Move up and the
         last item's Move down are inert (<code>aria-disabled</code>) and say why on activation. Item 2 is pinned open in
@@ -989,8 +1076,15 @@
         </li>
         <li>
           The list and item elements get <code>.cms-listedit</code> and <code>.cms-item</code> (like
-          <code>.cms-field</code>), plus <code>.cms-item__tools</code> (chrome-owned, <code>.cms-root</code>) inside
-          each item. The token block in <code>chrome.css</code> gains those two selectors.
+          <code>.cms-field</code>). The chrome adds its own, all <code>.cms-root</code> and
+          <code>aria-hidden</code> except the toolbar: <code>.cms-listedit__frame</code> (the one outline),
+          <code>.cms-listedit__tag</code>, and in each item <code>.cms-item__tools</code>,
+          <code>.cms-item__band</code> (the line above it and the hover tint) and <code>.cms-item__sep</code> (the lines
+          between fields). The lines between fields are placed from the fields' boxes through
+          <code>--cms-sep-*</code> custom properties and redrawn when the list resizes or a field's text changes. The
+          token block in <code>chrome.css</code> gains the two host selectors and four tokens:
+          <code>--cms-list-gap</code>, <code>--cms-list-pad</code>, <code>--cms-list-line</code>,
+          <code>--cms-list-tint</code>.
         </li>
       </ul>
       <h3>A new item's default, and its markup</h3>
@@ -1240,7 +1334,7 @@ mountEditor({
               ? config.title
               : `${touch ? "Phone · 390 · touch" : "Desktop · pointer"}${config.title ? " · " + config.title : ""}`;
           const frame = wrapper.querySelector(".frame");
-          if (config.mark) frame.dataset.mark = config.mark;
+          if (config.cells === false) frame.dataset.cells = "off";
           const state = {
             frame,
             host: frame.querySelector(".host"),
@@ -1269,6 +1363,8 @@ mountEditor({
           state.layer = frame.querySelector("[data-layer]");
           bind(state);
           render(state);
+          new ResizeObserver(() => paint(state)).observe(state.host);
+          state.host.addEventListener("input", () => paint(state));
           if (config.pre) {
             const [op, key, index] = config.pre.split(":");
             const items = state.data[key];
@@ -1323,7 +1419,7 @@ mountEditor({
                 key === "roster"
                   ? `<div class="r-body"><div class="photo cms-field" style="--hue:${item.hue}" tabindex="0" role="button" data-field="photo" aria-label="Photo of ${name}: replace">${esc(initials(item.name))}</div><div><h4 class="cms-field" tabindex="0" data-field="name">${esc(item.name)}</h4><p class="cms-field" tabindex="0" data-field="line">${esc(item.line) || '<span class="placeholder">Add a line</span>'}</p></div></div>`
                   : `<div class="e-body"><span class="cms-field e-date" tabindex="0" data-field="date">${item.date ? formatDate(item.date) : '<span class="placeholder">Add a date</span>'}</span><h4 class="cms-field" tabindex="0" data-field="title">${esc(item.title)}</h4><p class="cms-field" tabindex="0" data-field="venue">${esc(item.venue) || '<span class="placeholder">Add a venue</span>'}</p></div>`;
-              return `<li class="cms-item" data-id="${item.id}" ${isOpen ? "data-open" : ""}><div class="cms-root cms-item__tools" role="toolbar" aria-label="${name}, ${position} of ${count}: actions"><button type="button" class="cms-btn cms-item__chip" data-act="chip" aria-expanded="${isOpen}" aria-label="Actions for ${name}, ${position} of ${count}"><span class="cms-item__chip-closed" aria-hidden="true">⋯ ${position} of ${count}</span><span class="cms-item__chip-open" aria-hidden="true">✕</span></button>${buttons.join("")}</div>${body}</li>`;
+              return `<li class="cms-item" data-id="${item.id}" ${isOpen ? "data-open" : ""}><div class="cms-root cms-item__tools" role="toolbar" aria-label="${name}, ${position} of ${count}: actions"><button type="button" class="cms-btn cms-item__chip" data-act="chip" aria-expanded="${isOpen}" aria-label="Actions for ${name}, ${position} of ${count}"><span class="cms-item__chip-closed" aria-hidden="true">⋯ ${position} of ${count}</span><span class="cms-item__chip-open" aria-hidden="true">✕</span></button>${buttons.join("")}</div><span class="cms-root cms-item__band" aria-hidden="true"></span>${body}</li>`;
             })
             .join("");
           const tag = `${def.label} · ${count} of ${def.max}`;
@@ -1332,8 +1428,8 @@ mountEditor({
             : count <= def.min && count > 0
               ? `At least ${def.min} ${def.noun} needed.`
               : "";
-          return `<section class="cms-listedit" data-list="${key}" aria-label="${def.label}">
-            <div class="cms-listedit__head"><span class="cms-listedit__tag cms-root">${esc(tag)}</span></div>
+          return `<section class="cms-listedit" data-list="${key}" aria-label="${esc(tag)}">
+            <span class="cms-root cms-listedit__frame" aria-hidden="true"></span><span class="cms-listedit__tag cms-root" aria-hidden="true">${esc(tag)}</span>
             ${count ? `<ul class="cms-listedit__items">${rows}</ul>` : `<p class="cms-listedit__empty cms-root">No ${def.plural} yet.</p>`}
             <div class="cms-listedit__add cms-root"><button type="button" class="cms-btn cms-btn--add" data-act="add" ${full ? `aria-disabled="true" aria-describedby="${reasonId}"` : ""}>${icon("plus")} Add ${def.noun}</button><span class="cms-listedit__reason" id="${reasonId}" data-reason>${esc(reason)}</span></div>
           </section>`;
@@ -1346,6 +1442,66 @@ mountEditor({
             `<h1>Harbour Collective</h1>` +
             state.lists.map((key) => `<h2>${LISTS[key].label}</h2>` + listHtml(state, key)).join("");
           state.host.querySelectorAll(".cms-item__tools").forEach(setRoving);
+          paint(state);
+        }
+
+        // Lines between an item's fields, from the fields' boxes. A vertical line goes midway between two fields
+        // side by side and runs the item's full band; a horizontal one goes midway between two stacked fields and
+        // runs to the nearest vertical line (or the outline) on each side. Neighbours only: a pair with another
+        // field between them gets no line. Positions go in through custom properties, as the chrome does.
+        function paintItem(li) {
+          li.querySelectorAll(".cms-item__sep").forEach((node) => node.remove());
+          const box = li.getBoundingClientRect();
+          const pad =
+            parseFloat(getComputedStyle(li.closest(".cms-listedit")).getPropertyValue("--cms-list-pad")) || 12;
+          const fields = [...li.querySelectorAll(".cms-field")].map((node) => {
+            const r = node.getBoundingClientRect();
+            return { l: r.left - box.left, r: r.right - box.left, t: r.top - box.top, b: r.bottom - box.top };
+          });
+          const overlapY = (a, b) => Math.min(a.b, b.b) - Math.max(a.t, b.t) > 1;
+          const overlapX = (a, b) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 1;
+          const xs = [];
+          const hs = [];
+          for (const a of fields)
+            for (const b of fields) {
+              if (a === b) continue;
+              if (a.r <= b.l && overlapY(a, b)) {
+                const between = fields.some((c) => c !== a && c !== b && c.l >= a.r && c.r <= b.l && overlapY(c, a));
+                const x = (a.r + b.l) / 2;
+                if (!between && !xs.some((other) => Math.abs(other - x) < 2)) xs.push(x);
+              }
+              if (a.b <= b.t && overlapX(a, b)) {
+                const between = fields.some((c) => c !== a && c !== b && c.t >= a.b && c.b <= b.t && overlapX(c, a));
+                if (!between) hs.push({ y: (a.b + b.t) / 2, l: Math.min(a.l, b.l), r: Math.max(a.r, b.r) });
+              }
+            }
+          const edgeL = -pad + 2;
+          const edgeR = box.width + pad - 2;
+          for (const x of xs) {
+            const line = document.createElement("span");
+            line.className = "cms-root cms-item__sep cms-item__sep--v";
+            line.setAttribute("aria-hidden", "true");
+            line.style.setProperty("--cms-sep-x", `${x}px`);
+            li.append(line);
+          }
+          const drawn = [];
+          for (const h of hs) {
+            const left = Math.max(edgeL, ...xs.filter((x) => x <= h.l + 1));
+            const right = Math.min(edgeR, ...xs.filter((x) => x >= h.r - 1));
+            if (drawn.some((d) => Math.abs(d.y - h.y) < 2 && Math.abs(d.left - left) < 2)) continue;
+            drawn.push({ y: h.y, left });
+            const line = document.createElement("span");
+            line.className = "cms-root cms-item__sep cms-item__sep--h";
+            line.setAttribute("aria-hidden", "true");
+            const touchesV = xs.some((x) => Math.abs(x - left) < 2);
+            line.style.setProperty("--cms-sep-x", `${left + (touchesV ? 1 : 0)}px`);
+            line.style.setProperty("--cms-sep-y", `${h.y}px`);
+            line.style.setProperty("--cms-sep-w", `${right - left - (touchesV ? 1 : 0)}px`);
+            li.append(line);
+          }
+        }
+        function paint(state) {
+          state.host.querySelectorAll(".cms-item").forEach(paintItem);
         }
 
         function setRoving(toolbar, active) {
@@ -1398,6 +1554,7 @@ mountEditor({
             if (commit) commitField(state, key, id, field, el.textContent.trim(), viaKey);
             else renderField(el, key, item, field);
             if (viaKey) el.focus();
+            paint(state);
           };
           const onKey = (event) => {
             if (event.key === "Enter") {
@@ -1692,6 +1849,7 @@ mountEditor({
               });
               if (before) ul.insertBefore(li, before);
               else ul.append(li);
+              paint(state);
             };
             const onUp = () => {
               ul.removeEventListener("pointermove", onMove);
