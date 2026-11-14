@@ -8,6 +8,7 @@ import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord
 import {
   attachList,
   itemName,
+  leadingItemKey,
   newItemKey,
   scanLists,
   storedIndex,
@@ -304,6 +305,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   async function openField(record: FieldRecord): Promise<void> {
+    // Its markup is about to be replaced, and an index path in it may already name another item.
+    if (lists.some((list) => busyLists.has(list.id) && list.element.contains(record.element))) return;
     if (!record.editable) {
       toast.show(record.reason ?? strings.notEditable, "info");
       return;
@@ -449,7 +452,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           if (!op) return;
           const document = await client.array(key, path, op, expectedVersion);
           session.applyWrite(expectedVersion, document);
-          dropStrandedSaves(list, document.payload);
+          dropStrandedSaves(list, op, document.payload);
           session.touch(key, [path]);
           updateBar();
           written = true;
@@ -470,15 +473,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   /**
-   * D8: the chrome can write the data but not the host's markup for it, so it asks the page again and swaps in the
-   * list's new element. The page must render the draft for an editor, as it does on a reload.
-   */
-  /**
    * A failed save inside the list is kept for Retry by path. In a list addressed by index, a structural write puts
-   * another item at that path, so Retry would write into the wrong one; in a keyed list, a removed item's path is gone.
-   * Those values are dropped, and the field shows what is stored.
+   * another item at the indices it shifts, so Retry would write into the wrong one; in a keyed list, a removed item's
+   * path is gone. Only those values are dropped; a failed value at an index the write didn't shift stays.
    */
-  function dropStrandedSaves(list: ListRecord, payload: unknown): void {
+  function dropStrandedSaves(list: ListRecord, op: WireArrayOp, payload: unknown): void {
+    const [low, high] =
+      op.kind === "move" ? [Math.min(op.from, op.to), Math.max(op.from, op.to)] : [op.index, Number.POSITIVE_INFINITY];
     const { key, path } = list.info;
     const stored = valueAtPath(payload, path);
     const keys = new Set(
@@ -487,9 +488,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       ),
     );
     session.clearFailed(key, (slotPath) => {
-      if (slotPath.startsWith(`${path}.`)) return /^\d+(\.|$)/.test(slotPath.slice(path.length + 1));
-      const keyed = /^\[_key=([A-Za-z0-9_-]+)\]/.exec(slotPath.slice(path.length));
-      return slotPath.startsWith(path) && keyed !== null && !keys.has(keyed[1]);
+      if (!slotPath.startsWith(path)) return false;
+      const rest = slotPath.slice(path.length);
+      const index = /^\.(\d+)(\.|$)/.exec(rest)?.[1];
+      if (index !== undefined) return Number(index) >= low && Number(index) <= high;
+      const itemKey = leadingItemKey(rest);
+      return itemKey !== undefined && !keys.has(itemKey);
     });
   }
 
@@ -504,17 +508,30 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   function swapLists(key: string): Promise<void> {
     swapWanted.add(key);
+    // A swap that failed must not take the ones queued behind it down with it.
     const next = (swaps.get(key) ?? Promise.resolve()).then(async () => {
       if (!swapWanted.delete(key)) return;
-      await swapOnce(key);
+      try {
+        await swapOnce(key);
+      } catch {
+        if (!destroyed) {
+          toast.show(strings.listReload, "error", [
+            { label: strings.reload, onClick: () => location.reload(), variant: "primary" },
+          ]);
+        }
+      }
     });
     swaps.set(key, next);
-    void next.finally(() => {
+    void next.then(() => {
       if (swaps.get(key) === next) swaps.delete(key);
     });
     return next;
   }
 
+  /**
+   * D8: the chrome can write the data but not the host's markup for it, so it asks the page again and swaps in the
+   * lists' new elements. The page must render the draft for an editor, as it does on a reload.
+   */
   async function swapOnce(key: string): Promise<void> {
     if (!lists.some((list) => list.info.key === key)) return;
     let page: Document | undefined;
@@ -826,12 +843,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       if (removals[index]?.key === key) removals.splice(index, 1);
     }
     if (removals.length === before) return;
-    // An Undo still on screen would now do nothing.
-    if (removals.length === 0) {
-      if (removalToast !== undefined) toast.hideIf(removalToast);
-      if (removalTimer !== undefined) clearTimeout(removalTimer);
-      removalTimer = undefined;
+    // The toast named a removal that is gone: it now offers the newest one left, or goes.
+    const left = removals.at(-1);
+    if (left && removalTimer !== undefined) {
+      showRemovalToast(left.name);
+      return;
     }
+    if (removalToast !== undefined) toast.hideIf(removalToast);
+    if (removalTimer !== undefined) clearTimeout(removalTimer);
+    removalTimer = undefined;
     syncUndoButtons();
   }
 

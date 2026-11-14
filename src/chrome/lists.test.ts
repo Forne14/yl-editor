@@ -21,6 +21,10 @@ let crew: Artist[] | undefined;
 /** What Discard leaves; the stub answers a field save with 500 while `failFields` is set. */
 let published: Artist[];
 let failFields: boolean;
+/** A second document, `other/list`, with one list, rendered when set. */
+const OTHER = "other/list";
+let guests: Artist[] | undefined;
+let otherVersion: number;
 let version: number;
 let canEdit: boolean;
 let listAttrs: EditableListAttrs;
@@ -29,8 +33,8 @@ let arrayAnswer: (() => Response) | undefined;
 let pageAnswer: (() => Response) | undefined;
 let handle: EditorHandle | undefined;
 
-function renderOne(path: string, entries: Artist[]): string {
-  const edit = editable(KEY);
+function renderOne(path: string, entries: Artist[], docKey = KEY): string {
+  const edit = editable(docKey);
   const attrs = (record: Record<string, string>) =>
     Object.entries(record)
       .map(([name, value]) => ` ${name}="${value}"`)
@@ -38,14 +42,22 @@ function renderOne(path: string, entries: Artist[]): string {
   const items = entries
     .map(
       (artist, index) =>
-        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3>${artist.links ? renderOne(`${itemPath(path, artist, index)}.links`, artist.links) : ""}</li>`,
+        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3>${artist.links ? renderOne(`${itemPath(path, artist, index)}.links`, artist.links, docKey) : ""}</li>`,
     )
     .join("");
   return `<ul${attrs(edit.list(path, listAttrs))}>${items}</ul>`;
 }
 
 function renderList(): string {
-  return renderOne("artists", artists) + (crew ? renderOne("crew", crew) : "");
+  return (
+    renderOne("artists", artists) +
+    (crew ? renderOne("crew", crew) : "") +
+    (guests ? renderOne("guests", guests, OTHER) : "")
+  );
+}
+
+function otherDocument() {
+  return { ...wireDocument(), id: 2, key: OTHER, payload: { guests }, version: otherVersion };
 }
 
 function wireDocument() {
@@ -76,6 +88,19 @@ function installFetch(): void {
       if (route === "GET /api/content/documents") {
         return json({
           documents: {
+            ...(guests
+              ? {
+                  [OTHER]: {
+                    key: OTHER,
+                    type: "page",
+                    version: otherVersion,
+                    isDraft: true,
+                    draftUpdatedAt: null,
+                    publishedAt: null,
+                    access: { edit: true, publish: true },
+                  },
+                }
+              : {}),
             [KEY]: {
               key: KEY,
               type: "page",
@@ -88,12 +113,20 @@ function installFetch(): void {
           },
         });
       }
-      if (route === "GET /api/content/document") return json({ document: wireDocument(), publishedPayload: null });
+      if (route === "GET /api/content/document") {
+        const doc = url.searchParams.get("key") === OTHER ? otherDocument() : wireDocument();
+        return json({ document: doc, publishedPayload: null });
+      }
       if (route === "POST /api/content/array") {
         const body = JSON.parse(String(init.body)) as { op: ArrayOp; expectedVersion: unknown };
         arrayCalls.push({ op: body.op, expectedVersion: body.expectedVersion });
         if (arrayAnswer) return arrayAnswer();
-        const body2 = JSON.parse(String(init.body)) as { path: string };
+        const body2 = JSON.parse(String(init.body)) as { path: string; key: string };
+        if (body2.key === OTHER) {
+          guests = applyArrayOp({ guests }, parsePath(body2.path), body.op).guests;
+          otherVersion += 1;
+          return json({ document: otherDocument() });
+        }
         const next = applyArrayOp({ artists, crew }, parsePath(body2.path), body.op);
         artists = next.artists;
         crew = next.crew;
@@ -106,6 +139,11 @@ function installFetch(): void {
         return json({ document: wireDocument() });
       }
       if (route === "POST /api/content/discard") {
+        if ((JSON.parse(String(init.body)) as { key: string }).key === OTHER) {
+          guests = [{ _key: "g1", name: "Gus" }];
+          otherVersion += 1;
+          return json({ document: otherDocument() });
+        }
         artists = published.map((artist) => ({ ...artist }));
         version += 1;
         return json({ document: wireDocument() });
@@ -146,6 +184,8 @@ beforeEach(() => {
   ];
   version = 4;
   crew = undefined;
+  guests = undefined;
+  otherVersion = 2;
   published = artists.map((artist) => ({ ...artist }));
   failFields = false;
   canEdit = true;
@@ -512,5 +552,82 @@ describe("swapping a list's markup touches nothing else", () => {
     await settle();
     expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Undo");
     expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+  });
+});
+
+describe("third review round", () => {
+  test("discarding one document keeps the other's Undo, and it restores the other's item", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    guests = [{ _key: "g1", name: "Gus" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const guestList = () => document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`) as HTMLElement;
+    guestList().querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Removed Mara.");
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+    const undo = guestList().querySelector<HTMLButtonElement>(".cms-list__undo");
+    expect(undo?.hidden).toBe(false);
+    undo?.click();
+    await settle();
+    expect(guests?.map((guest) => guest.name)).toEqual(["Gus"]);
+    expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+
+  test("in a list addressed by index, Add keeps a failed value at an index it doesn't shift", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    const mara = items()[0]?.querySelector("h3") as HTMLElement;
+    mara.click();
+    mara.textContent = "Mara Okoye";
+    mara.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    addButton()?.click();
+    await settle();
+    const first = items()[0]?.querySelector("h3");
+    expect(first?.textContent).toBe("Mara Okoye");
+    expect(first?.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("a field in a list whose write is on its way doesn't open", async () => {
+    let release: (() => void) | undefined;
+    await mount();
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!String(input).includes("/api/")) await gate;
+      return realFetch(input, init);
+    });
+    toolButton(0, "down").click();
+    await settle();
+    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
+    tobias.click();
+    expect(tobias.classList.contains("cms-field--editing")).toBe(false);
+    release?.();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+  });
+
+  test("a swap that throws doesn't stop the next one", async () => {
+    await mount();
+    let calls = 0;
+    pageAnswer = () => {
+      calls += 1;
+      if (calls === 1) throw new Error("network");
+      return new Response(`<!doctype html><main id="page">${renderList()}</main>`);
+    };
+    toolButton(0, "down").click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Reload to see it.");
+    toolButton(1, "up").click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
   });
 });

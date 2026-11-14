@@ -57,7 +57,11 @@ export interface ListRecord {
 }
 
 const KEYED_ITEM = /\[_key=([A-Za-z0-9_-]+)\]$/;
-const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
+/** The `_key` an item path's first part after the list names (`[_key=a1].name` → `a1`). */
+export function leadingItemKey(rest: string): string | undefined {
+  return /^\[_key=([A-Za-z0-9_-]+)\]/.exec(rest)?.[1];
+}
 
 function count(value: string | undefined, fallback: number): number {
   const parsed = value === undefined ? Number.NaN : Number(value);
@@ -92,8 +96,6 @@ function scanItems(list: HTMLElement, info: ListInfo): ItemRecord[] {
     const address = splitAddress(target.dataset.editItem ?? "");
     if (!address || address.key !== info.key) continue;
     const itemKey = KEYED_ITEM.exec(address.path)?.[1];
-    // The grammar's forbidden ids (docs/paths.md): a write to such a path is refused, so it gets no toolbar.
-    if (itemKey !== undefined && FORBIDDEN_KEYS.has(itemKey)) continue;
     const rest = address.path.slice(info.path.length);
     if (!address.path.startsWith(info.path) || !/^(\[_key=[A-Za-z0-9_-]+\]|\.\d+)$/.test(rest)) continue;
     items.push({ element: target, path: address.path, itemKey });
@@ -468,13 +470,9 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     });
   };
   let frameRequest: number | undefined;
-  // The observer reports every box once when it starts; the paint below already drew them.
-  let primed = false;
+  // Coalesced into one paint per frame. The observer's first report still counts: boxes can change between the paint
+  // below and its delivery (a nested list dressed after this one, a web font arriving).
   const schedule = () => {
-    if (!primed) {
-      primed = true;
-      return;
-    }
     if (frameRequest !== undefined) return;
     frameRequest = requestAnimationFrame(() => {
       frameRequest = undefined;
@@ -489,11 +487,14 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       for (const node of item.element.querySelectorAll("[data-edit-field]")) observer.observe(node);
     }
   }
+  // A viewport change can move `--cms-list-pad` through a media query without resizing any observed box.
+  window.addEventListener("resize", schedule);
   record.paint = paint;
   paint();
 
   record.detach = () => {
     observer?.disconnect();
+    window.removeEventListener("resize", schedule);
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     for (const node of separators.splice(0)) node.remove();
     for (const node of added) node.remove();
