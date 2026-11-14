@@ -311,8 +311,10 @@ chrome creates (see docs/paths.md).
   markup. Only the lists are swapped (a list nested in another comes with it); every other field keeps its state and
   any open editor, and swaps run one at a time, each fetching after the one before, so an older page never lands over a newer one. In a list addressed by index, a write drops a
   failed value at an index it shifts, so Retry can't write it into the wrong item; values at other indices stay, and
-  removing a keyed item drops its own. While a document's list write is on its way, nothing inside any of its lists (nested ones included) acts or opens.
-  A Retry pressed meanwhile at a shifted index is dropped too, and so is every index value after a conflict. Focus moves after an operation only if the editor hasn't opened something else meanwhile.
+  removing a keyed item drops its own. While a document's lists are about to change (its own list write, or a swap after Discard,
+  Restore or a conflict), nothing inside any of them, nested lists included, acts or opens. A Retry pressed meanwhile at
+  a shifted index is dropped too, and so is every index value after a conflict; a Save failed toast left over for a
+  dropped value goes, and its Retry does nothing. Focus moves after an operation only if the editor hasn't opened something else meanwhile.
   Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
   list, a toast (`listReload`) offers Reload.
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.

@@ -694,3 +694,90 @@ describe("fourth review round", () => {
     expect(document.querySelector(".cms-field--failed")).toBeNull();
   });
 });
+
+describe("fifth review round", () => {
+  /** Holds every page fetch until `release` is called. */
+  function gatePage(): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!String(input).includes("/api/")) await gate;
+      return realFetch(input, init);
+    });
+    return () => release();
+  }
+
+  test("a Retry still on screen after a write dropped its value does nothing", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }, { name: "Ines" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    const ines = items()[2]?.querySelector("h3") as HTMLElement;
+    ines.click();
+    ines.textContent = "Ann";
+    ines.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    const retry = [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")].find(
+      (node) => node.textContent === "Retry",
+    );
+    toolButton(1, "remove").click();
+    await settle();
+    fieldCalls = [];
+    retry?.click();
+    await settle();
+    expect(fieldCalls).toEqual([]);
+  });
+
+  test("after a conflict the list stays locked until the page shows the other editor's change", async () => {
+    await mount();
+    const release = gatePage();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      artists = [{ _key: "z", name: "Zed" }, ...artists];
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    toolButton(0, "down").click();
+    await settle();
+    toolButton(0, "down").click();
+    await settle();
+    expect(arrayCalls).toHaveLength(1);
+    release();
+    await settle();
+    expect(names()).toEqual(["Zed", "Mara", "Tobias"]);
+  });
+
+  test("while Discard's swap is on its way the list doesn't act", async () => {
+    await mount();
+    const release = gatePage();
+    await handle?.api.discard(KEY);
+    toolButton(0, "down").click();
+    await settle();
+    expect(arrayCalls).toEqual([]);
+    release();
+    await settle();
+  });
+
+  test("focus moved to another list meanwhile stays there", async () => {
+    guests = [
+      { _key: "g1", name: "Gus" },
+      { _key: "g2", name: "Hal" },
+    ];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const release = gatePage();
+    toolButton(0, "down").click();
+    await settle();
+    const guestButton = document.querySelector<HTMLButtonElement>(
+      `[data-edit-list="${OTHER}:guests"] [data-action="remove"]`,
+    ) as HTMLButtonElement;
+    guestButton.focus();
+    release();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(document.activeElement).toBe(guestButton);
+  });
+});

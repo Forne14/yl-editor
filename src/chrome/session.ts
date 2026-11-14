@@ -265,18 +265,20 @@ export class Session {
    * Drops the values at the paths `only` accepts, because each path now names something else: a failed value, and a
    * save queued but not yet sent (one already on the wire went out before the change and is left alone).
    */
-  dropSaves(key: string, only: (path: string) => boolean): void {
+  dropSaves(key: string, only: (path: string) => boolean): string[] {
+    const dropped: string[] = [];
     for (const slot of this.slots.values()) {
       if (slot.key !== key || !only(slot.path)) continue;
       if (slot.state === "failed") {
         slot.failedValue = undefined;
         slot.conflict = undefined;
-        this.setState(slot, "idle");
       } else if (slot.pending && !slot.sending) {
         slot.pending = undefined;
-        this.setState(slot, "idle");
-      }
+      } else continue;
+      dropped.push(slot.path);
+      this.setState(slot, "idle");
     }
+    return dropped;
   }
 
   slot(key: string, path: string): SaveSlot {
@@ -298,12 +300,15 @@ export class Session {
     return slot.scheduled;
   }
 
+  /** Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing. */
   retry(slot: SaveSlot): Promise<void> {
+    if (slot.state !== "failed") return Promise.resolve();
     return this.save(slot.key, slot.path, slot.failedValue);
   }
 
   /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
   keepMine(slot: SaveSlot): Promise<void> {
+    if (slot.state !== "failed") return Promise.resolve();
     if (slot.conflict) this.adopt(slot.conflict);
     return this.retry(slot);
   }

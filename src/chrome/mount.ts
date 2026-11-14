@@ -162,11 +162,18 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /** The reason fields are locked after the last load failed, until one succeeds. */
   let loadError: string | undefined;
   /**
-   * Documents with a list write on its way. A swap replaces a document's outermost lists, so the lock is the document:
-   * nothing inside any of its lists (a nested list, another document's list nested in one) acts or opens until the
-   * page shows the write.
+   * Documents whose lists' markup is about to change: a list write on its way, or a swap queued or running (one after
+   * Discard, Restore or a conflict too). A swap replaces a document's outermost lists, so the lock is the document,
+   * counted per holder: nothing inside any of its lists (a nested list, another document's list nested in one) acts or
+   * opens until every holder is done.
    */
-  const busyDocuments = new Set<string>();
+  const locks = new Map<string, number>();
+  const lock = (key: string) => locks.set(key, (locks.get(key) ?? 0) + 1);
+  const unlock = (key: string) => {
+    const left = (locks.get(key) ?? 1) - 1;
+    if (left <= 0) locks.delete(key);
+    else locks.set(key, left);
+  };
   /** Removals that Undo puts back, newest last. */
   const removals: { listId: string; key: string; path: string; value: unknown; index: number; name: string }[] = [];
   let removalToast: number | undefined;
@@ -341,6 +348,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
       if (!record.element.isConnected) {
         // A swap replaced the element meanwhile: the field's new record is the one to open.
+        // Not by an index path: after a structural change the same path may name another item.
+        if (/\.\d+(\.|$)/.test(record.info.path)) return;
         const replacement = fields.find((entry) => entry.id === record.id && entry.element.isConnected);
         if (replacement) void openField(replacement);
         return;
@@ -451,7 +460,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   ): Promise<boolean> {
     const { key, path } = list.info;
     closeActive(false, true);
-    busyDocuments.add(key);
+    lock(key);
     let written = false;
     try {
       await lifecycle(
@@ -477,15 +486,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         }),
       );
     } catch {
-      // Shown by `lifecycle`. A conflict has repainted the document, its lists included.
-      busyDocuments.delete(key);
+      // Shown by `lifecycle`. A conflict has queued a swap, which holds its own lock until the page shows it.
+      unlock(key);
       return false;
     }
     try {
       // Nothing written (the item had already moved or gone): the page already shows what is stored.
       if (written) await swapLists(key);
     } finally {
-      busyDocuments.delete(key);
+      unlock(key);
     }
     return written;
   }
@@ -510,7 +519,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined,
       ),
     );
-    session.dropSaves(key, (slotPath) => {
+    const dropped = session.dropSaves(key, (slotPath) => {
       if (!slotPath.startsWith(path)) return false;
       const rest = slotPath.slice(path.length);
       const index = /^\.(\d+)(\.|$)/.exec(rest)?.[1];
@@ -518,6 +527,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       const itemKey = leadingItemKey(rest);
       return itemKey !== undefined && !keys.has(itemKey);
     });
+    if (dropped.length === 0) return;
+    // The Save failed or Saving… toast was about a value that is gone; its Retry would write into another item.
+    toast.hide();
+    // Until the swap lands (or if it fails), the fields show what is stored, not a value that will never save.
+    for (const record of fields) {
+      if (record.info.key === key && dropped.includes(record.info.path)) {
+        render(record, valueAtPath(payload, record.info.path), true);
+      }
+    }
   }
 
   /**
@@ -526,23 +544,27 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * after the running one has finished, so it sees every write made before the call.
    */
   let swapChain: Promise<void> = Promise.resolve();
-  const swapWanted = new Set<string>();
+  /** Per document, how many calls are waiting for the next run; each holds a lock until that run is over. */
+  const swapWanted = new Map<string, number>();
 
   function swapLists(key: string): Promise<void> {
-    swapWanted.add(key);
+    lock(key);
+    swapWanted.set(key, (swapWanted.get(key) ?? 0) + 1);
     // A swap that failed must not take the ones queued behind it down with it.
     const next = swapChain.then(async () => {
       if (swapWanted.size === 0) return;
-      const keys = new Set(swapWanted);
+      const taken = new Map(swapWanted);
       swapWanted.clear();
       try {
-        await swapOnce(keys);
+        await swapOnce(new Set(taken.keys()));
       } catch {
         if (!destroyed) {
           toast.show(strings.listReload, "error", [
             { label: strings.reload, onClick: () => location.reload(), variant: "primary" },
           ]);
         }
+      } finally {
+        for (const [taker, count] of taken) for (let index = 0; index < count; index += 1) unlock(taker);
       }
     });
     swapChain = next;
@@ -617,13 +639,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       const state = session.slot(record.info.key, record.info.path).state;
       if (state !== "idle") showState(record, state);
     }
-    if (editing) for (const list of addedLists) attachListRecord(list);
+    if (editing) {
+      for (const list of addedLists) attachListRecord(list);
+      // A list (of another document) holding a swapped one observes boxes that are gone: dress it again.
+      for (const list of lists) {
+        if (!addedLists.includes(list) && nodes.some((node) => list.element.contains(node))) attachListRecord(list);
+      }
+    }
     updateBar();
   }
 
-  /** Whether `node` is inside a list whose document has a write on its way. */
+  /** Whether `node` is inside a list whose document's markup is about to change. */
   function isBusy(node: Element): boolean {
-    return lists.some((list) => busyDocuments.has(list.info.key) && list.element.contains(node));
+    return lists.some((list) => locks.has(list.info.key) && list.element.contains(node));
   }
 
   function listById(id: string): ListRecord | undefined {
@@ -653,12 +681,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /**
    * Whether the chrome may move focus after a list operation: the editor hasn't opened another field or a sheet while
-   * it ran, and focus isn't somewhere else they chose (it fell to the body with the replaced list, or is in a list).
+   * it ran, and focus isn't somewhere else they chose: it fell to the body with the replaced list, or is in that list.
    */
-  function focusIsFree(): boolean {
+  function focusIsFree(listId: string): boolean {
     if (active || sheet.isOpen) return false;
     const focused = document.activeElement;
-    return focused === null || focused === document.body || focused.closest(".cms-list") !== null;
+    if (focused === null || focused === document.body) return true;
+    return listById(listId)?.element.contains(focused) === true;
   }
 
   /**
@@ -715,7 +744,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         count: fresh.items.length,
       }),
     );
-    if (focusIsFree()) await openFirstField(fresh, item);
+    if (focusIsFree(list.id)) await openFirstField(fresh, item);
   }
 
   async function actOnItem(
@@ -745,7 +774,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       toast.announce(
         format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
       );
-      if (focusIsFree()) focusTools(moved, action);
+      if (focusIsFree(list.id)) focusTools(moved, action);
       return;
     }
     if (action === "duplicate") {
@@ -770,7 +799,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           count: fresh.items.length,
         }),
       );
-      if (focusIsFree()) await openFirstField(fresh, copy);
+      if (focusIsFree(list.id)) await openFirstField(fresh, copy);
       return;
     }
     const position = list.items.indexOf(item);
@@ -787,7 +816,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     showRemovalToast(name);
     toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
     const next = fresh?.items[position] ?? fresh?.items[position - 1];
-    if (!focusIsFree()) return;
+    if (!focusIsFree(list.id)) return;
     if (next) focusTools(next);
     else fresh?.addButton?.focus();
   }
@@ -856,7 +885,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         count: fresh.items.length,
       }),
     );
-    if (focusIsFree()) focusTools(restored);
+    if (focusIsFree(last.listId)) focusTools(restored);
     const previous = removals.at(-1);
     if (previous) showRemovalToast(previous.name);
     else syncUndoButtons();

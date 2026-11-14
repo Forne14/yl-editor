@@ -3,7 +3,7 @@
 // crosses (docs/specs/artefacts/2026-11-list-editing.html). The host's elements are borrowed: the chrome adds
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
-import { element, uniqueId } from "./dom.ts";
+import { KEY_ID, element, uniqueId } from "./dom.ts";
 import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
@@ -56,8 +56,6 @@ export interface ListRecord {
   undoButton?: HTMLButtonElement;
 }
 
-/** A `_key` id, as docs/paths.md defines it. */
-const KEY_ID = "[A-Za-z0-9_-]+";
 const KEYED_ITEM = new RegExp(`\\[_key=(${KEY_ID})\\]$`);
 const LEADING_KEY = new RegExp(`^\\[_key=(${KEY_ID})\\]`);
 
