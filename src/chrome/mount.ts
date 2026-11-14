@@ -1,5 +1,6 @@
 // `mountEditor`: wires the scanned fields, the save queue, the bar, the toast and the sheet together.
 import { diffPayloads, type DiffEntry } from "../diff.ts";
+import { renderRichText } from "../richtext/render.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
 import { Disposer, button, element, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
@@ -16,7 +17,7 @@ import type {
   WidgetHandle,
 } from "./types.ts";
 import { Sheet, Toast } from "./ui.ts";
-import { createDefaultWidgets, missingWidget, provideStatus } from "./widgets.ts";
+import { createDefaultWidgets, missingWidget, provideStatus, provideStrings } from "./widgets.ts";
 
 interface ActiveWidget {
   record: FieldRecord;
@@ -186,7 +187,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   /**
-   * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace. A save never
+   * Repaint a host element after a value changed underneath it, if it is plain text we can safely replace or rich text,
+   * which is rendered from its sanitised HTML whatever the element held (a value that isn't a string empties it, as it
+   * does plain text). A save never
    * passes `undefined`, but content replaced by Discard, Restore or a conflict can lack the path: `clearMissing` then
    * empties plain text, so the page stops showing a value that is gone, and sets aside the `data-edit-value` it had at
    * that moment. A field already emptied keeps the one set aside then: a later one is the host's. A field it can't
@@ -194,9 +197,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   function render(record: FieldRecord, value: unknown, clearMissing = false): void {
     const target = record.element;
-    const plain = target.children.length === 0 && record.info.type !== "toggle";
+    const richText = record.info.type === "richtext";
+    const plain = !richText && target.children.length === 0 && record.info.type !== "toggle";
     if (value !== undefined) record.cleared = undefined;
-    if (plain && value === undefined && clearMissing) {
+    if (richText && value === undefined && clearMissing) {
+      record.cleared ??= { editValue: target.dataset.editValue };
+      target.replaceChildren();
+    } else if (richText && value !== undefined) {
+      renderRichText(target, typeof value === "string" ? value : "");
+    } else if (plain && value === undefined && clearMissing) {
       record.cleared ??= { editValue: target.dataset.editValue };
       target.textContent = "";
     } else if (plain && value !== undefined) {
@@ -215,7 +224,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const payload = session.takeTheirs(slot);
     // No payload means no conflict was held, so nothing says the value is gone.
     const clearMissing = payload !== undefined;
-    for (const record of recordsFor(slot)) render(record, valueAtPath(payload, slot.path), clearMissing);
+    for (const record of recordsFor(slot)) {
+      // A widget reopened on the field would put its own content back when it closes, over theirs.
+      if (active?.record === record) closeActive(false);
+      render(record, valueAtPath(payload, slot.path), clearMissing);
+    }
     toast.hide();
   }
 
@@ -332,6 +345,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     };
     // An error toast stays until dismissed or resolved (a failed save's Retry, a conflict's choice): an info toast
     // replacing it would take the unsaved change out of view when it hides itself.
+    provideStrings(context, strings);
     provideStatus(context, (message) => {
       if (toast.showingError) toast.announce(message);
       else toast.show(message, "info");
@@ -628,6 +642,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             ? element("input", { class: "cms-input", type: "datetime-local", "aria-describedby": pastNote.id })
             : null;
         const at = () => (publishAt ? localToIso(publishAt.value) : undefined);
+        /** Focus left "Publish at" while it was half-typed, and it still is. */
+        let incompleteLeft = false;
+        let shownReason: string | undefined;
         const inPast = () => {
           const when = at();
           return when !== undefined && new Date(when).getTime() <= Date.now();
@@ -638,14 +655,27 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             confirm.disabled = false;
             return;
           }
-          publishAt.min = localInputValue(new Date());
-          confirm.textContent = at() !== undefined ? strings.schedule : strings.publish;
+          // Setting `min`, even to the same value, empties a half-typed datetime-local in Chromium.
+          const min = localInputValue(new Date());
+          if (!publishAt.validity.badInput && publishAt.min !== min) publishAt.min = min;
+          const label = at() !== undefined ? strings.schedule : strings.publish;
+          // Runs on the blur a click on Confirm causes: replacing its text then loses that click in WebKit.
+          if (confirm.textContent !== label) confirm.textContent = label;
           const past = inPast();
-          if (past && pastNote.hidden) toast.announce(strings.scheduleInPast);
-          pastNote.hidden = !past;
-          pastNote.replaceChildren(...(past ? [element("p", { class: "cms-error" }, [strings.scheduleInPast])] : []));
           // A half-typed date reads as empty; publishing right now would be the wrong guess.
-          confirm.disabled = publishAt.validity.badInput || past;
+          const incomplete = publishAt.validity.badInput;
+          if (!incomplete) incompleteLeft = false;
+          // Every date is half-typed while it is being typed, so that reason waits until focus leaves the input.
+          const reason = past ? strings.scheduleInPast : incompleteLeft ? strings.scheduleIncomplete : undefined;
+          if (reason !== shownReason) {
+            if (reason !== undefined) toast.announce(reason);
+            shownReason = reason;
+            pastNote.hidden = reason === undefined;
+            pastNote.replaceChildren(...(reason !== undefined ? [element("p", { class: "cms-error" }, [reason])] : []));
+            if (reason !== undefined) publishAt.setAttribute("aria-invalid", "true");
+            else publishAt.removeAttribute("aria-invalid");
+          }
+          confirm.disabled = incomplete || past;
         };
         /** Back to a sheet that can be confirmed, after a run that left something to do. */
         const resume = () => {
@@ -658,8 +688,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           kind === "publish" ? strings.publish : strings.discard,
           async () => {
             if (running) return;
-            // `min` isn't enforced on typed values, and the clock may have passed this time since it was typed.
-            if (inPast()) {
+            // `min` isn't enforced on typed values, and the clock may have passed this time since it was typed. A
+            // half-typed date reads as no date, so it would publish now.
+            if (inPast() || publishAt?.validity.badInput === true) {
               syncConfirm();
               return;
             }
@@ -754,13 +785,45 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           kind === "publish" ? "primary" : "danger",
         );
         const cancel = button(strings.cancel, () => sheet.close(), "ghost");
+        const actions = element("div", { class: "cms-sheet__actions" }, [cancel, confirm]);
         if (publishAt) {
           publishAt.min = localInputValue(new Date());
           publishAt.addEventListener("input", syncConfirm);
           publishAt.addEventListener("change", syncConfirm);
+          // Clearing a date's last segments changes no `value`, so no `input` fires; the key's release still says so.
+          publishAt.addEventListener("keyup", syncConfirm);
+          const settleLeft = () => {
+            // Escape, Cancel or Close may have ended the sheet: nobody is left to tell.
+            if (!isOpen) return;
+            if (publishAt.validity.badInput) incompleteLeft = true;
+            syncConfirm();
+          };
+          // A press on Cancel or Publish blurs the input before its click. The line would push the buttons down under
+          // the pointer and lose that click, so it waits until the press is over.
+          let pressing = false;
+          let afterPress: (() => void) | undefined;
+          const release = () => {
+            window.removeEventListener("pointerup", release, true);
+            window.removeEventListener("pointercancel", release, true);
+            pressing = false;
+            const run = afterPress;
+            afterPress = undefined;
+            // After the click that this release dispatches.
+            if (run) setTimeout(run, 0);
+          };
+          actions.addEventListener("pointerdown", () => {
+            if (pressing) return;
+            pressing = true;
+            window.addEventListener("pointerup", release, true);
+            window.addEventListener("pointercancel", release, true);
+          });
+          publishAt.addEventListener("blur", () => {
+            if (pressing) afterPress = settleLeft;
+            else setTimeout(settleLeft, 0);
+          });
           body.append(element("label", { class: "cms-field-label" }, [strings.publishAt, publishAt]), pastNote);
         }
-        body.append(element("div", { class: "cms-sheet__actions" }, [cancel, confirm]));
+        body.append(actions);
         return () => {
           isOpen = false;
           for (const [key, row] of rows) if (row.review && key !== inFlight) session.endReview(key, row.review);

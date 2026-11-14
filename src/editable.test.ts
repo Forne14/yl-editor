@@ -45,3 +45,7 @@ test.each([
 ])("itemPath falls back to the index for %s", (_name, item, index) =>
   expect(itemPath("items", item, index)).toBe("items.2"),
 );
+test("emits a rich text field's heading levels, and nothing for an empty list", () => {
+  expect(editable("pages/home")("lede", "richtext", { headings: [2, 3] })["data-edit-headings"]).toBe("2 3");
+  expect(editable("pages/home")("lede", "richtext", { headings: [] })).not.toHaveProperty("data-edit-headings");
+});

@@ -1,0 +1,2096 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rich text toolbar</title>
+    <!-- The real chrome stylesheet. Open this file straight from the repo. -->
+    <link rel="stylesheet" href="../../../src/chrome/chrome.css" />
+
+    <!-- PROPOSED ADDITIONS to chrome.css. Tokens only, every rule in :where(), no raw values. -->
+    <style id="proposed">
+      /* .cms-root [hidden] only reaches descendants, and the toolbar is a .cms-root itself. */
+      .cms-toolbar[hidden] {
+        display: none;
+      }
+
+      :where(.cms-toolbar) {
+        position: fixed;
+        top: var(--cms-toolbar-top, 0);
+        left: var(--cms-toolbar-left, 0);
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-1);
+        max-width: calc(100vw - 2 * var(--cms-space-4));
+        padding: var(--cms-space-1);
+        transform: translateY(calc(-100% - var(--cms-space-2)));
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+
+      :where(.cms-toolbar__btn) {
+        position: relative;
+        border-color: transparent;
+        background: transparent;
+        padding: 0 var(--cms-space-2);
+      }
+
+      :where(.cms-toolbar__btn:hover) {
+        border-color: var(--cms-border);
+      }
+
+      :where(.cms-toolbar__btn[aria-pressed="true"]) {
+        border-color: var(--cms-accent);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+      }
+
+      :where(.cms-toolbar__btn svg) {
+        inline-size: 1.15em;
+        block-size: 1.15em;
+      }
+
+      :where(.cms-toolbar__glyph-i) {
+        font-style: italic;
+        font-family: Georgia, serif;
+      }
+
+      :where(.cms-toolbar__sep) {
+        align-self: stretch;
+        margin-block: var(--cms-space-2);
+        border-inline-start: thin solid var(--cms-border);
+      }
+
+      :where(.cms-toolbar__group) {
+        display: flex;
+        gap: var(--cms-space-1);
+      }
+
+      :where(.cms-toolbar__actions) {
+        display: flex;
+        gap: var(--cms-space-1);
+        margin-inline-start: auto;
+      }
+
+      :where(.cms-toolbar__paste) {
+        display: flex;
+        flex: 1 0 100%;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-block-start: thin solid var(--cms-border);
+        font-size: var(--cms-size-sm);
+      }
+
+      :where(.cms-toolbar__paste p) {
+        margin: 0 auto 0 0;
+        color: var(--cms-muted);
+      }
+
+      :where(.cms-toolbar__link) {
+        display: grid;
+        flex: 1 0 100%;
+        gap: var(--cms-space-2);
+        padding: var(--cms-space-2);
+        border-block-start: thin solid var(--cms-border);
+      }
+
+      :where(.cms-toolbar__link .cms-field-label) {
+        margin: 0;
+      }
+
+      :where(.cms-toolbar__link-row) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--cms-space-2);
+      }
+
+      :where(.cms-toolbar__link-row .cms-input) {
+        flex: 1 1 14em;
+        width: auto;
+      }
+
+      :where(.cms-tooltip) {
+        position: absolute;
+        top: calc(100% + var(--cms-space-2));
+        left: 50%;
+        transform: translateX(-50%);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-fg);
+        color: var(--cms-bg);
+        font-size: var(--cms-size-sm);
+        font-weight: 400;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+
+      :where(.cms-tooltip kbd) {
+        margin-inline-start: var(--cms-space-2);
+        font: inherit;
+        opacity: 0.75;
+      }
+
+      @media (max-width: 40em) {
+        :where(.cms-toolbar) {
+          inset-inline: 0;
+          top: 0;
+          left: 0;
+          max-width: none;
+          transform: none;
+          border-radius: 0 0 var(--cms-radius) var(--cms-radius);
+        }
+      }
+    </style>
+
+    <style>
+      /* Prototype page only. */
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 48px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 72ch;
+        margin: 4px 0 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 470px), 1fr));
+        gap: 16px;
+      }
+      .cell {
+        border-radius: 10px;
+        padding: 16px;
+        background: #ffffff;
+        border: 1px solid #e3e5eb;
+        min-width: 0;
+      }
+      .cell.dark {
+        background: #0f1116;
+        border-color: #2a2d36;
+        color: #e6e8ee;
+      }
+      .cell h3 {
+        margin: 0 0 12px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .cell.dark h3,
+      .cell.dark .caption {
+        color: #aab0bf;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .caption {
+        margin: 10px 0 0;
+        font-size: 0.8rem;
+        color: #5b6170;
+      }
+      code {
+        font-size: 0.85em;
+      }
+      /* Toolbars are positioned surfaces in the chrome; on this page the still ones sit in the flow. */
+      .cell .cms-toolbar.still {
+        position: relative;
+        top: auto;
+        left: auto;
+        transform: none;
+        max-width: none;
+        margin-bottom: 10px;
+        width: fit-content;
+      }
+      .cell.narrow-frame {
+        max-width: 375px;
+        padding: 0 0 16px;
+        overflow: hidden;
+      }
+      .narrow-frame .cms-toolbar.still {
+        width: auto;
+        border-radius: 0 0 6px 6px;
+        margin: 0 0 10px;
+      }
+      .narrow-frame .host {
+        padding: 0 16px;
+      }
+      .cell.dark .cms-root,
+      .cell.dark .cms-field {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        --cms-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+        color-scheme: dark;
+      }
+      .cell:not(.dark) .cms-root,
+      .cell:not(.dark) .cms-field {
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+        color-scheme: light;
+      }
+      .sim-focus {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      .cell.wide {
+        grid-column: 1 / -1;
+      }
+      .narrow-frame .narrow-h {
+        font-family: system-ui;
+        margin: 0 0 8px;
+      }
+      .caption.sys {
+        font-family: system-ui;
+      }
+      .tip-holder .cms-toolbar.still {
+        margin-bottom: 44px;
+      }
+      .cell.span2 {
+        grid-column: span 2;
+      }
+      @media (max-width: 980px) {
+        .cell.span2 {
+          grid-column: auto;
+        }
+      }
+      /* A host page's own prose styles; the widget edits the host element in place. */
+      .host {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 1.05rem;
+        line-height: 1.6;
+      }
+      .host h2 {
+        font-size: 1.3rem;
+        margin: 0.4em 0 0.2em;
+      }
+      .host h3 {
+        font-size: 1.1rem;
+        margin: 0.4em 0 0.2em;
+      }
+      .host p {
+        margin: 0 0 0.6em;
+      }
+      .host a {
+        color: inherit;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+      }
+      .host .cms-field {
+        padding: 2px 6px;
+      }
+      .host .cms-field > :last-child {
+        margin-bottom: 0;
+      }
+      /* Interactive demo stage */
+      .stage {
+        position: relative;
+        padding-top: 170px;
+      }
+      .stage .cms-toolbar {
+        position: absolute;
+        top: 170px;
+        left: 0;
+      }
+      .stage .cms-field[contenteditable="true"] {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+        cursor: text;
+      }
+      .out {
+        margin-top: 16px;
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: #f4f5f8;
+        font:
+          12px/1.5 ui-monospace,
+          Menlo,
+          monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #3a3e4a;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+        border-radius: 10px;
+        overflow: hidden;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 12px;
+        border-bottom: 1px solid #eceef3;
+        vertical-align: top;
+      }
+      th {
+        background: #fafbfc;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #5b6170;
+      }
+      td kbd {
+        font:
+          12px ui-monospace,
+          Menlo,
+          monospace;
+        padding: 1px 5px;
+        border: 1px solid #d5d8e0;
+        border-radius: 4px;
+        background: #fafbfc;
+        white-space: nowrap;
+      }
+      .ask {
+        border-left: 4px solid #a15c07;
+        background: #fff8ec;
+        padding: 12px 16px;
+        border-radius: 6px;
+        max-width: 80ch;
+      }
+      .ask p {
+        margin: 0 0 8px;
+      }
+      .ask p:last-child {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Rich text toolbar (#37)</h1>
+      <p class="lead">
+        This is the <code>@yl/editor/richtext</code> widget. The editor types straight into the host element, so the
+        page's own typography stays, as with the text widget. A toolbar floats just above the field, where the badge
+        sits today. It holds the fixed formatting set (bold, italic, link, bulleted and numbered lists, and headings
+        when the field turns them on), then <strong>Cancel</strong> and <strong>Done</strong>. It uses only existing
+        <code>--cms-*</code> tokens and adds a handful of classes to <code>chrome.css</code> (the block marked
+        <code>proposed</code> in this file's head). Its position comes in as <code>--cms-toolbar-top</code> and
+        <code>--cms-toolbar-left</code>, the same way as the badge and popover, so it needs no inline styles. Hosts
+        restyle it the way they restyle the rest of the chrome: every rule is in <code>:where()</code>, so any host
+        selector or token override wins.
+      </p>
+
+      <h2>1. Try it</h2>
+      <p class="note">
+        Click the text, or Tab to it and press Enter. Paste something with formatting from another page to see the paste
+        options; Ctrl/⌘ + Shift + V pastes plain text straight away. The demo uses the browser's
+        <code>execCommand</code> rather than TipTap, so formatting and paste details are approximate. Focus order,
+        keyboard, pressed states, link entry and tooltips, Cancel and paste options behave as proposed. The box under
+        the field shows the HTML that would be stored.
+      </p>
+      <div class="grid">
+        <div class="cell wide">
+          <div class="stage" id="stage">
+            <div class="cms-root cms-toolbar" role="toolbar" aria-label="Formatting for Intro" id="tb" hidden>
+              <button
+                type="button"
+                class="cms-btn cms-toolbar__btn"
+                data-cmd="bold"
+                aria-pressed="false"
+                aria-label="Bold"
+                aria-keyshortcuts="Control+B Meta+B"
+                tabindex="0"
+              >
+                <b aria-hidden="true">B</b>
+              </button>
+              <button
+                type="button"
+                class="cms-btn cms-toolbar__btn"
+                data-cmd="italic"
+                aria-pressed="false"
+                aria-label="Italic"
+                aria-keyshortcuts="Control+I Meta+I"
+                tabindex="-1"
+              >
+                <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+              </button>
+              <button
+                type="button"
+                class="cms-btn cms-toolbar__btn"
+                data-cmd="link"
+                aria-pressed="false"
+                aria-expanded="false"
+                aria-controls="linkrow"
+                aria-label="Link"
+                aria-keyshortcuts="Control+K Meta+K"
+                tabindex="-1"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                  <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+                </svg>
+              </button>
+              <span class="cms-toolbar__sep" aria-hidden="true"></span>
+              <button
+                type="button"
+                class="cms-btn cms-toolbar__btn"
+                data-cmd="insertUnorderedList"
+                aria-pressed="false"
+                aria-label="Bulleted list"
+                aria-keyshortcuts="Control+Shift+8 Meta+Shift+8"
+                tabindex="-1"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M9 6h11M9 12h11M9 18h11" />
+                  <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                  <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                  <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="cms-btn cms-toolbar__btn"
+                data-cmd="insertOrderedList"
+                aria-pressed="false"
+                aria-label="Numbered list"
+                aria-keyshortcuts="Control+Shift+7 Meta+Shift+7"
+                tabindex="-1"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M10 6h10M10 12h10M10 18h10" />
+                  <path
+                    d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                    stroke-width="1.4"
+                  />
+                </svg>
+              </button>
+              <span class="cms-toolbar__sep" aria-hidden="true"></span>
+              <span class="cms-toolbar__group"
+                ><button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  data-cmd="h2"
+                  aria-pressed="false"
+                  aria-label="Heading"
+                  aria-keyshortcuts="Control+Alt+2 Meta+Alt+2"
+                  tabindex="-1"
+                >
+                  H2
+                </button>
+                <button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  data-cmd="h3"
+                  aria-pressed="false"
+                  aria-label="Subheading"
+                  aria-keyshortcuts="Control+Alt+3 Meta+Alt+3"
+                  tabindex="-1"
+                >
+                  H3
+                </button></span
+              >
+              <span class="cms-toolbar__actions"
+                ><button
+                  type="button"
+                  class="cms-btn cms-btn--ghost"
+                  data-cmd="cancel"
+                  aria-keyshortcuts="Escape"
+                  tabindex="-1"
+                >
+                  Cancel</button
+                ><button
+                  type="button"
+                  class="cms-btn cms-btn--primary"
+                  data-cmd="done"
+                  aria-keyshortcuts="Control+Enter Meta+Enter"
+                  tabindex="-1"
+                >
+                  Done
+                </button></span
+              >
+              <div class="cms-toolbar__paste" role="group" aria-label="Paste options" id="pasterow" hidden>
+                <p id="pastemsg">Pasted with formatting.</p>
+                <button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  aria-pressed="true"
+                  data-cmd="keep"
+                  tabindex="-1"
+                >
+                  Keep formatting</button
+                ><button
+                  type="button"
+                  class="cms-btn cms-toolbar__btn"
+                  aria-pressed="false"
+                  data-cmd="plain"
+                  aria-keyshortcuts="Control+Shift+V Meta+Shift+V"
+                  tabindex="-1"
+                >
+                  Plain text
+                </button>
+              </div>
+              <div class="cms-toolbar__link" id="linkrow" hidden>
+                <label class="cms-field-label">
+                  Link address
+                  <span class="cms-toolbar__link-row">
+                    <input
+                      class="cms-input"
+                      id="linkinput"
+                      type="url"
+                      inputmode="url"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="https://"
+                    />
+                    <button type="button" class="cms-btn cms-btn--primary" id="linkapply">Apply</button>
+                    <button type="button" class="cms-btn cms-btn--danger" id="linkremove" hidden>Remove link</button>
+                  </span>
+                </label>
+                <div class="cms-diff" id="linkerr" hidden>
+                  <p class="cms-error">Use an address that starts with https://, http://, mailto:, tel: or /.</p>
+                </div>
+              </div>
+            </div>
+            <div class="host">
+              <div class="cms-field" id="field" tabindex="0" aria-label="Intro, press Enter to edit">
+                <h2>Spring at the bakery</h2>
+                <p>
+                  Our <strong>sourdough</strong> now proves for <em>48 hours</em>. Read more on
+                  <a href="/bread">our bread page</a>.
+                </p>
+                <ul>
+                  <li>Rye loaves on Tuesdays</li>
+                  <li>Cardamom buns at weekends</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div class="out" id="out" aria-live="off"></div>
+          <p class="caption">
+            Cancel or Esc puts the field back as it was and writes nothing. Done or Ctrl/⌘ + Enter commits, and so does
+            clicking anywhere outside the field and toolbar, as with every widget.
+          </p>
+        </div>
+      </div>
+
+      <h2>2. States</h2>
+      <p class="note">
+        These are still states. A pressed button uses the accent fill, like the primary button, and announces
+        <code>aria-pressed="true"</code>. Every button is 44px tall, the existing <code>--cms-control-h</code>. The
+        toolbar is a single tab stop: arrow keys move between its buttons (roving <code>tabindex</code>).
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Resting · caret in plain text <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (still)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing"><p>Our sourdough now proves for 48 hours.</p></div>
+          </div>
+          <p class="caption">Headings are off for this field (the default), so their buttons aren't there at all.</p>
+        </div>
+
+        <div class="cell">
+          <h3>Pressed · caret in bold text in a bulleted list <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (pressed)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing">
+              <ul>
+                <li><strong>Rye loaves</strong> on Tuesdays</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="cell tip-holder">
+          <h3>Keyboard focus on Italic, with tooltip <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (focus)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold" tabindex="-1">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button
+              type="button"
+              class="cms-btn cms-toolbar__btn sim-focus"
+              aria-pressed="false"
+              aria-label="Italic"
+              tabindex="-1"
+            >
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span
+              ><span class="cms-tooltip" aria-hidden="true">Italic<kbd>⌘I</kbd></span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link" tabindex="-1">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button
+              type="button"
+              class="cms-btn cms-toolbar__btn"
+              aria-pressed="false"
+              aria-label="Bulleted list"
+              tabindex="-1"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="cms-btn cms-toolbar__btn"
+              aria-pressed="false"
+              aria-label="Numbered list"
+              tabindex="-1"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost" tabindex="-1">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary" tabindex="-1">Done</button></span
+            >
+          </div>
+          <p class="caption">
+            The tooltip shows the name and shortcut on hover or keyboard focus, using ⌘ on Apple devices and Ctrl
+            elsewhere. Screen readers get the name from <code>aria-label</code> and the shortcut from
+            <code>aria-keyshortcuts</code>, so the tooltip is <code>aria-hidden</code>. Esc hides it without moving
+            focus (WCAG 1.4.13).
+          </p>
+        </div>
+
+        <div class="cell">
+          <h3>Link entry · new link <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (link new)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button
+              type="button"
+              class="cms-btn cms-toolbar__btn"
+              aria-pressed="true"
+              aria-expanded="true"
+              aria-label="Link"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__link">
+              <label class="cms-field-label"
+                >Link address
+                <span class="cms-toolbar__link-row">
+                  <input
+                    class="cms-input sim-focus"
+                    type="text"
+                    placeholder="https://"
+                    aria-label="Link address (still)"
+                  />
+                  <button type="button" class="cms-btn cms-btn--primary">Apply</button>
+                </span>
+              </label>
+            </div>
+          </div>
+          <p class="caption">
+            Link or Ctrl/⌘ + K opens a row inside the toolbar, and focus moves to the input. Enter applies it and Esc
+            closes the row. Either way focus goes back to the text with the selection kept. With nothing selected, the
+            address itself is inserted as the link text. A bare <code>example.com</code> gets <code>https://</code>
+            added.
+          </p>
+        </div>
+
+        <div class="cell">
+          <h3>Link entry · caret on an existing link <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (link edit)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button
+              type="button"
+              class="cms-btn cms-toolbar__btn"
+              aria-pressed="true"
+              aria-expanded="true"
+              aria-label="Link"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__link">
+              <label class="cms-field-label"
+                >Link address
+                <span class="cms-toolbar__link-row">
+                  <input
+                    class="cms-input sim-focus"
+                    type="text"
+                    value="/bread"
+                    aria-label="Link address (edit, still)"
+                  />
+                  <button type="button" class="cms-btn cms-btn--primary">Apply</button>
+                  <button type="button" class="cms-btn cms-btn--danger">Remove link</button>
+                </span>
+              </label>
+            </div>
+          </div>
+          <p class="caption">The row opens with the current address, selects the whole link, and offers Remove link.</p>
+        </div>
+
+        <div class="cell">
+          <h3>Link entry · address refused <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (link error)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button
+              type="button"
+              class="cms-btn cms-toolbar__btn"
+              aria-pressed="true"
+              aria-expanded="true"
+              aria-label="Link"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__link">
+              <label class="cms-field-label"
+                >Link address
+                <span class="cms-toolbar__link-row">
+                  <input
+                    class="cms-input sim-focus"
+                    type="text"
+                    value="javascript:alert(1)"
+                    aria-invalid="true"
+                    aria-describedby="err-still"
+                    aria-label="Link address (error, still)"
+                  />
+                  <button type="button" class="cms-btn cms-btn--primary">Apply</button>
+                </span>
+              </label>
+              <div class="cms-diff" id="err-still">
+                <p class="cms-error">Use an address that starts with https://, http://, mailto:, tel: or /.</p>
+              </div>
+            </div>
+          </div>
+          <p class="caption">
+            It uses the same red line as the incomplete-value message. The server-side sanitiser enforces the same rule,
+            so a link from any widget that breaks it is stored without its <code>href</code>.
+          </p>
+        </div>
+
+        <div class="cell">
+          <h3>Paste options · just pasted formatted text <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (paste)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__paste" role="group" aria-label="Paste options">
+              <p>Pasted with formatting.</p>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true">Keep formatting</button
+              ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false">Plain text</button>
+            </div>
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing">
+              <p>Our <strong>rye</strong> uses <a href="/flour">stoneground flour</a>.</p>
+            </div>
+          </div>
+          <p class="caption">
+            Shown only when the paste kept some formatting. Ctrl/⌘ + V keeps the formatting the field allows and drops
+            the rest. The row goes away as soon as you type or click in the text. A screen reader hears “Pasted with
+            formatting. Press Alt+F10 for paste options.”, and Alt+F10 lands on Plain text while the row is up.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Paste options · switched to plain text <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (paste plain)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+            <div class="cms-toolbar__paste" role="group" aria-label="Paste options">
+              <p>Pasted as plain text.</p>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false">Keep formatting</button
+              ><button type="button" class="cms-btn cms-toolbar__btn sim-focus" aria-pressed="true">Plain text</button>
+            </div>
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing"><p>Our rye uses stoneground flour.</p></div>
+          </div>
+          <p class="caption">
+            Plain text replaces the paste with its text; Keep formatting puts it back. Ctrl/⌘ + Shift + V pastes plain
+            text without the row (Safari's own ⌥⇧⌘V does the same).
+          </p>
+        </div>
+        <div class="cell span2">
+          <h3>Headings turned on · caret in a subheading <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (headings)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <span class="cms-toolbar__group"
+              ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">
+                H2
+              </button>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Subheading">
+                H3
+              </button></span
+            >
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing">
+              <h3>Opening hours</h3>
+              <p>Tuesday to Sunday.</p>
+            </div>
+          </div>
+          <p class="caption">
+            Pressing a pressed heading turns it back into a paragraph. A field turns headings on with
+            <code>data-edit-headings="2 3"</code> (the levels it allows; h2 and h3 at most).
+          </p>
+        </div>
+
+        <div class="cell dark">
+          <h3>Dark <span class="tag">new</span></h3>
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (dark)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="true" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn sim-focus" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+          </div>
+          <div class="host">
+            <div class="cms-field cms-field--editing">
+              <p>Proves for <em>48 hours</em>.</p>
+            </div>
+          </div>
+          <p class="caption">Italic is pressed and Link has keyboard focus.</p>
+        </div>
+
+        <div class="cell narrow-frame">
+          <div class="cms-root cms-toolbar still" role="toolbar" aria-label="Formatting (narrow)">
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bold">
+              <b aria-hidden="true">B</b>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Italic">
+              <span class="cms-toolbar__glyph-i" aria-hidden="true">I</span>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Link">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+                <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Bulleted list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M9 6h11M9 12h11M9 18h11" />
+                <circle cx="4.5" cy="6" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="12" r="1" fill="currentColor" />
+                <circle cx="4.5" cy="18" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Numbered list">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6h10M10 12h10M10 18h10" />
+                <path
+                  d="M4 4.5 5 4v4M4 8h2M4 11.5a1 1 0 0 1 2 .3c0 .9-2 1.2-2 2.2h2M4 16.5h2l-1 1.2a1 1 0 1 1-1 1.4"
+                  stroke-width="1.4"
+                />
+              </svg>
+            </button>
+            <span class="cms-toolbar__sep" aria-hidden="true"></span>
+            <span class="cms-toolbar__group"
+              ><button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Heading">
+                H2
+              </button>
+              <button type="button" class="cms-btn cms-toolbar__btn" aria-pressed="false" aria-label="Subheading">
+                H3
+              </button></span
+            >
+            <span class="cms-toolbar__actions"
+              ><button type="button" class="cms-btn cms-btn--ghost">Cancel</button
+              ><button type="button" class="cms-btn cms-btn--primary">Done</button></span
+            >
+          </div>
+          <div class="host">
+            <h3 class="narrow-h">At 375px</h3>
+            <div class="cms-field cms-field--editing"><p>Our sourdough now proves for 48 hours.</p></div>
+            <p class="caption sys">
+              Under 40em the toolbar docks to the top of the viewport, full width, and wraps if it must. The bottom of
+              the screen belongs to the on-screen keyboard and the bar. Every button stays 44px. Cancel and Done keep to
+              the end of the last row.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <h2>3. Keyboard</h2>
+      <p class="note">
+        This follows the ARIA toolbar pattern. Nothing traps focus: Tab always moves on, and leaving the field and
+        toolbar commits, like every widget.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Where</th>
+            <th>Key</th>
+            <th>Does</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Ctrl/⌘ B</kbd> <kbd>Ctrl/⌘ I</kbd></td>
+            <td>Bold, italic</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Ctrl/⌘ K</kbd></td>
+            <td>Open the link row</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Ctrl/⌘ ⇧ 8</kbd> <kbd>Ctrl/⌘ ⇧ 7</kbd></td>
+            <td>Bulleted list, numbered list (TipTap defaults)</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Ctrl/⌘ ⌥ 2</kbd> <kbd>Ctrl/⌘ ⌥ 3</kbd></td>
+            <td>Heading, subheading, only when the field allows them</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Alt F10</kbd>, or <kbd>Tab</kbd> outside a list</td>
+            <td>Move focus to the toolbar, onto its last-used button</td>
+          </tr>
+          <tr>
+            <td>Text, in a list item</td>
+            <td><kbd>Tab</kbd> / <kbd>⇧ Tab</kbd></td>
+            <td>Nest or un-nest the item. Alt F10 still reaches the toolbar</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Ctrl/⌘ Enter</kbd></td>
+            <td>Done: commit and close</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Ctrl/⌘ ⇧ V</kbd></td>
+            <td>Paste as plain text</td>
+          </tr>
+          <tr>
+            <td>Text, paste options up</td>
+            <td><kbd>Alt F10</kbd></td>
+            <td>Focus Plain text in the paste options</td>
+          </tr>
+          <tr>
+            <td>Text</td>
+            <td><kbd>Esc</kbd></td>
+            <td>Cancel: put the field back as it was and write nothing. The Cancel button does the same, for touch</td>
+          </tr>
+          <tr>
+            <td>Toolbar</td>
+            <td><kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd></td>
+            <td>Move between buttons (wraps at the ends)</td>
+          </tr>
+          <tr>
+            <td>Toolbar</td>
+            <td><kbd>Enter</kbd> / <kbd>Space</kbd></td>
+            <td>Press the button. Focus goes back to the text, except for Link, which opens its row</td>
+          </tr>
+          <tr>
+            <td>Toolbar</td>
+            <td><kbd>Esc</kbd></td>
+            <td>Hide the tooltip if one shows, otherwise back to the text. It doesn't cancel</td>
+          </tr>
+          <tr>
+            <td>Toolbar</td>
+            <td><kbd>⇧ Tab</kbd> / <kbd>Tab</kbd></td>
+            <td>Back to the text, or move on past the toolbar (which commits)</td>
+          </tr>
+          <tr>
+            <td>Link row</td>
+            <td><kbd>Enter</kbd> / <kbd>Esc</kbd></td>
+            <td>Apply, or close the row. Either way back to the text</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>4. New strings in <code>strings.ts</code></h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>English</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>formatting</code></td>
+            <td>Formatting for {label}</td>
+          </tr>
+          <tr>
+            <td><code>bold</code></td>
+            <td>Bold</td>
+          </tr>
+          <tr>
+            <td><code>italic</code></td>
+            <td>Italic</td>
+          </tr>
+          <tr>
+            <td><code>link</code></td>
+            <td>Link</td>
+          </tr>
+          <tr>
+            <td><code>bulletList</code></td>
+            <td>Bulleted list</td>
+          </tr>
+          <tr>
+            <td><code>orderedList</code></td>
+            <td>Numbered list</td>
+          </tr>
+          <tr>
+            <td><code>heading</code></td>
+            <td>Heading</td>
+          </tr>
+          <tr>
+            <td><code>subheading</code></td>
+            <td>Subheading</td>
+          </tr>
+          <tr>
+            <td><code>linkAddress</code></td>
+            <td>Link address</td>
+          </tr>
+          <tr>
+            <td><code>applyLink</code></td>
+            <td>Apply</td>
+          </tr>
+          <tr>
+            <td><code>removeLink</code></td>
+            <td>Remove link</td>
+          </tr>
+          <tr>
+            <td><code>linkRefused</code></td>
+            <td>Use an address that starts with https://, http://, mailto:, tel: or /.</td>
+          </tr>
+          <tr>
+            <td><code>pasteOptions</code></td>
+            <td>Paste options</td>
+          </tr>
+          <tr>
+            <td><code>pastedFormatted</code></td>
+            <td>Pasted with formatting.</td>
+          </tr>
+          <tr>
+            <td><code>pastedPlain</code></td>
+            <td>Pasted as plain text.</td>
+          </tr>
+          <tr>
+            <td><code>keepFormatting</code></td>
+            <td>Keep formatting</td>
+          </tr>
+          <tr>
+            <td><code>plainText</code></td>
+            <td>Plain text</td>
+          </tr>
+          <tr>
+            <td><code>pasteAnnounce</code></td>
+            <td>Pasted with formatting. Press Alt+F10 for paste options.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">
+        Done and Cancel reuse <code>done</code> and <code>cancel</code>. The H2 and H3 glyphs and the B and I letters
+        are drawn, not read out. Their names come from the strings above.
+      </p>
+
+      <h2>5. Decided (approved 2026-11-13)</h2>
+      <div class="ask">
+        <p>
+          <strong>a. Paste.</strong> Formatting outside the set is dropped silently. Paste options offer Keep formatting
+          or Plain text after a formatted paste, and Ctrl/⌘ + Shift + V pastes plain.
+        </p>
+        <p><strong>b. Cancel.</strong> Folded into this ticket: a Cancel button next to Done.</p>
+        <p>
+          <strong>c. Heading glyphs.</strong> H2 and H3. Aa in two sizes was tried in round 2 and dropped: it read as a
+          size control, not a choice between heading and subheading.
+        </p>
+      </div>
+    </main>
+
+    <script>
+      // Prototype behaviour only. The real widget is TipTap; this approximates it with execCommand.
+      (() => {
+        const field = document.getElementById("field");
+        const tb = document.getElementById("tb");
+        const out = document.getElementById("out");
+        const linkrow = document.getElementById("linkrow");
+        const linkinput = document.getElementById("linkinput");
+        const linkerr = document.getElementById("linkerr");
+        const linkremove = document.getElementById("linkremove");
+        const linkBtn = tb.querySelector('[data-cmd="link"]');
+        const all = () => [...tb.querySelectorAll("button[data-cmd]")].filter((b) => !b.closest("[hidden]"));
+        const pasterow = document.getElementById("pasterow");
+        const pastemsg = document.getElementById("pastemsg");
+        let pasted = null;
+        const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+        const mod = mac ? "⌘" : "Ctrl+";
+        const keys = {
+          bold: mod + "B",
+          italic: mod + "I",
+          link: mod + "K",
+          insertUnorderedList: mod + (mac ? "⇧8" : "Shift+8"),
+          insertOrderedList: mod + (mac ? "⇧7" : "Shift+7"),
+          h2: mod + (mac ? "⌥2" : "Alt+2"),
+          h3: mod + (mac ? "⌥3" : "Alt+3"),
+          done: mod + (mac ? "↩" : "Enter"),
+          cancel: "Esc",
+          plain: mod + (mac ? "⇧V" : "Shift+V"),
+        };
+        let original = field.innerHTML;
+        let editing = false;
+        let active = 0;
+        let savedRange = null;
+        let tip = null;
+
+        const show = () =>
+          (out.textContent = "Stored: " + field.innerHTML.replace(/\s+/g, " ").replace(/> </g, "><").trim());
+        show();
+
+        function place() {
+          tb.hidden = false;
+        }
+        function start() {
+          if (editing) return;
+          editing = true;
+          original = field.innerHTML;
+          field.contentEditable = "true";
+          field.setAttribute("aria-label", "Intro");
+          field.setAttribute("role", "textbox");
+          field.setAttribute("aria-multiline", "true");
+          place();
+          field.focus();
+          sync();
+        }
+        function stop(commit) {
+          if (!editing) return;
+          if (!commit) field.innerHTML = original;
+          editing = false;
+          field.contentEditable = "false";
+          field.removeAttribute("role");
+          field.removeAttribute("aria-multiline");
+          field.setAttribute("aria-label", "Intro, press Enter to edit");
+          tb.hidden = true;
+          hidePaste();
+          closeLink(false);
+          hideTip();
+          show();
+        }
+        function rove(i, focus = true) {
+          const bs = all();
+          active = (i + bs.length) % bs.length;
+          bs.forEach((b, n) => (b.tabIndex = n === active ? 0 : -1));
+          if (focus) bs[active].focus();
+        }
+        function inLink() {
+          const sel = getSelection();
+          let n = sel.anchorNode;
+          while (n && n !== field) {
+            if (n.nodeName === "A") return n;
+            n = n.parentNode;
+          }
+          return null;
+        }
+        function block() {
+          let n = getSelection().anchorNode;
+          while (n && n !== field) {
+            if (/^H[23]$/.test(n.nodeName)) return n.nodeName.toLowerCase();
+            n = n.parentNode;
+          }
+          return "";
+        }
+        function sync() {
+          if (!editing) return;
+          const state = {
+            bold: document.queryCommandState("bold"),
+            italic: document.queryCommandState("italic"),
+            link: !!inLink() || !linkrow.hidden,
+            insertUnorderedList: document.queryCommandState("insertUnorderedList"),
+            insertOrderedList: document.queryCommandState("insertOrderedList"),
+            h2: block() === "h2",
+            h3: block() === "h3",
+          };
+          for (const b of all())
+            if (b.dataset.cmd in state) b.setAttribute("aria-pressed", String(state[b.dataset.cmd]));
+        }
+        function saveSel() {
+          const s = getSelection();
+          if (s.rangeCount && field.contains(s.anchorNode)) savedRange = s.getRangeAt(0).cloneRange();
+        }
+        function restoreSel() {
+          field.focus();
+          if (savedRange) {
+            const s = getSelection();
+            s.removeAllRanges();
+            s.addRange(savedRange);
+          }
+        }
+        function run(cmd) {
+          if (cmd === "done") return stop(true);
+          if (cmd === "cancel") {
+            stop(false);
+            return field.focus();
+          }
+          if (cmd === "keep" || cmd === "plain") return switchPaste(cmd);
+          if (cmd === "link") return openLink();
+          restoreSel();
+          if (cmd === "h2" || cmd === "h3") document.execCommand("formatBlock", false, block() === cmd ? "p" : cmd);
+          else document.execCommand(cmd);
+          sync();
+        }
+        function openLink() {
+          saveSel();
+          const a = inLink();
+          linkrow.hidden = false;
+          linkBtn.setAttribute("aria-expanded", "true");
+          linkinput.value = a ? a.getAttribute("href") : "";
+          linkremove.hidden = !a;
+          linkerr.hidden = true;
+          linkinput.removeAttribute("aria-invalid");
+          linkinput.focus();
+          linkinput.select();
+          sync();
+        }
+        function closeLink(back = true) {
+          if (linkrow.hidden) return;
+          linkrow.hidden = true;
+          linkBtn.setAttribute("aria-expanded", "false");
+          if (back) restoreSel();
+          sync();
+        }
+        function applyLink() {
+          let v = linkinput.value.trim();
+          if (v && !/^[a-z][a-z0-9+.-]*:|^\//i.test(v) && /^[^\s/]+\.[^\s]+$/.test(v)) v = "https://" + v;
+          if (!/^(https?:\/\/|mailto:|tel:|\/)/i.test(v)) {
+            linkerr.hidden = false;
+            linkinput.setAttribute("aria-invalid", "true");
+            linkinput.setAttribute("aria-describedby", "linkerr");
+            return;
+          }
+          restoreSel();
+          const a = inLink();
+          if (a) a.setAttribute("href", v);
+          else if (getSelection().isCollapsed)
+            document.execCommand(
+              "insertHTML",
+              false,
+              `<a href="${v.replace(/"/g, "&quot;")}">${v.replace(/</g, "&lt;")}</a>`,
+            );
+          else document.execCommand("createLink", false, v);
+          closeLink();
+        }
+        function showTip(b) {
+          hideTip();
+          if (!keys[b.dataset.cmd]) return;
+          const label = b.getAttribute("aria-label") || b.textContent.trim();
+          tip = document.createElement("span");
+          tip.className = "cms-tooltip";
+          tip.setAttribute("aria-hidden", "true");
+          tip.textContent = label;
+          const k = document.createElement("kbd");
+          k.textContent = keys[b.dataset.cmd] || "";
+          tip.append(k);
+          b.append(tip);
+        }
+        function hideTip() {
+          if (tip) tip.remove();
+          tip = null;
+        }
+
+        const ALLOWED = new Set(["STRONG", "B", "EM", "I", "A", "UL", "OL", "LI", "P", "H2", "H3", "BR"]);
+        function clean(html) {
+          const t = document.createElement("template");
+          t.innerHTML = html;
+          const walk = (node) => {
+            for (const c of [...node.childNodes]) {
+              if (c.nodeType === 8) c.remove();
+              else if (c.nodeType === 1) {
+                walk(c);
+                if (["SCRIPT", "STYLE", "META", "TITLE"].includes(c.nodeName)) c.remove();
+                else if (!ALLOWED.has(c.nodeName)) c.replaceWith(...c.childNodes);
+                else
+                  for (const a of [...c.attributes])
+                    if (!(c.nodeName === "A" && a.name === "href" && /^(https?:\/\/|mailto:|tel:|\/)/i.test(a.value)))
+                      c.removeAttribute(a.name);
+              }
+            }
+          };
+          walk(t.content);
+          return t.innerHTML;
+        }
+        let plainNext = false;
+        const live = document.createElement("div");
+        live.className = "cms-live";
+        live.setAttribute("aria-live", "polite");
+        document.body.append(live);
+        function showPaste(kept) {
+          pasterow.hidden = false;
+          pastemsg.textContent = kept ? "Pasted with formatting." : "Pasted as plain text.";
+          pasterow.querySelector('[data-cmd="keep"]').setAttribute("aria-pressed", String(kept));
+          pasterow.querySelector('[data-cmd="plain"]').setAttribute("aria-pressed", String(!kept));
+        }
+        function hidePaste() {
+          if (!pasterow.hidden) {
+            pasterow.hidden = true;
+            if (!all()[active]) rove(0, false);
+          }
+          pasted = null;
+        }
+        function path(node) {
+          const out = [];
+          while (node && node !== field) {
+            out.unshift([...node.parentNode.childNodes].indexOf(node));
+            node = node.parentNode;
+          }
+          return out;
+        }
+        function at(steps) {
+          let n = field;
+          for (const i of steps) n = n.childNodes[i];
+          return n;
+        }
+        function switchPaste(cmd) {
+          if (!pasted || pasted.mode === cmd) return;
+          const fromToolbar = tb.contains(document.activeElement);
+          field.innerHTML = pasted.before;
+          const r = document.createRange();
+          r.setStart(at(pasted.caret[0]), pasted.caret[1]);
+          savedRange = r;
+          restoreSel();
+          if (cmd === "plain") document.execCommand("insertText", false, pasted.text);
+          else document.execCommand("insertHTML", false, pasted.html);
+          pasted.mode = cmd;
+          showPaste(cmd === "keep");
+          saveSel();
+          show();
+          // Stay on the row so the editor can switch back and forth.
+          if (fromToolbar) rove(all().indexOf(pasterow.querySelector(`[data-cmd="${cmd}"]`)));
+        }
+        field.addEventListener("paste", (e) => {
+          if (!editing) return;
+          e.preventDefault();
+          const text = e.clipboardData.getData("text/plain");
+          const html = clean(e.clipboardData.getData("text/html") || "");
+          const formatted = /<(strong|b|em|i|a|ul|ol|h2|h3)\b/i.test(html);
+          hidePaste();
+          const sel = getSelection();
+          if (!sel.isCollapsed) document.execCommand("delete");
+          const before = field.innerHTML;
+          const caret = [path(sel.anchorNode), sel.anchorOffset];
+          if (plainNext || !formatted) {
+            document.execCommand("insertText", false, text);
+          } else {
+            document.execCommand("insertHTML", false, html);
+            pasted = { text, html, before, caret, mode: "keep" };
+            showPaste(true);
+            live.textContent = "";
+            setTimeout(() => (live.textContent = "Pasted with formatting. Press Alt+F10 for paste options."), 50);
+          }
+          plainNext = false;
+          saveSel();
+          show();
+        });
+        field.addEventListener("pointerdown", () => editing && hidePaste());
+        field.addEventListener("click", start);
+        field.addEventListener("keydown", (e) => {
+          const m = e.metaKey || e.ctrlKey;
+          if (editing && m && e.shiftKey && e.key.toLowerCase() === "v") plainNext = true;
+          else if (
+            editing &&
+            !pasterow.hidden &&
+            !(e.altKey && e.key === "F10") &&
+            !["Shift", "Control", "Meta", "Alt"].includes(e.key) &&
+            !(m && e.key.toLowerCase() === "v")
+          )
+            hidePaste();
+          if (!editing) {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              start();
+            }
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            stop(false);
+            field.focus();
+          } else if (m && e.key === "Enter") {
+            e.preventDefault();
+            stop(true);
+            field.focus();
+          } else if (m && e.key.toLowerCase() === "k") {
+            e.preventDefault();
+            openLink();
+          } else if (m && e.altKey && (e.code === "Digit2" || e.code === "Digit3")) {
+            e.preventDefault();
+            saveSel();
+            run(e.code === "Digit2" ? "h2" : "h3");
+          } else if (m && e.shiftKey && (e.code === "Digit8" || e.code === "Digit7")) {
+            e.preventDefault();
+            saveSel();
+            run(e.code === "Digit8" ? "insertUnorderedList" : "insertOrderedList");
+          } else if (
+            (e.altKey && e.key === "F10") ||
+            (e.key === "Tab" &&
+              !e.shiftKey &&
+              !document.queryCommandState("insertUnorderedList") &&
+              !document.queryCommandState("insertOrderedList"))
+          ) {
+            e.preventDefault();
+            saveSel();
+            if (e.altKey && e.key === "F10" && !pasterow.hidden)
+              rove(all().indexOf(pasterow.querySelector('[data-cmd="plain"]')));
+            else rove(active);
+          } else if (e.key === "Tab") {
+            e.preventDefault();
+            document.execCommand(e.shiftKey ? "outdent" : "indent");
+          }
+        });
+        document.addEventListener("selectionchange", () => {
+          if (editing && document.activeElement === field) {
+            saveSel();
+            sync();
+          }
+        });
+        field.addEventListener("input", show);
+
+        tb.querySelectorAll("button[data-cmd]").forEach((b) => {
+          const i = () => all().indexOf(b);
+          b.addEventListener("mousedown", (e) => {
+            saveSel();
+            e.preventDefault();
+          });
+          b.addEventListener("click", () => {
+            rove(i(), false);
+            run(b.dataset.cmd);
+          });
+          b.addEventListener("focus", () => showTip(b));
+          b.addEventListener("blur", hideTip);
+          b.addEventListener("mouseenter", () => showTip(b));
+          b.addEventListener("mouseleave", () => document.activeElement !== b && hideTip());
+          b.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowRight") rove(i() + 1);
+            else if (e.key === "ArrowLeft") rove(i() - 1);
+            else if (e.key === "Home") rove(0);
+            else if (e.key === "End") rove(all().length - 1);
+            else if (e.key === "Enter" || e.key === " ") b.click();
+            else if (e.key === "Escape") {
+              e.preventDefault();
+              if (tip) hideTip();
+              else restoreSel();
+            } else if (e.key === "Tab" && e.shiftKey) {
+              e.preventDefault();
+              restoreSel();
+            } else return;
+            e.preventDefault();
+          });
+        });
+        linkinput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            applyLink();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            closeLink();
+          }
+        });
+        linkinput.addEventListener("input", () => {
+          linkerr.hidden = true;
+          linkinput.removeAttribute("aria-invalid");
+        });
+        document.getElementById("linkapply").addEventListener("click", applyLink);
+        linkremove.addEventListener("click", () => {
+          restoreSel();
+          const a = inLink();
+          if (a) a.replaceWith(...a.childNodes);
+          closeLink();
+          show();
+        });
+        // Leaving the field and the toolbar commits, like every widget.
+        document.addEventListener("focusin", (e) => {
+          if (editing && !field.contains(e.target) && !tb.contains(e.target)) stop(true);
+        });
+        document.addEventListener("pointerdown", (e) => {
+          if (editing && e.button === 0 && !field.contains(e.target) && !tb.contains(e.target)) stop(true);
+        });
+      })();
+    </script>
+  </body>
+</html>

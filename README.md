@@ -16,6 +16,7 @@ publishes it, with drafts and revisions underneath.
 | `@yl/editor/http`              | `createContentHandlers()`, framework-neutral `Request` to `Response` edit endpoints, and a matching client                |
 | `@yl/editor/chrome`            | `mountEditor()`, the framework-free in-page editing island                                                                |
 | `@yl/editor/chrome/chrome.css` | The chrome's stylesheet                                                                                                   |
+| `@yl/editor/richtext`          | The rich text widget, built on TipTap (optional peer dependencies); see `docs/chrome.md`                                  |
 
 The core depends on zod and TypeScript only. Frameworks, databases, media storage and rich-text widgets stay the
 host's concern: the package ships the `MediaStore` interface and `MediaVariantSchema` but no implementation, so the

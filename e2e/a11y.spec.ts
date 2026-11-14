@@ -126,9 +126,46 @@ const STATES: ChromeState[] = [
     await expect(popover.locator(".cms-diff .cms-error")).toBeVisible();
   }),
   {
-    name: "richtext fallback note",
+    name: "rich text toolbar, with focus and its tooltip on a button",
     async setup({ page, demo }) {
       await demo.openEditor();
+      await page.locator(".lede p").click();
+      await page.keyboard.press("Alt+F10");
+      await expect(page.locator(".cms-toolbar .cms-tooltip")).toBeVisible();
+    },
+  },
+  {
+    name: "rich text link row, with the refused-address line",
+    async setup({ page, demo }) {
+      await demo.openEditor();
+      await page.locator(".lede p").click();
+      await page.keyboard.press("ControlOrMeta+k");
+      await page.keyboard.type("javascript:x");
+      await page.keyboard.press("Enter");
+      await expect(page.locator(".cms-toolbar .cms-error")).toBeVisible();
+    },
+  },
+  {
+    name: "rich text paste options",
+    async setup({ page, demo }) {
+      await demo.openEditor();
+      const lede = page.locator(".lede");
+      await lede.locator("p").click();
+      await lede.evaluate((node) => {
+        const transfer = new DataTransfer();
+        transfer.setData("text/html", "<p>Rye <b>daily</b></p>");
+        transfer.setData("text/plain", "Rye daily");
+        const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "clipboardData", { value: transfer });
+        node.dispatchEvent(event);
+      });
+      await expect(page.locator(".cms-toolbar__paste")).toBeVisible();
+    },
+  },
+  {
+    name: "richtext fallback note",
+    async setup({ page, demo }) {
+      await demo.openEditor({ richtext: "fallback" });
       await page.locator(".lede").click();
       await expect(page.locator(".cms-popover--note")).toContainText("Plain text only");
     },
@@ -155,6 +192,24 @@ const STATES: ChromeState[] = [
       await sheet.getByLabel("Publish at (optional)").fill("2020-01-01T09:00");
       await expect(sheet).toContainText("That time is in the past");
       await expect(sheet.getByRole("button", { name: "Schedule" })).toBeDisabled();
+    },
+  },
+  {
+    name: "Publish sheet with scheduling and the half-typed note",
+    async setup({ page, demo }) {
+      await demo.openEditor({ scheduling: true });
+      await editText(page, page.locator("#home-title"), "Later title");
+      await barButton(page, "Publish").click();
+      const sheet = page.getByRole("dialog", { name: "Publish these documents?" });
+      await expect(sheet.locator(".cms-diff li")).toHaveCount(1);
+      const input = sheet.getByLabel("Publish at (optional)");
+      // A month alone: the first segment, in the en-US layout every engine runs here.
+      await input.focus();
+      await page.keyboard.type("11");
+      await sheet.getByRole("button", { name: "Cancel" }).focus();
+      await expect(sheet).toContainText("That date and time isn’t complete");
+      await expect(input).toHaveAttribute("aria-invalid", "true");
+      await expect(sheet.getByRole("button", { name: "Publish", exact: true })).toBeDisabled();
     },
   },
   {

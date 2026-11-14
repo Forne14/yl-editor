@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
 import { Session } from "./session.ts";
-import type { EditorHandle, EditorOptions, WidgetContext, WireDocument } from "./types.ts";
+import type { EditorHandle, EditorOptions, Widget, WidgetContext, WireDocument } from "./types.ts";
 
 interface RecordedCall {
   method: string;
@@ -2416,6 +2416,142 @@ describe("scheduling", () => {
     expect(sheet.querySelector(".cms-error")).toBeNull();
   });
 
+  test("on: a past time marks the input invalid until it is cleared", async () => {
+    vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+    serve({ "pages/home": { payload: { title: "Hello" } } });
+    await mount({ scheduling: true });
+    await editText("pages/home:title", "One");
+    const input = dateInput(await openPublishSheet()) as HTMLInputElement;
+    type(input, "2030-06-01T09:00");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    type(input, "");
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  describe("a half-typed Publish at", () => {
+    const INCOMPLETE = "That date and time isn’t complete, so it can’t be scheduled.";
+    /** The state a half-typed datetime-local leaves: an empty value and `badInput`. */
+    const halfType = (input: HTMLInputElement, bad = true) => {
+      input.value = "";
+      Object.defineProperty(input, "validity", { value: { badInput: bad }, configurable: true });
+    };
+
+    /** Focus leaves the input; what it shows waits a task, past any click that caused it. */
+    const leave = async (input: HTMLInputElement) => {
+      input.dispatchEvent(new FocusEvent("blur"));
+      await settle();
+    };
+
+    async function openHalfTyped() {
+      serve({ "pages/home": { payload: { title: "Hello" } } });
+      await mount({ scheduling: true });
+      await editText("pages/home:title", "One");
+      const sheet = await openPublishSheet();
+      const input = dateInput(sheet) as HTMLInputElement;
+      input.focus();
+      halfType(input);
+      input.dispatchEvent(new Event("input"));
+      return { sheet, input };
+    }
+
+    test("while typing, Publish is disabled but no line shows yet", async () => {
+      const { sheet, input } = await openHalfTyped();
+      expect(buttonNamed("Publish", sheet).disabled).toBe(true);
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      expect(input.hasAttribute("aria-invalid")).toBe(false);
+    });
+
+    test("leaving the input says why, marks it invalid and announces it once", async () => {
+      const { sheet, input } = await openHalfTyped();
+      await leave(input);
+      const reason = sheet.querySelector(".cms-error");
+      expect(reason?.textContent).toBe(
+        "That date and time isn’t complete, so it can’t be scheduled. Finish it, or clear it to publish now.",
+      );
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      expect(input.getAttribute("aria-describedby")).toBe(reason?.parentElement?.id);
+      expect(document.querySelector(".cms-live")?.textContent).toBe(reason?.textContent);
+      // Back in the input and still half-typed: the line stays.
+      input.focus();
+      input.dispatchEvent(new Event("keyup"));
+      expect(sheet.textContent).toContain(INCOMPLETE);
+      expect(buttonNamed("Publish", sheet).disabled).toBe(true);
+    });
+
+    test("emptying the segments clears the line on the key's release, and Publish comes back", async () => {
+      const { sheet, input } = await openHalfTyped();
+      await leave(input);
+      halfType(input, false);
+      // Clearing a datetime's last segments changes no `value`, so no `input` fires.
+      input.dispatchEvent(new Event("keyup"));
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      expect(input.hasAttribute("aria-invalid")).toBe(false);
+      expect(buttonNamed("Publish", sheet).disabled).toBe(false);
+    });
+
+    test("min is left alone while it is half-typed, since setting it empties the input in Chromium", async () => {
+      vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+      const { input } = await openHalfTyped();
+      vi.setSystemTime(new Date(2030, 5, 1, 9, 45));
+      input.dispatchEvent(new Event("keyup"));
+      await leave(input);
+      expect(input.min).toBe("2030-06-01T09:30");
+      halfType(input, false);
+      type(input, "2030-06-01T10:00");
+      expect(input.min).toBe("2030-06-01T09:45");
+    });
+
+    test("a press on Cancel that blurs it shows nothing until the press is over, so the button stays put", async () => {
+      const { sheet, input } = await openHalfTyped();
+      const cancel = buttonNamed("Cancel", sheet);
+      cancel.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      await leave(input);
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      window.dispatchEvent(new Event("pointerup"));
+      await settle();
+      expect(sheet.textContent).toContain(INCOMPLETE);
+    });
+
+    test("closing the sheet as focus leaves announces nothing", async () => {
+      const { sheet, input } = await openHalfTyped();
+      const live = document.querySelector(".cms-live") as HTMLElement;
+      live.textContent = "";
+      const cancel = buttonNamed("Cancel", sheet);
+      cancel.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      input.dispatchEvent(new FocusEvent("blur"));
+      window.dispatchEvent(new Event("pointerup"));
+      cancel.click();
+      await settle();
+      expect(sheet.hidden).toBe(true);
+      expect(live.textContent).toBe("");
+    });
+
+    test("Confirm refuses a half-typed date even when the button was left enabled", async () => {
+      const { sheet } = await openHalfTyped();
+      const confirm = buttonNamed("Publish", sheet);
+      confirm.disabled = false;
+      confirm.click();
+      await settle();
+      expect(posts("publish")).toEqual([]);
+      expect(sheet.hidden).toBe(false);
+      expect(confirm.disabled).toBe(true);
+    });
+
+    test("completing it swaps the line for the time's own check", async () => {
+      vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
+      const { sheet, input } = await openHalfTyped();
+      await leave(input);
+      halfType(input, false);
+      type(input, "2030-06-01T09:00");
+      expect(sheet.textContent).not.toContain(INCOMPLETE);
+      expect(sheet.querySelector(".cms-error")?.textContent).toContain("in the past");
+      type(input, "2030-06-01T10:00");
+      expect(sheet.querySelector(".cms-error")).toBeNull();
+      expect(input.hasAttribute("aria-invalid")).toBe(false);
+      expect(buttonNamed("Schedule", sheet).disabled).toBe(false);
+    });
+  });
+
   test("on: a time the clock passes while the sheet is open is refused at Confirm", async () => {
     vi.useFakeTimers({ now: new Date(2030, 5, 1, 9, 30), toFake: ["Date"] });
     serve({ "pages/home": { payload: { title: "Hello" } } });
@@ -3148,6 +3284,140 @@ describe("content replaced underneath a field", () => {
     const { api } = await mount();
     await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
     expect(field("pages/home:title").textContent).toBe("");
+  });
+});
+
+describe("a rich text field repainted from new content", () => {
+  const lede = () => field("pages/home:lede");
+  const STORED = "<p>New <strong>bread</strong></p><ul><li><p>Rye</p></li></ul>";
+
+  test("Discard renders the published HTML as elements, never through innerHTML", async () => {
+    serve({ "pages/home": { payload: { lede: "<p>Draft</p>" }, publishedPayload: { lede: STORED } } });
+    const { api } = await mount();
+    lede().replaceChildren(Object.assign(document.createElement("p"), { textContent: "Draft" }));
+    const innerHTML = vi.spyOn(Element.prototype, "innerHTML", "set");
+    await api.discard("pages/home");
+    await settle();
+    expect(innerHTML).not.toHaveBeenCalled();
+    innerHTML.mockRestore();
+    expect(lede().innerHTML).toBe(STORED);
+    expect(lede().querySelector("strong")?.textContent).toBe("bread");
+  });
+
+  test("sanitises what it renders: no script, handler or unsafe link reaches the page", async () => {
+    serve({
+      "pages/home": {
+        payload: {},
+        publishedPayload: {
+          lede: '<p onclick="x()">Hi<script>alert(1)</script> <a href="javascript:alert(1)">bad</a> <a href="/menu">ok</a></p>',
+        },
+      },
+    });
+    const { api } = await mount();
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().querySelector("script, [onclick]")).toBeNull();
+    expect([...lede().querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(["/menu"]);
+  });
+
+  test("keeps only the headings the field allows", async () => {
+    lede().dataset.editHeadings = "2";
+    serve({ "pages/home": { payload: {}, publishedPayload: { lede: "<h2>Two</h2><h3>Three</h3>" } } });
+    const { api } = await mount();
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().innerHTML).toBe("<h2>Two</h2><p>Three</p>");
+  });
+
+  test("Discard empties a rich text field whose path is gone, even with child elements", async () => {
+    serve({ "pages/home": { payload: { lede: "<p>Draft</p>" }, publishedPayload: {} } });
+    const { api } = await mount();
+    lede().replaceChildren(Object.assign(document.createElement("p"), { textContent: "Draft" }));
+    const changes: unknown[] = [];
+    lede().addEventListener("cms:change", (event) => changes.push((event as CustomEvent).detail));
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().childNodes).toHaveLength(0);
+    expect(changes).toEqual([{ key: "pages/home", path: "lede", value: undefined }]);
+  });
+
+  test("Restore repaints it from the restored draft", async () => {
+    handlers["GET /api/content/revisions"] = () => ({ json: { revisions: [revision(7, "publish", {})] } });
+    handlers["POST /api/content/restore-revision"] = (body) => ({
+      json: { document: wireDocument(String(body?.key), 4, { lede: STORED }) },
+    });
+    await mount();
+    const sheet = await openRevisions();
+    buttonNamed("Restore", sheet).click();
+    buttonNamed("Confirm", sheet).click();
+    await settle();
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test("a conflict catch-up repaints it from the server's copy", async () => {
+    handlers["POST /api/content/restore-revision"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { lede: STORED }) } },
+    });
+    const { api } = await mount();
+    await expect(api.restoreRevision("pages/home", 7)).rejects.toThrow("Stale");
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test("Take theirs repaints it from the other editor's content", async () => {
+    handlers["POST /api/content/field"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { lede: STORED }) } },
+    });
+    const committing: Widget = {
+      mount(ctx) {
+        void ctx.commit("<p>Mine</p>");
+        return { destroy() {} };
+      },
+    };
+    await mount({ widgets: { richtext: committing } });
+    lede().click();
+    await settle();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test("Take theirs closes a widget still open on the field before repainting it", async () => {
+    handlers["POST /api/content/field"] = () => ({
+      status: 409,
+      json: { error: { code: "conflict", message: "Stale", current: wireDocument("pages/home", 9, { lede: STORED }) } },
+    });
+    let commit: (() => void) | undefined;
+    const destroyed = vi.fn();
+    const stayingOpen: Widget = {
+      mount(ctx) {
+        commit = () => void ctx.commit("<p>Mine</p>");
+        // A widget puts its own last content back when it closes, as the rich text widget does.
+        return { destroy: () => (destroyed(), ctx.element.replaceChildren("Stale")) };
+      },
+    };
+    await mount({ widgets: { richtext: stayingOpen } });
+    lede().click();
+    commit?.();
+    await settle();
+    destroyed.mockClear();
+    lede().click();
+    await settle();
+    expect(destroyed).not.toHaveBeenCalled();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    expect(destroyed).toHaveBeenCalledOnce();
+    expect(lede().innerHTML).toBe(STORED);
+  });
+
+  test.each([
+    ["null", null],
+    ["an object", { nested: true }],
+  ])("a value that is %s empties the field, as it does plain text", async (_name, value) => {
+    serve({ "pages/home": { payload: {}, publishedPayload: { lede: value } } });
+    const { api } = await mount();
+    await api.discard("pages/home");
+    await settle();
+    expect(lede().childNodes).toHaveLength(0);
   });
 });
 
