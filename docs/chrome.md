@@ -64,6 +64,7 @@ mountEditor({
   actorLabel: "Editing as Maya (Editor)",
   strings: { publish: "Make live" }, // any visible text, see src/chrome/strings.ts
   scheduling: false, // show "Publish at" in the publish sheet; see "Scheduling" below before turning it on
+  lists: { "artist/list:artists": { newItem: () => ({ name: "New artist" }) } }, // see "Lists" below
   onExit: () => location.reload(), // called when the editor presses Done
 });
 ```
@@ -223,6 +224,95 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 - When the page's documents fail to load, a toast offers Retry. A later load that succeeds hides it, unless another
   toast has replaced it.
 
+### Lists
+
+A keyed array (a roster, a list of events) can be edited as a list: add, remove, move up and down, and duplicate. Mark
+the list element with `edit.list(path, attrs)` and each item with `edit.item(path, item, index)`. The item's fields
+are ordinary fields, addressed with `itemPath` so a save lands on the right item after a concurrent reorder.
+
+```astro
+---
+import { editable, itemPath } from "@yl/editor";
+const edit = editable(editor ? "artist/list" : undefined);
+---
+<ul {...edit.list("artists", { label: "Artists", noun: "artist", plural: "artists", min: 1, max: 6, itemLabel: "name" })}>
+  {artists.map((artist, index) => (
+    <li {...edit.item("artists", artist, index)}>
+      <h3 {...edit(`${itemPath("artists", artist, index)}.name`, "text", { label: "Name" })}>{artist.name}</h3>
+    </li>
+  ))}
+</ul>
+```
+
+| Attribute                   | Source              | Meaning                                                                                       |
+| --------------------------- | ------------------- | --------------------------------------------------------------------------------------------- |
+| `data-edit-list`            | `"<docKey>:<path>"` | The array, same grammar as `data-edit-field`                                                  |
+| `data-edit-list-label`      | `attrs.label`       | Shown in the tag on the outline; default the path's last name                                 |
+| `data-edit-list-noun`       | `attrs.noun`        | "Add {noun}"; default `item`                                                                  |
+| `data-edit-list-plural`     | `attrs.plural`      | Messages like "No {plural} yet"; default the noun plus "s"                                    |
+| `data-edit-list-min`        | `attrs.min`         | Remove is inert, with its reason, at this many items; default 0                               |
+| `data-edit-list-max`        | `attrs.max`         | Add and Duplicate are inert, with their reason, at this many; default none                    |
+| `data-edit-list-order`      | `attrs.order`       | `manual` (default) shows Move up and Move down; `data` (you sort, e.g. by date) shows neither |
+| `data-edit-list-duplicate`  | `attrs.duplicate`   | Present: each item offers Duplicate (default off)                                             |
+| `data-edit-list-item-label` | `attrs.itemLabel`   | The field name whose text names an item in labels and messages; else "{noun} {position}"      |
+| `data-edit-item`            | `edit.item(...)`    | One item's full address, `artists[_key=a1]` or `artists.3`                                    |
+
+`edit.list` throws a `RangeError` for a `min` or `max` that isn't a whole number of 0 or more, or a `min` above `max`.
+
+Add needs the item's starting value, which the page can't carry, so it comes from `mountEditor`:
+
+```ts
+mountEditor({
+  lists: {
+    "artist/list:artists": {
+      newItem: () => ({ name: "New artist", line: "", visible: true }),
+      focusField: "name", // default: the item's first field
+    },
+  },
+});
+```
+
+A list with no `newItem` offers no Add but can still move, duplicate and remove. When `newItem` returns no `_key`, the
+chrome adds one (10 characters of `[a-z0-9]`); Duplicate gives the copy a new one too. These are the only items the
+chrome creates (see docs/paths.md).
+
+**How it behaves.**
+
+- In edit mode the list gets one dashed outline, with a tag on its top edge ("Artists · 3 of 6"). A thin dashed line
+  separates each item from the next, and each field from the next inside an item; fields in a list lose their own
+  outline. Nothing nests or crosses. A field's hover, editing and focus states are solid and drawn inside it. The lines
+  are placed from the boxes on the page, through custom properties, and redrawn when the list or a field resizes.
+- Each item has a toolbar on its top line: Move up, Move down, Duplicate (when on) and Remove, 44px each. It shows on
+  hover and on focus inside the item, which also tints the item. It is one Tab stop (`role="toolbar"`), with Left,
+  Right, Home and End between its buttons, and it comes before the item's fields in Tab order. On a device without
+  hover (`@media (hover: none)`) each item shows a chip ("⋯ 2 of 3") on its line instead; tapping it opens the toolbar,
+  and Escape closes it.
+- The Add button is the list's last row, in the empty state too ("No artists yet."). Add puts the new item last and
+  opens its first field with the text selected. Duplicate puts the copy straight after the original and opens it the
+  same way.
+- An inert button (the first item's Move up, Add at `max`, Remove at `min`) stays focusable with
+  `aria-disabled="true"` and announces why when pressed. Add's reason is also on screen beside it.
+- Remove takes effect at once. A toast offers Undo for 15 seconds, and Ctrl+Z or ⌘Z with focus in the list (not in a
+  field being edited) undoes the last removal. Undo inserts the same item, `_key` and all, where it was. Discard and
+  Restore forget the removals of their document.
+- Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
+  that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
+  restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
+  `itemDuplicated`, `itemRemoved`, `itemRestored`).
+- Every operation is an `array` write (`insert`, `move` or `remove`) on the document's write chain, after the saves
+  queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
+  item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
+- **The chrome can write the data but not your markup**, so after each write it requests the page again
+  (`GET location.href`, same-origin credentials), finds the element with the same `data-edit-list` and swaps it in.
+  Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
+  list, a toast (`listReload`) offers Reload.
+- A list whose document the editor can't edit gets no list chrome; its fields show as locked.
+- The chrome adds `.cms-list` to the list and `.cms-item` to each item, and its own `.cms-root` children:
+  `.cms-list__frame` (the outline and `.cms-list__tag`), `.cms-list__add`, and in each item `.cms-item__tools`,
+  `.cms-item__band` and `.cms-item__sep`. Leave room between items for the toolbar on the line between them, for
+  example `.my-list.cms-list { gap: 3.75rem; }`: the chrome never changes your layout, so with a smaller gap the
+  toolbar overlaps the items next to it. Done and `destroy()` take it all out again.
+
 ### Scheduling
 
 `scheduling: true` adds an optional "Publish at" input to the Publish sheet (`datetime-local`, in the browser's time
@@ -248,7 +338,10 @@ actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `resto
 `loadFieldFallback`, `actionConflict`, `publishConflict`, `reviewChanges`, `bulkDone`, `bulkPartial`, `bulkStopped`,
 `scheduleInPast`, `scheduleIncomplete`, `changesKeptMoving`, `changesUnreadable`, `discardDeletes`, `bulkLeftOut`.
 The number and date widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept`
-(leaving one).
+(leaving one). Lists added `listTag`, `listTagNoMax`, `listAdd`, `listEmpty`, `listFull`, `listAtMin`, `itemFallback`,
+`itemChip`, `itemChipOpen`, `itemToolbar`, `itemActions`, `itemMoveUp`, `itemMoveDown`, `itemDuplicate`, `itemRemove`,
+`itemIsFirst`, `itemIsLast`, `itemMoved`, `itemAdded`, `itemDuplicated`, `itemRemoved`, `itemRestored`, `removedToast`,
+`undo`, `listReload` and `reload`.
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.

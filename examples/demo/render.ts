@@ -1,6 +1,6 @@
 // Server-side rendering of the demo page. Visitors get the published view and no editor markup; editors get the
 // draft view, `editable()` attributes on every field and the island.
-import { editable, type StoredDocument } from "@yl/editor";
+import { editable, itemPath, type StoredDocument } from "@yl/editor";
 import { ROLE_LABELS, STATUS_OPTIONS, type Session } from "./content.ts";
 
 export const escapeHtml = (value: string): string =>
@@ -56,6 +56,22 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
   const about = payloadOf(documents.about);
   const settings = payloadOf(documents.settings);
   const tags = Array.isArray(home["tags"]) ? home["tags"].map(text) : [];
+  const team = Array.isArray(about["team"]) ? (about["team"] as unknown[]) : [];
+  const teamItems = team
+    .map((member, index) => {
+      const record = typeof member === "object" && member !== null ? (member as Record<string, unknown>) : {};
+      const path = (name: string) => `${itemPath("team", member, index)}.${name}`;
+      return `<li class="team__member"${attributes(aboutField.item("team", member, index))}><span class="team__name"${attributes(aboutField(path("name"), "text", { label: "Name" }))}>${escapeHtml(text(record["name"]))}</span><span class="team__role"${attributes(aboutField(path("role"), "text", { label: "Role" }))}>${escapeHtml(text(record["role"]))}</span></li>`;
+    })
+    .join("");
+  const teamList = aboutField.list("team", {
+    label: "Team",
+    noun: "member",
+    plural: "members",
+    max: 4,
+    duplicate: true,
+    itemLabel: "name",
+  });
 
   const head = [
     `<meta charset="utf-8">`,
@@ -104,6 +120,7 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
       <section class="about" aria-labelledby="about-title">
         <h2 id="about-title"${attributes(aboutField("title", "text", { label: "About heading" }))}>${escapeHtml(text(about["title"]))}</h2>
         <p id="about-body"${attributes(aboutField("body", "text", { label: "About text" }))}>${escapeHtml(text(about["body"]))}</p>
+        <ul class="team" id="about-team"${attributes(teamList)}>${teamItems}</ul>
       </section>
     </main>
     <footer class="footer">

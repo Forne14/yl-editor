@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Chrome: keyed lists can be edited in place (#28). Mark a list with `editable(docKey).list(path, attrs)` and its items
+  with `.item(path, item, index)` (`data-edit-list`, `data-edit-list-*`, `data-edit-item`); give `mountEditor` a
+  `lists` option with each list's `newItem`. The list gets one dashed outline with a tag, single dashed lines between
+  items and between an item's fields, and per item a toolbar on its line (Move up, Move down, Duplicate when on,
+  Remove), or a chip on touch screens. Add, Remove with a 15-second Undo (also Ctrl/⌘+Z), `min` and `max` with a
+  visible reason, announcements, and focus kept on the item. Each change is an `array` write; the chrome then reloads
+  the list's markup from the page, so the page must render the draft for editors. New exports: `Editable`,
+  `EditableListAttrs` (from `@yl/editor` and `@yl/editor/chrome`) and `ListOptions` (chrome). New `chrome.css`
+  tokens `--cms-list-pad`, `--cms-list-line`, `--cms-list-tint`, and new `defaultStrings` keys listed in
+  `docs/chrome.md` → Strings. See `docs/chrome.md` → Lists.
 - `@yl/editor/richtext`: a rich text widget built on TipTap. Register `richTextWidget` (or `createRichTextWidget({
   strings })`) for `richtext`. It edits the host element in place with a toolbar above it: bold, italic, link, bulleted
   and numbered lists, H2 and H3 when the field allows them, then Cancel and Done. It has keyboard shortcuts, the ARIA
