@@ -56,6 +56,8 @@ export interface ListRecord {
   undoButton?: HTMLButtonElement;
 }
 
+/** What follows the list's path in an item's path: a key, or an index (which leaves the list without list chrome). */
+const ITEM_REST = new RegExp(`^(\\[_key=${KEY_ID}\\]|\\.\\d+)$`);
 const KEYED_ITEM = new RegExp(`\\[_key=(${KEY_ID})\\]$`);
 
 function count(value: string | undefined, fallback: number): number {
@@ -91,7 +93,7 @@ function scanItems(list: HTMLElement, info: ListInfo): ItemRecord[] {
     const address = splitAddress(target.dataset.editItem ?? "");
     if (!address || address.key !== info.key) continue;
     const rest = address.path.slice(info.path.length);
-    if (!address.path.startsWith(info.path) || !/^(\[_key=[A-Za-z0-9_-]+\]|\.\d+)$/.test(rest)) continue;
+    if (!address.path.startsWith(info.path) || !ITEM_REST.test(rest)) continue;
     items.push({ element: target, path: address.path, itemKey: KEYED_ITEM.exec(address.path)?.[1] });
   }
   return items;
@@ -144,16 +146,13 @@ export function newItemKey(): string {
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
 }
 
-/** The item's index in the stored array: by `_key` when keyed, else the index its path names. -1 when gone. */
+/** The item's index in the stored array, by its `_key` (only keyed lists get list chrome). -1 when gone. */
 export function storedIndex(items: readonly unknown[], item: ItemRecord): number {
-  if (item.itemKey !== undefined) {
-    return items.findIndex(
-      (entry) =>
-        typeof entry === "object" && entry !== null && (entry as Record<string, unknown>)["_key"] === item.itemKey,
-    );
-  }
-  const index = Number(/\.(\d+)$/.exec(item.path)?.[1] ?? Number.NaN);
-  return Number.isInteger(index) && index < items.length ? index : -1;
+  if (item.itemKey === undefined) return -1;
+  return items.findIndex(
+    (entry) =>
+      typeof entry === "object" && entry !== null && (entry as Record<string, unknown>)["_key"] === item.itemKey,
+  );
 }
 
 const SVG = "http://www.w3.org/2000/svg";

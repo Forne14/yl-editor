@@ -719,3 +719,86 @@ describe("the ruling of 2026-11-15", () => {
     expect(names()).toEqual(["Mara", "Tobias", "New artist", "New artist"]);
   });
 });
+
+describe("rearranging the page's own markup", () => {
+  const attrs = (record: Record<string, string>) =>
+    Object.entries(record)
+      .map(([name, value]) => ` ${name}="${value}"`)
+      .join("");
+  /** The list element wraps a heading and a <ul>, with a separator between the items. */
+  function wrapped(): string {
+    const edit = editable(KEY);
+    const item = (artist: Artist, index: number) =>
+      `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></li>`;
+    const lis = artists.map(item);
+    return `<main id="page"><section${attrs(edit.list("artists", listAttrs))}><h2>Team</h2><ul id="team-ul">${lis.join('<li class="sep">·</li>')}</ul></section></main>`;
+  }
+
+  test("a separator between items stays between them after a move", async () => {
+    document.body.innerHTML = wrapped();
+    await mount();
+    toolButton(0, "down").click();
+    await settle();
+    const children = [...(document.querySelector("#team-ul")?.children ?? [])].map(
+      (node) => node.querySelector("h3")?.textContent ?? node.textContent,
+    );
+    expect(children).toEqual(["Tobias", "·", "Mara"]);
+  });
+
+  test("Undo of the only item puts it back inside its own parent", async () => {
+    artists = [{ _key: "a", name: "Mara" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = wrapped();
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.querySelectorAll("#team-ul [data-edit-item]")).toHaveLength(0);
+    document.querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(document.querySelectorAll("#team-ul [data-edit-item]")).toHaveLength(1);
+  });
+
+  test("Undo leaves another document's field inside the item as it was", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    const foreign = document.createElement("p");
+    foreign.dataset.editField = `${OTHER}:note`;
+    foreign.textContent = "Theirs";
+    items()[0]?.append(foreign);
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(foreign.isConnected).toBe(true);
+    expect(foreign.textContent).toBe("Theirs");
+  });
+
+  test("an Undo that fails to write can be tried again", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      return json({ error: { code: "internal", message: "down" } }, 500);
+    };
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Tobias"]);
+    const undo = list().querySelector<HTMLButtonElement>(".cms-list__undo");
+    expect(undo?.hidden).toBe(false);
+    undo?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+
+  test("a stored item the page has no element for makes the chrome ask the page", async () => {
+    await mount();
+    artists.push({ _key: "c", name: "Ines" });
+    toolButton(0, "down").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
+  });
+});

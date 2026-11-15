@@ -180,8 +180,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     value: unknown;
     index: number;
     name: string;
-    /** The item's own element, which Undo puts back: its markup is the host's, and nothing else has it. */
+    /** The item's own element, which Undo puts back, and where it was: its markup is the host's. */
     element: HTMLElement;
+    parent: Node;
+    next: Node | null;
   }[] = [];
   let removalToast: number | undefined;
   let removalTimer: ReturnType<typeof setTimeout> | undefined;
@@ -494,46 +496,61 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return typeof value === "string" ? value : undefined;
   };
 
+  /** An element Undo puts back, and where it was: its markup is the host's, and nothing else has it. */
+  interface Restore {
+    key: string;
+    element: HTMLElement;
+    parent: Node;
+    next: Node | null;
+  }
+
   /**
    * Move, Remove and Undo need no markup from the page: every item is keyed, so the chrome puts the items' own elements
-   * in the stored order (`restore` supplies an element Undo puts back) and drops the ones no longer stored. Then it
-   * dresses the list again. Returns false when the items don't share one parent, which the chrome can't reorder safely;
-   * the caller then asks the page.
+   * in the stored order and takes out the ones no longer stored. Each item keeps a place the items hold now (or, for an
+   * element Undo puts back, the place it was taken from), so markup between items stays where it is. Returns false when
+   * the page can't show the stored list from what it has (the list is gone, or an item has no element), and the caller
+   * then asks the page.
    */
-  function arrangeList(list: ListRecord, stored: readonly unknown[], restore?: { key: string; element: HTMLElement }) {
-    const elements = new Map(list.items.map((item) => [item.itemKey, item.element]));
+  function arrangeList(list: ListRecord, stored: readonly unknown[], restore?: Restore): boolean {
+    if (!list.element.isConnected) return false;
+    const elements = new Map<string, HTMLElement>();
+    for (const item of list.items) if (item.itemKey !== undefined) elements.set(item.itemKey, item.element);
     if (restore) elements.set(restore.key, restore.element);
-    const parents = new Set(list.items.map((item) => item.element.parentNode));
-    const parent = list.items[0]?.element.parentNode ?? (restore ? list.element : null);
-    if (parents.size > 1 || !parent) return false;
+    const order = stored.map(keyOf);
+    if (order.some((itemKey) => itemKey === undefined || !elements.has(itemKey))) return false;
     const nested = lists.filter((other) => other !== list && list.element.contains(other.element));
     for (const other of nested) other.detach?.();
     list.detach?.();
-    const anchor = list.items.at(-1)?.element.nextSibling ?? null;
-    const order = stored.map(keyOf);
-    for (const itemKey of order) {
-      const element = itemKey === undefined ? undefined : elements.get(itemKey);
-      if (element) parent.insertBefore(element, anchor);
+    // One place per item that stays, marked where it is now, plus the place a restored element came from.
+    const places: Comment[] = [];
+    for (const item of list.items) {
+      if (item.itemKey === undefined || !order.includes(item.itemKey)) continue;
+      const place = document.createComment("");
+      item.element.before(place);
+      places.push(place);
     }
-    for (const [itemKey, element] of elements) if (itemKey === undefined || !order.includes(itemKey)) element.remove();
-    // Records for fields that left the page go; an element Undo put back brings its fields' records back.
-    if (active && !active.record.element.isConnected) closeActive(false);
-    for (const record of fields) if (!record.element.isConnected) record.detach?.();
-    fields = fields.filter((record) => record.element.isConnected);
-    if (restore?.element.isConnected) {
-      const added = scanFields(restore.element);
-      fields.push(...added);
-      for (const record of added) {
-        dressRecord(record);
-        render(record, valueAtPath({ items: stored }, `items${record.info.path.slice(list.info.path.length)}`), true);
+    if (restore) {
+      const place = document.createComment("");
+      const back = restore.parent.isConnected && list.element.contains(restore.parent);
+      if (back) restore.parent.insertBefore(place, restore.next?.parentNode === restore.parent ? restore.next : null);
+      else list.element.append(place);
+      places.push(place);
+    }
+    places.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    for (const element of elements.values()) element.remove();
+    order.forEach((itemKey, index) => places[index]?.before(elements.get(itemKey as string) as HTMLElement));
+    for (const place of places) place.remove();
+    lists = lists.filter((other) => other !== list && !nested.includes(other));
+    rescanWithin([list.element]);
+    // The element Undo put back may still show a value since dropped: its own fields show what is stored.
+    if (restore) {
+      for (const record of fields) {
+        const own = record.info.key === list.info.key && record.info.path.startsWith(`${list.info.path}[`);
+        if (own && restore.element.contains(record.element)) {
+          render(record, valueAtPath({ items: stored }, `items${record.info.path.slice(list.info.path.length)}`), true);
+        }
       }
     }
-    byElement = new Map(fields.map((record) => [record.element, record]));
-    lists = lists.filter((other) => other !== list && !nested.includes(other) && other.element.isConnected);
-    const rescanned = scanLists(list.element);
-    lists.push(...rescanned);
-    if (editing) for (const other of rescanned) attachListRecord(other);
-    updateBar();
     return true;
   }
 
@@ -648,7 +665,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     for (const list of lists) if (!list.element.isConnected) list.detach?.();
     fields = fields.filter((record) => record.element.isConnected);
     lists = lists.filter((list) => list.element.isConnected);
-    const added = nodes.flatMap((node) => scanFields(node));
+    // Elements still on the page keep their records (a rearranged list keeps most of its fields).
+    const added = nodes.flatMap((node) => scanFields(node)).filter((record) => !byElement.has(record.element));
     fields.push(...added);
     byElement = new Map(fields.map((record) => [record.element, record]));
     const addedLists = nodes.flatMap((node) => scanLists(node));
@@ -774,18 +792,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   /** Puts the stored order on the page, or asks the page when the chrome can't. */
-  async function settleList(
-    list: ListRecord,
-    stored: readonly unknown[],
-    restore?: { key: string; element: HTMLElement },
-  ) {
-    if (arrangeList(list, stored, restore)) return;
-    lock(list.info.key);
-    try {
-      await swapLists(list.info.key);
-    } finally {
-      unlock(list.info.key);
-    }
+  async function settleList(list: ListRecord, stored: readonly unknown[], restore?: Restore) {
+    if (!arrangeList(list, stored, restore)) await swapLists(list.info.key);
   }
 
   async function actOnItem(
@@ -804,13 +812,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const label = pressed.getAttribute("aria-label") ?? action;
     if (action === "up" || action === "down") {
       const step = action === "up" ? -1 : 1;
-      const stored = await listWrite(list, label, (items) => {
-        const from = storedIndex(items, item);
-        const to = from + step;
-        return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
-      });
-      if (!stored) return;
-      await settleList(list, stored);
+      // Held until the page shows the move: a swap or another press meanwhile would act on the old order.
+      lock(list.info.key);
+      try {
+        const stored = await listWrite(list, label, (items) => {
+          const from = storedIndex(items, item);
+          const to = from + step;
+          return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
+        });
+        if (!stored) return;
+        await settleList(list, stored);
+      } finally {
+        unlock(list.info.key);
+      }
       const fresh = listById(list.id);
       const moved = itemByKey(fresh, item.itemKey);
       if (!fresh || !moved) return;
@@ -844,26 +858,36 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     const position = list.items.indexOf(item);
     let removed: { value: unknown; index: number } | undefined;
-    const stored = await listWrite(list, label, (items) => {
-      const index = storedIndex(items, item);
-      if (index < 0) return undefined;
-      removed = { value: items[index], index };
-      return { kind: "remove", index };
-    });
-    if (!stored || !removed) return;
-    // A value that failed or is queued inside the removed item has nowhere left to go: drop it and say so.
-    const dropped = session.dropSaves(list.info.key, (path) => path.startsWith(`${item.path}.`));
-    removals.push({
-      listId: list.id,
-      key: list.info.key,
-      path: list.info.path,
-      name,
-      element: item.element,
-      ...removed,
-    });
-    await settleList(list, stored);
+    const parent = item.element.parentNode;
+    const nextSibling = item.element.nextSibling;
+    let dropped: string[] | undefined;
+    lock(list.info.key);
+    try {
+      const stored = await listWrite(list, label, (items) => {
+        const index = storedIndex(items, item);
+        if (index < 0) return undefined;
+        removed = { value: items[index], index };
+        return { kind: "remove", index };
+      });
+      if (!stored || !removed || !parent) return;
+      // A value that failed inside the removed item has nowhere left to go: drop it and say so.
+      dropped = session.dropSaves(list.info.key, (path) => path.startsWith(`${item.path}.`));
+      removals.push({
+        listId: list.id,
+        key: list.info.key,
+        path: list.info.path,
+        name,
+        element: item.element,
+        parent,
+        next: nextSibling,
+        ...removed,
+      });
+      await settleList(list, stored);
+    } finally {
+      unlock(list.info.key);
+    }
     const fresh = listById(list.id);
-    showRemovalToast(name, dropped.length > 0);
+    showRemovalToast(name, (dropped?.length ?? 0) > 0);
     toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
     const next = fresh?.items[position] ?? fresh?.items[position - 1];
     if (!focusIsFree(list.id)) return;
@@ -909,17 +933,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (removalToast !== undefined) toast.hideIf(removalToast);
     if (removalTimer !== undefined) clearTimeout(removalTimer);
     removalTimer = undefined;
-    const stored = await listWrite(list, strings.undo, (items) => ({
-      kind: "insert",
-      index: Math.min(last.index, items.length),
-      value: last.value,
-    }));
     const itemKey = keyOf(last.value);
-    if (!stored || itemKey === undefined) {
-      syncUndoButtons();
-      return;
+    if (itemKey === undefined) return;
+    lock(list.info.key);
+    try {
+      const stored = await listWrite(list, strings.undo, (items) => ({
+        kind: "insert",
+        index: Math.min(last.index, items.length),
+        value: last.value,
+      }));
+      if (!stored) {
+        // Nothing written (offline, a refusal): the removal can still be undone.
+        removals.splice(Math.min(at, removals.length), 0, last);
+        showRemovalToast(last.name);
+        return;
+      }
+      await settleList(list, stored, { key: itemKey, element: last.element, parent: last.parent, next: last.next });
+    } finally {
+      unlock(list.info.key);
     }
-    await settleList(list, stored, { key: itemKey, element: last.element });
     const fresh = listById(last.listId);
     const restored = itemByKey(fresh, itemKey);
     if (fresh && restored) {
