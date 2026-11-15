@@ -272,9 +272,13 @@ mountEditor({
 });
 ```
 
-A list with no `newItem` offers no Add but can still move, duplicate and remove. In a keyed list (or an empty one), when
-`newItem` returns no `_key` the chrome adds one (10 characters of `[a-z0-9]`), and Duplicate gives the copy a new one.
-A list addressed by index stays unkeyed: neither adds a `_key` there. These are the only items the
+**Items must be keyed.** The list chrome appears only when every item is addressed by `_key` (`edit.item` does that
+when the item has one). An index path names whatever sits at that index, so after an add, remove or move a failed,
+queued or open edit would land in another item. A list with any item addressed by index keeps in-place editing of its
+fields and gets no list chrome. Give each array item a `_key` to edit the list.
+
+A list with no `newItem` offers no Add but can still move, duplicate and remove. When `newItem` returns no `_key`, the
+chrome adds one (10 characters of `[a-z0-9]`), and Duplicate gives the copy a new one. These are the only items the
 chrome creates (see docs/paths.md).
 
 **How it behaves.**
@@ -294,9 +298,11 @@ chrome creates (see docs/paths.md).
 - An inert button (the first item's Move up, Add at `max`, Remove at `min`) stays focusable with
   `aria-disabled="true"` and announces why when pressed. Add's reason is also on screen beside it.
 - Remove takes effect at once. For 15 seconds a toast offers Undo, and so does a button in the list's last row, right
-  after the items, so Tab from the list reaches it (`.cms-list__undo`). Ctrl+Z or ⌘Z with focus in the list (not in a
-  field being edited) undoes that list's last removal at any time; the list's own Undo also undoes that list's. Undo inserts the same item, `_key` and all, where it was. Discard and
-  Restore forget the removals of their document.
+  after the items, so Tab from the list reaches it (`.cms-list__undo`). In the same 15 seconds, Ctrl+Z or ⌘Z with focus
+  in the list (not in a field being edited) undoes that list's last removal. Undo inserts the same item, `_key` and
+  all, where it was, and puts its own element back. Discard and Restore forget the removals of their document. A value
+  that failed to save, or was still queued, inside the removed item has nowhere left to go: it is dropped, and the toast
+  says so (`removedDroppedToast`).
 - Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
   that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
   restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
@@ -304,19 +310,18 @@ chrome creates (see docs/paths.md).
 - Every operation is an `array` write (`insert`, `move` or `remove`) on the document's write chain, after the saves
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
-- **The chrome can write the data but not your markup**, so after each write it requests the page again
-  (`GET location.href`, same-origin credentials, `cache: "no-store"`), finds every element with the same
-  `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a conflict
-  replaces the document's content. A field value still saving or failed, and its state, are put back on the new
-  markup. Only the lists are swapped (a list nested in another comes with it); every other field keeps its state and
-  any open editor, and swaps run one at a time, each fetching after the one before, so an older page never lands over a newer one. In a list addressed by index, a write drops a
-  failed value at an index it shifts, so Retry can't write it into the wrong item; values at other indices stay, and
-  removing a keyed item drops its own. While a document's lists are about to change (its own list write, or a swap after Discard,
-  Restore or a conflict), nothing inside any of them, nested lists included, acts or opens. A Retry pressed meanwhile at
-  a shifted index is dropped too, and so is every index value after a conflict; a Save failed toast left over for a
-  dropped value goes, and its Retry does nothing. Focus moves after an operation only if the editor hasn't opened something else meanwhile.
-  Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
-  list, a toast (`listReload`) offers Reload.
+- **Move, Remove and Undo use the page's own markup**: after the write the chrome puts the items' elements in the stored
+  order (and takes a removed one out), with no request to the page.
+- **Add and Duplicate need markup the page hasn't rendered**, so after the write the chrome requests the page again
+  (`GET location.href`, same-origin credentials, `cache: "no-store"`, given up after 15 seconds), finds every element
+  with the same `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a
+  conflict replaces the document's content. Only the lists are swapped (a list nested in another comes with it); every
+  other field keeps its state and any open editor, and swaps run one at a time. A field value still saving or failed,
+  and its state, are put back on the new markup. Your page must therefore render the draft for an editor, as it already
+  does on a reload. If the response has no such list, or doesn't come, a toast (`listReload`) offers Reload.
+- While a swap is on its way, nothing inside the document's lists (nested lists included) acts or opens; a press
+  announces `listBusy` ("Updating the list…"). Focus moves after an operation only if the editor hasn't opened
+  something else meanwhile.
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.
 - The chrome adds `.cms-list` to the list and `.cms-item` to each item, and its own `.cms-root` children:
   `.cms-list__frame` (the outline and `.cms-list__tag`), `.cms-list__add`, and in each item `.cms-item__tools`,
@@ -352,7 +357,7 @@ The number and date widgets added `invalidValue` (Enter on a half-typed date or 
 (leaving one). Lists added `listTag`, `listTagNoMax`, `listAdd`, `listEmpty`, `listFull`, `listAtMin`, `itemFallback`,
 `itemChip`, `itemChipOpen`, `itemToolbar`, `itemActions`, `itemMoveUp`, `itemMoveDown`, `itemDuplicate`, `itemRemove`,
 `itemIsFirst`, `itemIsLast`, `itemMoved`, `itemAdded`, `itemDuplicated`, `itemRemoved`, `itemRestored`, `removedToast`,
-`undo`, `listReload` and `reload`.
+`undo`, `listReload`, `reload`, `removedDroppedToast` and `listBusy`.
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.

@@ -57,12 +57,6 @@ export interface ListRecord {
 }
 
 const KEYED_ITEM = new RegExp(`\\[_key=(${KEY_ID})\\]$`);
-const LEADING_KEY = new RegExp(`^\\[_key=(${KEY_ID})\\]`);
-
-/** The `_key` an item path's first part after the list names (`[_key=a1].name` → `a1`). */
-export function leadingItemKey(rest: string): string | undefined {
-  return LEADING_KEY.exec(rest)?.[1];
-}
 
 function count(value: string | undefined, fallback: number): number {
   const parsed = value === undefined ? Number.NaN : Number(value);

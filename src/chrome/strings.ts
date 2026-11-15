@@ -137,9 +137,12 @@ export const defaultStrings = {
   itemMoved: "{item} moved to position {position} of {count}.",
   itemAdded: "{item} added at position {position} of {count}.",
   itemDuplicated: "{item} duplicated. The copy is at position {position} of {count}.",
-  itemRemoved: "{item} removed. {count} left. Undo: press Ctrl+Z, or find the Undo button after the list.",
+  itemRemoved:
+    "{item} removed. {count} left. Undo: press Ctrl+Z (⌘Z on a Mac), or find the Undo button after the list.",
   itemRestored: "{item} restored at position {position} of {count}.",
   removedToast: "Removed {item}.",
+  removedDroppedToast: "Removed {item}. Its unsaved change was dropped.",
+  listBusy: "Updating the list…",
   undo: "Undo",
   listReload: "The list changed, but this page couldn’t show it. Reload to see it.",
   reload: "Reload",
