@@ -863,3 +863,54 @@ describe("eighth review round", () => {
     await settle();
   });
 });
+
+describe("ninth review round", () => {
+  const attrs = (record: Record<string, string>) =>
+    Object.entries(record)
+      .map(([name, value]) => ` ${name}="${value}"`)
+      .join("");
+  /** Each item wrapped in an <li class="card"> of the host's. */
+  function wrappedItems(): string {
+    const edit = editable(KEY);
+    const cards = artists
+      .map(
+        (artist, index) =>
+          `<li class="card"><div${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></div></li>`,
+      )
+      .join("");
+    return `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${cards}</ul></main>`;
+  }
+
+  test("items wrapped in markup of the host's are redrawn by the page, leaving no empty wrapper", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = wrappedItems();
+    pageAnswer = () => new Response(`<!doctype html>${wrappedItems()}`);
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.querySelectorAll("li.card")).toHaveLength(1);
+    expect(names()).toEqual(["Tobias"]);
+  });
+
+  test("Undo moves past a removal whose list has left the page", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    guests = [{ _key: "g1", name: "Gus" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    const guestList = () => document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`);
+    guestList()?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    guestList()?.remove();
+    const undo = () =>
+      [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")].find(
+        (node) => node.textContent === "Undo",
+      );
+    undo()?.click();
+    await settle();
+    undo()?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+});

@@ -311,7 +311,9 @@ chrome creates (see docs/paths.md).
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
 - **Move, Remove and Undo use the page's own markup**: after the write the chrome puts the items' elements in the stored
-  order (and takes a removed one out), with no request to the page.
+  order (and takes a removed one out), with no request to the page. When the items don't share one parent (each is
+  wrapped in markup of yours, an `<li>` around a card), or an item has no element, the chrome asks the page instead,
+  as for Add.
 - **Add and Duplicate need markup the page hasn't rendered**, so after the write the chrome requests the page again
   (`GET location.href`, same-origin credentials, `cache: "no-store"`, given up after 15 seconds), finds every element
   with the same `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a

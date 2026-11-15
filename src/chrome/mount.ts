@@ -158,6 +158,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let fields: FieldRecord[] = [];
   let byElement = new Map<HTMLElement, FieldRecord>();
   let lists: ListRecord[] = [];
+  /** A field's emptied state, kept for an element that left the page, in case Undo puts it back. */
+  const clearedOf = new WeakMap<HTMLElement, FieldRecord["cleared"]>();
   /** The reason fields are locked after the last load failed, until one succeeds. */
   let loadError: string | undefined;
   /**
@@ -357,7 +359,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       }
       if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
       // A swap replaced the element meanwhile.
-      if (!record.element.isConnected) return;
+      if (!record.element.isConnected || refuseBusy(record.element)) return;
       initial = stored === undefined ? editValueAttribute(record) : stored;
       if (failure) {
         const message = errorMessage(failure.error, strings);
@@ -467,6 +469,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     list: ListRecord,
     action: string,
     build: (items: unknown[]) => WireArrayOp | undefined,
+    /** Runs on the document's write chain right after the write, before any save queued behind it starts. */
+    onWritten?: () => void,
   ): Promise<unknown[] | null | undefined> {
     const { key, path } = list.info;
     closeActive(false, true);
@@ -484,6 +488,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           updateBar();
           const stored = valueAtPath(document.payload, path);
           after = Array.isArray(stored) ? stored : null;
+          onWritten?.();
         }),
       );
     } catch {
@@ -515,6 +520,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (restore) elements.set(restore.key, restore.element);
     const order = stored.map(itemKeyOf);
     if (order.some((itemKey) => itemKey === undefined || !elements.has(itemKey))) return false;
+    // Items that don't share one parent are wrapped in markup of the host's (an <li> around each card): moving only the
+    // item would leave its wrapper behind. Only the page can redraw those.
+    const parents = new Set<Node | null>([...elements.values()].map((element) => element.parentNode).filter(Boolean));
+    if (restore) parents.add(restore.parent);
+    if (parents.size > 1) return false;
     const nested = lists.filter((other) => other !== list && list.element.contains(other.element));
     for (const other of nested) other.detach?.();
     list.detach?.();
@@ -537,7 +547,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     for (const element of elements.values()) element.remove();
     order.forEach((itemKey, index) => places[index]?.before(elements.get(itemKey as string) as HTMLElement));
     for (const place of places) place.remove();
-    lists = lists.filter((other) => other !== list && !nested.includes(other));
+    // By element: a rescan may already have made a newer record for the same list.
+    lists = lists.filter(
+      (other) => other.element !== list.element && !nested.some((inner) => inner.element === other.element),
+    );
     rescanWithin([list.element]);
     // The element Undo put back may still show a value since dropped: its own fields show what is stored.
     if (restore) {
@@ -565,6 +578,22 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return withLock(list.info.key, async () => {
       if ((await listWrite(list, action, build)) === undefined) return false;
       await swapLists(list.info.key);
+      return true;
+    });
+  }
+
+  /** Move, Remove and Undo: the write, then the page's own markup in the stored order, under the document's lock. */
+  function listWriteAndSettle(
+    list: ListRecord,
+    action: string,
+    build: (items: unknown[]) => WireArrayOp | undefined,
+    onWritten?: () => void,
+    restore?: Restore,
+  ): Promise<boolean> {
+    return withLock(list.info.key, async () => {
+      const stored = await listWrite(list, action, build, onWritten);
+      if (stored === undefined) return false;
+      await settleList(list, stored, restore);
       return true;
     });
   }
@@ -665,12 +694,18 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   function rescanWithin(nodes: readonly HTMLElement[]): void {
     if (active && !active.record.element.isConnected) closeActive(false, true);
-    for (const record of fields) if (!record.element.isConnected) record.detach?.();
+    for (const record of fields) {
+      if (record.element.isConnected) continue;
+      record.detach?.();
+      // Undo may bring the element back: it comes back emptied if it went emptied.
+      clearedOf.set(record.element, record.cleared);
+    }
     for (const list of lists) if (!list.element.isConnected) list.detach?.();
     fields = fields.filter((record) => record.element.isConnected);
     lists = lists.filter((list) => list.element.isConnected);
     // Elements still on the page keep their records (a rearranged list keeps most of its fields).
-    const added = nodes.flatMap((node) => scanFields(node)).filter((record) => !byElement.has(record.element));
+    const added = nodes.flatMap((node) => scanFields(node, (element) => !byElement.has(element)));
+    for (const record of added) record.cleared = clearedOf.get(record.element);
     fields.push(...added);
     byElement = new Map(fields.map((record) => [record.element, record]));
     const addedLists = nodes.flatMap((node) => scanLists(node));
@@ -821,15 +856,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (action === "up" || action === "down") {
       const step = action === "up" ? -1 : 1;
       // Held until the page shows the move: a swap or another press meanwhile would act on the old order.
-      const written = await withLock(list.info.key, async () => {
-        const stored = await listWrite(list, label, (items) => {
-          const from = storedIndex(items, item);
-          const to = from + step;
-          return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
-        });
-        if (stored === undefined) return false;
-        await settleList(list, stored);
-        return true;
+      const written = await listWriteAndSettle(list, label, (items) => {
+        const from = storedIndex(items, item);
+        const to = from + step;
+        return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
       });
       if (!written) return;
       const fresh = listById(list.id);
@@ -866,34 +896,40 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const position = list.items.indexOf(item);
     let removed: { value: unknown; index: number } | undefined;
     const parent = item.element.parentNode;
-    const nextSibling = item.element.nextSibling;
-    let dropped: string[] | undefined;
-    const written = await withLock(list.info.key, async () => {
-      const stored = await listWrite(list, label, (items) => {
+    // Where Undo puts it back: before the next markup that is the host's (the chrome's own rows come and go).
+    let nextSibling = item.element.nextSibling;
+    while (nextSibling instanceof Element && nextSibling.classList.contains("cms-root")) {
+      nextSibling = nextSibling.nextSibling;
+    }
+    let dropped: string[] = [];
+    const written = await listWriteAndSettle(
+      list,
+      label,
+      (items) => {
         const index = storedIndex(items, item);
         if (index < 0) return undefined;
         removed = { value: items[index], index };
         return { kind: "remove", index };
-      });
-      if (stored === undefined || !removed || !parent) return false;
-      // A value that failed inside the removed item (or on the item itself) has nowhere left to go: drop it, say so.
-      dropped = session.dropSaves(list.info.key, (path) => path === item.path || path.startsWith(`${item.path}.`));
-      removals.push({
-        listId: list.id,
-        key: list.info.key,
-        path: list.info.path,
-        name,
-        element: item.element,
-        parent,
-        next: nextSibling,
-        ...removed,
-      });
-      await settleList(list, stored);
-      return true;
+      },
+      () => {
+        // On the chain, before a save queued behind the remove starts: a value inside the removed item (or on the item
+        // itself) has nowhere left to go. It is dropped, and the toast says so.
+        dropped = session.dropSaves(list.info.key, (path) => path === item.path || path.startsWith(`${item.path}.`));
+      },
+    );
+    if (!written || !removed || !parent) return;
+    removals.push({
+      listId: list.id,
+      key: list.info.key,
+      path: list.info.path,
+      name,
+      element: item.element,
+      parent,
+      next: nextSibling,
+      ...removed,
     });
-    if (!written) return;
     const fresh = listById(list.id);
-    showRemovalToast(name, (dropped?.length ?? 0) > 0);
+    showRemovalToast(name, dropped.length > 0);
     toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
     const next = fresh?.items[position] ?? fresh?.items[position - 1];
     if (!focusIsFree(list.id)) return;
@@ -934,23 +970,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const last = at < 0 ? undefined : removals[at];
     if (!last) return;
     const list = listById(last.listId);
-    if (!list || refuseBusy(list.element)) return;
     const itemKey = itemKeyOf(last.value);
-    if (itemKey === undefined) return;
+    if (!list || itemKey === undefined) {
+      // Its list has left the page (or it can't be matched): it can't come back here, and mustn't block older ones.
+      removals.splice(at, 1);
+      syncUndoButtons();
+      return;
+    }
+    if (refuseBusy(list.element)) return;
     removals.splice(at, 1);
     if (removalToast !== undefined) toast.hideIf(removalToast);
     if (removalTimer !== undefined) clearTimeout(removalTimer);
     removalTimer = undefined;
-    const written = await withLock(list.info.key, async () => {
-      const stored = await listWrite(list, strings.undo, (items) => ({
-        kind: "insert",
-        index: Math.min(last.index, items.length),
-        value: last.value,
-      }));
-      if (stored === undefined) return false;
-      await settleList(list, stored, { key: itemKey, element: last.element, parent: last.parent, next: last.next });
-      return true;
-    });
+    const written = await listWriteAndSettle(
+      list,
+      strings.undo,
+      (items) => ({ kind: "insert", index: Math.min(last.index, items.length), value: last.value }),
+      undefined,
+      { key: itemKey, element: last.element, parent: last.parent, next: last.next },
+    );
     if (!written) {
       // Nothing written (offline, a refusal): the removal can still be undone.
       removals.splice(Math.min(at, removals.length), 0, last);
