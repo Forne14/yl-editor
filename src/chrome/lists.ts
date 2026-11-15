@@ -146,13 +146,16 @@ export function newItemKey(): string {
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
 }
 
+/** A stored item's `_key`, when it has a string one. */
+export function itemKeyOf(entry: unknown): string | undefined {
+  const value = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined;
+  return typeof value === "string" ? value : undefined;
+}
+
 /** The item's index in the stored array, by its `_key` (only keyed lists get list chrome). -1 when gone. */
 export function storedIndex(items: readonly unknown[], item: ItemRecord): number {
   if (item.itemKey === undefined) return -1;
-  return items.findIndex(
-    (entry) =>
-      typeof entry === "object" && entry !== null && (entry as Record<string, unknown>)["_key"] === item.itemKey,
-  );
+  return items.findIndex((entry) => itemKeyOf(entry) === item.itemKey);
 }
 
 const SVG = "http://www.w3.org/2000/svg";

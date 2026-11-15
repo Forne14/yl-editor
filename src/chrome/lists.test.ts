@@ -802,3 +802,64 @@ describe("rearranging the page's own markup", () => {
     expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
   });
 });
+
+describe("eighth review round", () => {
+  test("a write answer with no array at the list's path asks the page instead of emptying the list", async () => {
+    await mount();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      artists = [artists[1] as Artist, artists[0] as Artist];
+      version += 1;
+      return json({ document: { ...wireDocument(), payload: {} } });
+    };
+    toolButton(0, "down").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+  });
+
+  test("a failed value on the removed item's own path is dropped too", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    const whole = document.createElement("span");
+    whole.dataset.editField = `${KEY}:artists[_key=b]`;
+    whole.dataset.editType = "text";
+    whole.textContent = "whole";
+    items()[1]?.append(whole);
+    await mount();
+    failFields = true;
+    whole.click();
+    whole.textContent = "changed";
+    whole.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    toolButton(1, "remove").click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Its unsaved change was dropped.");
+  });
+
+  test("a list holding a list with an Add on its way waits too", async () => {
+    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount({
+      lists: {
+        [LIST]: { newItem: () => ({ name: "New artist" }) },
+        [`${KEY}:artists[_key=a].links`]: { newItem: () => ({ name: "New link" }) },
+      },
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!String(input).includes("/api/")) await gate;
+      return realFetch(input, init);
+    });
+    const nested = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:artists[_key=a].links"]`);
+    nested?.querySelector<HTMLButtonElement>(".cms-list__add-button")?.click();
+    await settle();
+    addButton()?.click();
+    await settle();
+    expect(liveText()).toBe("Updating the list…");
+    release();
+    await settle();
+  });
+});

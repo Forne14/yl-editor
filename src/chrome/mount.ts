@@ -7,6 +7,7 @@ import { Disposer, button, element, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
 import {
   attachList,
+  itemKeyOf,
   itemName,
   newItemKey,
   scanLists,
@@ -458,17 +459,18 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /**
    * One array operation on the document's write chain. `build` sees the stored array at the moment the write goes out,
-   * so an index is never stale. Resolves with the stored array after the write, or undefined when nothing was written;
-   * a failure has been shown, and a conflict catches the page up as the other actions do.
+   * so an index is never stale. Resolves with the stored array after the write; null when the write landed but the
+   * answer holds no array at the path (only the page can show that); undefined when nothing was written. A failure has
+   * been shown, and a conflict catches the page up as the other actions do.
    */
   async function listWrite(
     list: ListRecord,
     action: string,
     build: (items: unknown[]) => WireArrayOp | undefined,
-  ): Promise<unknown[] | undefined> {
+  ): Promise<unknown[] | null | undefined> {
     const { key, path } = list.info;
     closeActive(false, true);
-    let after: unknown[] | undefined;
+    let after: unknown[] | null | undefined;
     try {
       await lifecycle(
         action,
@@ -481,7 +483,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           session.touch(key, [path]);
           updateBar();
           const stored = valueAtPath(document.payload, path);
-          after = Array.isArray(stored) ? stored : [];
+          after = Array.isArray(stored) ? stored : null;
         }),
       );
     } catch {
@@ -490,11 +492,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     return after;
   }
-
-  const keyOf = (entry: unknown): string | undefined => {
-    const value = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined;
-    return typeof value === "string" ? value : undefined;
-  };
 
   /** An element Undo puts back, and where it was: its markup is the host's, and nothing else has it. */
   interface Restore {
@@ -516,7 +513,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const elements = new Map<string, HTMLElement>();
     for (const item of list.items) if (item.itemKey !== undefined) elements.set(item.itemKey, item.element);
     if (restore) elements.set(restore.key, restore.element);
-    const order = stored.map(keyOf);
+    const order = stored.map(itemKeyOf);
     if (order.some((itemKey) => itemKey === undefined || !elements.has(itemKey))) return false;
     const nested = lists.filter((other) => other !== list && list.element.contains(other.element));
     for (const other of nested) other.detach?.();
@@ -546,7 +543,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (restore) {
       for (const record of fields) {
         const own = record.info.key === list.info.key && record.info.path.startsWith(`${list.info.path}[`);
-        if (own && restore.element.contains(record.element)) {
+        // A value still on its way is the editor's newest: rescanWithin has shown it.
+        const committed = session.committedValue(record.info.key, record.info.path);
+        if (own && !committed && restore.element.contains(record.element)) {
           render(record, valueAtPath({ items: stored }, `items${record.info.path.slice(list.info.path.length)}`), true);
         }
       }
@@ -563,13 +562,18 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     action: string,
     build: (items: unknown[]) => WireArrayOp | undefined,
   ): Promise<boolean> {
-    const { key } = list.info;
+    return withLock(list.info.key, async () => {
+      if ((await listWrite(list, action, build)) === undefined) return false;
+      await swapLists(list.info.key);
+      return true;
+    });
+  }
+
+  /** Holds the document's lock while `task` runs, and always gives it back. */
+  async function withLock<Result>(key: string, task: () => Promise<Result>): Promise<Result> {
     lock(key);
     try {
-      const after = await listWrite(list, action, build);
-      if (!after) return false;
-      await swapLists(key);
-      return true;
+      return await task();
     } finally {
       unlock(key);
     }
@@ -691,7 +695,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Whether `node` is inside a list whose document's markup is about to be swapped. */
   function isBusy(node: Element): boolean {
-    return lists.some((list) => locks.has(list.info.key) && list.element.contains(node));
+    // Either way round: a locked list's swap replaces what is inside it, and replacing a list that holds a locked one
+    // would bring back that list's older markup.
+    return lists.some(
+      (list) => locks.has(list.info.key) && (list.element.contains(node) || node.contains(list.element)),
+    );
   }
 
   /** A press inside a list waiting for the page: say so, rather than nothing happening. */
@@ -792,8 +800,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   /** Puts the stored order on the page, or asks the page when the chrome can't. */
-  async function settleList(list: ListRecord, stored: readonly unknown[], restore?: Restore) {
-    if (!arrangeList(list, stored, restore)) await swapLists(list.info.key);
+  async function settleList(list: ListRecord, stored: readonly unknown[] | null, restore?: Restore) {
+    if (stored === null || !arrangeList(list, stored, restore)) await swapLists(list.info.key);
   }
 
   async function actOnItem(
@@ -813,18 +821,17 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (action === "up" || action === "down") {
       const step = action === "up" ? -1 : 1;
       // Held until the page shows the move: a swap or another press meanwhile would act on the old order.
-      lock(list.info.key);
-      try {
+      const written = await withLock(list.info.key, async () => {
         const stored = await listWrite(list, label, (items) => {
           const from = storedIndex(items, item);
           const to = from + step;
           return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
         });
-        if (!stored) return;
+        if (stored === undefined) return false;
         await settleList(list, stored);
-      } finally {
-        unlock(list.info.key);
-      }
+        return true;
+      });
+      if (!written) return;
       const fresh = listById(list.id);
       const moved = itemByKey(fresh, item.itemKey);
       if (!fresh || !moved) return;
@@ -861,17 +868,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const parent = item.element.parentNode;
     const nextSibling = item.element.nextSibling;
     let dropped: string[] | undefined;
-    lock(list.info.key);
-    try {
+    const written = await withLock(list.info.key, async () => {
       const stored = await listWrite(list, label, (items) => {
         const index = storedIndex(items, item);
         if (index < 0) return undefined;
         removed = { value: items[index], index };
         return { kind: "remove", index };
       });
-      if (!stored || !removed || !parent) return;
-      // A value that failed inside the removed item has nowhere left to go: drop it and say so.
-      dropped = session.dropSaves(list.info.key, (path) => path.startsWith(`${item.path}.`));
+      if (stored === undefined || !removed || !parent) return false;
+      // A value that failed inside the removed item (or on the item itself) has nowhere left to go: drop it, say so.
+      dropped = session.dropSaves(list.info.key, (path) => path === item.path || path.startsWith(`${item.path}.`));
       removals.push({
         listId: list.id,
         key: list.info.key,
@@ -883,9 +889,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         ...removed,
       });
       await settleList(list, stored);
-    } finally {
-      unlock(list.info.key);
-    }
+      return true;
+    });
+    if (!written) return;
     const fresh = listById(list.id);
     showRemovalToast(name, (dropped?.length ?? 0) > 0);
     toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
@@ -929,28 +935,27 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (!last) return;
     const list = listById(last.listId);
     if (!list || refuseBusy(list.element)) return;
+    const itemKey = itemKeyOf(last.value);
+    if (itemKey === undefined) return;
     removals.splice(at, 1);
     if (removalToast !== undefined) toast.hideIf(removalToast);
     if (removalTimer !== undefined) clearTimeout(removalTimer);
     removalTimer = undefined;
-    const itemKey = keyOf(last.value);
-    if (itemKey === undefined) return;
-    lock(list.info.key);
-    try {
+    const written = await withLock(list.info.key, async () => {
       const stored = await listWrite(list, strings.undo, (items) => ({
         kind: "insert",
         index: Math.min(last.index, items.length),
         value: last.value,
       }));
-      if (!stored) {
-        // Nothing written (offline, a refusal): the removal can still be undone.
-        removals.splice(Math.min(at, removals.length), 0, last);
-        showRemovalToast(last.name);
-        return;
-      }
+      if (stored === undefined) return false;
       await settleList(list, stored, { key: itemKey, element: last.element, parent: last.parent, next: last.next });
-    } finally {
-      unlock(list.info.key);
+      return true;
+    });
+    if (!written) {
+      // Nothing written (offline, a refusal): the removal can still be undone.
+      removals.splice(Math.min(at, removals.length), 0, last);
+      showRemovalToast(last.name);
+      return;
     }
     const fresh = listById(last.listId);
     const restored = itemByKey(fresh, itemKey);
