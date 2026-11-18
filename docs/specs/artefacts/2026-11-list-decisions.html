@@ -661,7 +661,7 @@
   </head>
   <body>
     <main>
-      <h1>Lists: five product decisions</h1>
+      <h1>Lists: product decisions</h1>
       <p class="lead">
         Issue #28 (edit lists: add, remove and reorder keyed array items), PR #47 (the list fixes). Ten review rounds
         keep finding edge cases in list setups #28 never asked for. Each section below shows one decision in situ: on
@@ -673,7 +673,7 @@
       </p>
 
       <!-- ===================================== 1. Nested lists ===================================== -->
-      <h2>1. A list inside another list's item <span class="tag rec">Recommend: top-level lists only</span></h2>
+      <h2>1. A list inside another list's item <span class="tag rec">Ruled 2026-11-18: top-level lists only</span></h2>
       <p class="note">
         A menu with sections; each section has its own list of dishes. Today the inner list is a list too: its own
         outline, tag, toolbars and Add, inside a row of the outer grid. Keeping both in step needs a lock in both
@@ -693,56 +693,81 @@
       </div>
 
       <!-- ===================================== 2. Rendered twice ===================================== -->
-      <h2>2. One list rendered twice on a page <span class="tag rec">Recommend: the first one only</span></h2>
+      <h2>2. One list rendered twice on a page <span class="tag rec">Proposed: both copies keep list chrome</span></h2>
       <p class="note">
-        The same artists appear in the main list and again, lower down, in a shorter list (names only, different
-        markup). Today both get list chrome, and an Add swaps the page's markup in by the list's address, so one copy
-        can come back with the other's markup. Recommended: only the first copy on the page gets list chrome. The second
-        keeps in-place editing of its fields (each field its own outline, as fields outside lists are today) and follows
-        the first after every change.
+        Revised after your question. The same artists appear in the main list and again, lower down, in a shorter list
+        (names only, different markup). Both copies keep full list chrome. A change made in either copy is one write,
+        and then both copies show it: Move, Remove and Undo rearrange each copy from its own elements; Add and Duplicate
+        take each copy's new markup from the page, matched by order (first copy to first copy). Undo shows in both
+        copies, because it is one removal from one list.
       </p>
       <div class="pair">
         <figure>
-          <figcaption>Today <span class="tag now">both copies</span></figcaption>
+          <figcaption>Proposed, at rest <span class="tag rec">both copies</span></figcaption>
           <div class="frame" data-demo="twice-now"></div>
         </figure>
         <figure>
-          <figcaption>Recommended <span class="tag rec">first copy only</span></figcaption>
-          <div class="frame" data-demo="twice-rec"></div>
+          <figcaption>
+            Proposed, after removing Tobias in the main list <span class="tag rec">both follow</span>
+          </figcaption>
+          <div class="frame" data-demo="twice-after"></div>
         </figure>
       </div>
 
-      <!-- ===================================== 3. Strict contract ===================================== -->
-      <h2>
-        3. A list the chrome can't edit safely
-        <span class="tag rec">Recommend: no list chrome, and a console warning</span>
-      </h2>
+      <!-- ===================================== 3. Lists edited safely ===================================== -->
+      <h2>3. Making every list safe to edit <span class="tag rec">Proposed: the chrome works by key</span></h2>
       <p class="note">
-        This site keys its items (<code>artists[_key=a1]</code>) but addresses their fields by position
-        (<code>artists.2.name</code>). After a remove, a failed save at <code>artists.2.name</code> would be retried
-        into whichever artist moved into place 2. Today the chrome shows the full list toolbar anyway. Recommended: the
-        list keeps in-place field editing, gets no list chrome, and the browser console says why, for the site's
-        developer. Editors never see the warning. The same applies when items aren't siblings, or a <code>_key</code> is
-        missing; an invalid <code>_key</code> from <code>newItem</code> is replaced with a generated one instead.
+        Revised after your note: no fallback to one outline per field. Two cases. <b>3a.</b> The site keys its items but
+        addresses their fields by position (<code>artists.2.name</code>). The chrome knows each item's key, so it saves
+        those fields by key (<code>artists[_key=i3].name</code>). The list is safe as it stands: full list chrome, no
+        warning. <b>3b.</b> The items have no <code>_key</code> at all, so nothing ties an edit to an item. Two ways to
+        handle it, both drawn below.
       </p>
       <div class="pair">
         <figure>
-          <figcaption>Today <span class="tag now">list chrome on an unsafe list</span></figcaption>
-          <div class="frame" data-demo="contract-now"></div>
-          <p class="callout bad">
-            <b>What goes wrong:</b> the editor's change to Ines's name fails to save. They remove Tobias. Retry then
-            writes “Ines D.” into Kofi, who is now at place 2.
+          <figcaption>
+            3a · keyed items, fields by position <span class="tag rec">full list chrome, saved by key</span>
+          </figcaption>
+          <div class="frame" data-demo="contract-keyed"></div>
+          <p class="callout">
+            <b>Under the hood:</b> Ines's name is rendered with <code>artists.2.name</code>, but the chrome saves it to
+            <code>artists[_key=i3].name</code>. A remove or move can no longer put that edit into another artist.
           </p>
         </figure>
         <figure>
-          <figcaption>Recommended <span class="tag rec">fields only, console says why</span></figcaption>
-          <div class="frame" data-demo="contract-rec"></div>
+          <figcaption>Today, for comparison <span class="tag now">same look, unsafe</span></figcaption>
+          <div class="frame" data-demo="contract-now"></div>
+          <p class="callout bad">
+            <b>What goes wrong today:</b> Ines's change fails to save, the editor removes Tobias, and Retry writes it
+            into Kofi, who is now at place 2.
+          </p>
+        </figure>
+      </div>
+      <div class="pair">
+        <figure>
+          <figcaption>3b · no <code>_key</code>, option 1 <span class="tag">fields only, one outline</span></figcaption>
+          <div class="frame" data-demo="unkeyed-fields"></div>
+          <p class="callout">
+            The same single outline and grid; every field edits in place. No list toolbar, no Add: those need a key. The
+            console tells the site's developer how to turn them on.
+          </p>
+        </figure>
+        <figure>
+          <figcaption>3b · no <code>_key</code>, option 2 <span class="tag">the chrome adds keys</span></figcaption>
+          <div class="frame" data-demo="unkeyed-keys"></div>
+          <p class="callout">
+            Full list chrome. The first Add, Remove or Move writes a <code>_key</code> into every item, in one write,
+            before it does anything else: <code>{ name: "Mara Okoye" }</code> becomes
+            <code>{ _key: "k7f2a9", name: "Mara Okoye" }</code>. Needs the site's schema to allow <code>_key</code>; if
+            it doesn't, the write is refused and the list behaves as option 1.
+          </p>
         </figure>
       </div>
 
       <!-- ===================================== 4. Undo after a conflict ===================================== -->
       <h2>
-        4. Undo after another editor changed the list <span class="tag rec">Recommend: the removal is dropped</span>
+        4. Undo after another editor changed the list
+        <span class="tag rec">Ruled 2026-11-18: the removal is dropped</span>
       </h2>
       <p class="note">
         Ines Duarte was removed. Before Undo, another editor reordered the roster and added Kofi Mensah. Undo hits the
@@ -762,7 +787,7 @@
       </div>
 
       <!-- ===================================== 5. Undo windows ===================================== -->
-      <h2>5. How long each removal can be undone <span class="tag rec">Recommend: 15 seconds each</span></h2>
+      <h2>5. How long each removal can be undone <span class="tag rec">Ruled 2026-11-18: 15 seconds each</span></h2>
       <p class="note">
         Two lists on one page, Artists and Events. The editor removes an artist at 0 s and an event at 10 s. Today one
         timer serves both: each removal restarts it, so the artist's Undo lasts until 25 s, and while an Undo is being
@@ -812,15 +837,25 @@
           `<button type="button" class="cms-btn cms-btn--ghost cms-item__danger" aria-label="Remove ${esc(name)}">${icon("remove")}</button></div>`;
 
         /** A list with the chrome's grid marking. `body(item)` returns the item's fields. */
-        function chromeList({ label, noun, max, items, body, open = -1, undo = false, tagless = false }) {
+        function chromeList({
+          label,
+          noun,
+          max,
+          items,
+          body,
+          open = -1,
+          undo = false,
+          tagless = false,
+          actions = true,
+        }) {
           const rows = items
             .map(
               (item, index) =>
-                `<li class="cms-item" ${index === open ? "data-open" : ""}>${tools(item.name, index, items.length, index === open)}<span class="cms-root cms-item__band" aria-hidden="true"></span>${body(item)}</li>`,
+                `<li class="cms-item" ${index === open ? "data-open" : ""}>${actions ? tools(item.name, index, items.length, index === open) : ""}<span class="cms-root cms-item__band" aria-hidden="true"></span>${body(item)}</li>`,
             )
             .join("");
           const tag = max ? `${label} · ${items.length} of ${max}` : `${label} · ${items.length}`;
-          return `<section class="cms-listedit" aria-label="${esc(tag)}"><span class="cms-root cms-listedit__frame" aria-hidden="true"></span>${tagless ? "" : `<span class="cms-listedit__tag cms-root" aria-hidden="true">${esc(tag)}</span>`}<ul class="cms-listedit__items">${rows}</ul><div class="cms-listedit__add cms-root"><button type="button" class="cms-btn cms-btn--add">${icon("plus")} Add ${esc(noun)}</button>${undo ? '<button type="button" class="cms-btn cms-listedit__undo">Undo</button>' : ""}</div></section>`;
+          return `<section class="cms-listedit" aria-label="${esc(tag)}"><span class="cms-root cms-listedit__frame" aria-hidden="true"></span>${tagless ? "" : `<span class="cms-listedit__tag cms-root" aria-hidden="true">${esc(tag)}</span>`}<ul class="cms-listedit__items">${rows}</ul>${actions ? "" : "<!--"}<div class="cms-listedit__add cms-root"><button type="button" class="cms-btn cms-btn--add">${icon("plus")} Add ${esc(noun)}</button>${undo ? '<button type="button" class="cms-btn cms-listedit__undo">Undo</button>' : ""}</div>${actions ? "" : "-->"}</section>`;
         }
 
         const field = (tag, text, extra = "") => `<${tag} class="cms-field" ${extra}>${esc(text)}</${tag}>`;
@@ -901,6 +936,49 @@
               max: 6,
               items: ROSTER,
               body: (artist) => `<div>${field("h4", artist.name)}</div>`,
+            })}</div>${bar()}`,
+          "twice-after": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [ROSTER[0], ROSTER[2]],
+              body: artistBody,
+              undo: true,
+            })}<h2>Also playing</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [ROSTER[0], ROSTER[2]],
+              body: (artist) => `<div>${field("h4", artist.name)}</div>`,
+              undo: true,
+            })}</div>${toast("Removed Tobias Lindqvist.", [{ label: "Undo", primary: true }])}${bar("1 change on this page")}`,
+          "contract-keyed": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              open: 2,
+              body: artistBody,
+            })}</div>${bar()}`,
+          "unkeyed-fields": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              body: artistBody,
+              actions: false,
+            })}</div>${bar()}<div class="console" aria-label="Browser console (the site developer's view)"><div class="console__bar"><b>Console</b><span>Elements</span><span>Network</span></div><div class="console__row"><span>⚠</span><span>[yl-editor] artist/list:artists has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.</span></div></div>`,
+          "unkeyed-keys": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              open: 1,
+              body: artistBody,
             })}</div>${bar()}`,
           "twice-rec": () =>
             `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
