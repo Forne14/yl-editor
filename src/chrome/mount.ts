@@ -199,6 +199,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     timer: ReturnType<typeof setTimeout> | undefined;
     /** The toast that offers its Undo, while that one is showing. */
     toast: number | undefined;
+    /** Its removal dropped an unsaved change: every toast for it says so. */
+    droppedChange?: boolean;
     /** Its window is over: a failed Undo doesn't bring it back. */
     expired?: boolean;
   }
@@ -459,6 +461,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   function attachListRecord(list: ListRecord): void {
     list.detach?.();
+    // Nested means inside an item of a list the chrome dresses: under a list the editor can't edit, it is top-level.
+    if (list.nested) {
+      const outer = list.element.parentElement?.closest("[data-edit-item]")?.closest<HTMLElement>("[data-edit-list]");
+      const outerRecord = lists.find((other) => other.element === outer);
+      list.nested = outerRecord !== undefined && session.documents.get(outerRecord.info.key)?.access.edit === true;
+    }
     if (list.nested || session.documents.get(list.info.key)?.access.edit !== true) return;
     if (list.items.some((item) => item.itemKey === undefined)) {
       if (!warned.has(list.id)) {
@@ -520,9 +528,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Every copy of a list on the page, in page order. */
   function copiesOf(id: string): ListRecord[] {
-    return lists
-      .filter((list) => list.id === id && !list.nested && list.element.isConnected)
-      .sort((a, b) => (a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    return lists.filter((list) => list.id === id && !list.nested && list.element.isConnected).sort(byPageOrder);
   }
 
   /** The stored array at the list's path, after the writes queued before this one. */
@@ -762,24 +768,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       const id = node.getAttribute("data-edit-list") ?? "";
       fresh.set(id, [...(fresh.get(id) ?? []), node]);
     }
-    // Read after the fetch: the lists on the page now. A list inside another of the documents' lists comes with it.
-    // A list inside another (of any document) comes with its outermost list, which is the one swapped.
-    const outermost = (list: ListRecord) => {
-      let top = list.element;
-      for (let up = top.parentElement?.closest<HTMLElement>("[data-edit-list]"); up;) {
-        top = up;
-        up = up.parentElement?.closest<HTMLElement>("[data-edit-list]");
-      }
-      return lists.find((outer) => outer.element === top) ?? list;
-    };
-    const own = lists.filter((list) => keys.has(list.info.key) && list.element.isConnected).map(outermost);
-    const targets = [...new Set(own)].sort((a, b) =>
-      a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
-    );
+    // Read after the fetch: the lists on the page now. A list inside another (of any document) comes with its
+    // outermost list, which is the one swapped.
+    const own = lists
+      .filter((list) => keys.has(list.info.key) && list.element.isConnected)
+      .map((list) => lists.find((outer) => outer.element === outermostList(list.element)) ?? list);
+    const targets = [...new Set(own)].sort(byPageOrder);
     const swapped: HTMLElement[] = [];
     let missing = false;
-    // Each target's place among every copy on the page, taken before any of them is replaced.
-    const places = new Map(targets.map((list) => [list, copiesOf(list.id).indexOf(list)]));
+    // Each target's place among the outermost copies of its list on this page, matched to the same place among the
+    // outermost copies on the fetched page; taken before any of them is replaced.
+    const topLevel = (id: string) =>
+      lists.filter((list) => list.id === id && outermostList(list.element) === list.element).sort(byPageOrder);
+    const places = new Map(targets.map((list) => [list, topLevel(list.id).indexOf(list)]));
     for (const list of targets) {
       const index = places.get(list) ?? 0;
       const node = fresh.get(list.id)?.filter((candidate) => !candidate.parentElement?.closest("[data-edit-list]"))[
@@ -836,19 +837,24 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Whether `node` is inside a list whose document's markup is about to be swapped. */
   function isBusy(node: Element): boolean {
-    // Either way round: a locked list's swap replaces what is inside it, and replacing a list that holds a locked one
-    // would bring back that list's older markup.
-    // And anything in the outermost list a locked list sits in: that is what its swap replaces.
-    return lists.some((list) => {
-      if (!locks.has(list.info.key)) return false;
-      let top: HTMLElement = list.element;
-      for (let up = top.parentElement?.closest<HTMLElement>("[data-edit-list]"); up;) {
-        top = up;
-        up = up.parentElement?.closest<HTMLElement>("[data-edit-list]");
-      }
-      return top.contains(node) || node.contains(list.element);
-    });
+    // Anything in the outermost list a locked list sits in (that is what its swap replaces), and anything holding one.
+    return lists.some(
+      (list) => locks.has(list.info.key) && (outermostList(list.element).contains(node) || node.contains(list.element)),
+    );
   }
+
+  /** The outermost `[data-edit-list]` holding `element` (itself when none does). */
+  function outermostList(element: HTMLElement): HTMLElement {
+    let top = element;
+    for (let up = top.parentElement?.closest<HTMLElement>("[data-edit-list]"); up;) {
+      top = up;
+      up = up.parentElement?.closest<HTMLElement>("[data-edit-list]");
+    }
+    return top;
+  }
+
+  const byPageOrder = (a: ListRecord, b: ListRecord) =>
+    a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
 
   /** A press inside a list waiting for the page: say so, rather than nothing happening. */
   function refuseBusy(node: Element): boolean {
@@ -1048,7 +1054,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     removals.push(entry);
     // Each removal has its own 15 seconds: nothing pauses or extends another's (ruled 2026-11-18).
     entry.timer = setTimeout(() => expireRemoval(entry), UNDO_MS);
-    showRemovalToast(entry, dropped.length > 0);
+    entry.droppedChange = dropped.length > 0;
+    showRemovalToast(entry);
     const fresh = copiesOf(list.id)[copy];
     toast.announce(format(strings.itemRemoved, { item: name, count: fresh?.items.length ?? 0 }));
     const next = fresh?.items[position] ?? fresh?.items[position - 1];
@@ -1059,8 +1066,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   const UNDO_MS = 15000;
 
-  function showRemovalToast(entry: Removal, droppedChange = false): void {
-    const message = format(droppedChange ? strings.removedDroppedToast : strings.removedToast, { item: entry.name });
+  function showRemovalToast(entry: Removal): void {
+    const message = format(entry.droppedChange ? strings.removedDroppedToast : strings.removedToast, {
+      item: entry.name,
+    });
     entry.toast = toast.show(message, "info", [
       { label: strings.undo, onClick: () => void undoRemoval(undefined, entry), variant: "primary" },
     ]);
@@ -1103,6 +1112,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const itemKey = itemKeyOf(last.value);
     if (!list || itemKey === undefined) {
       // Its list has left the page (or it can't be matched): it can't come back here, and mustn't block older ones.
+      clearTimeout(last.timer);
       expireRemoval(last);
       return;
     }

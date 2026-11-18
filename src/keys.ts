@@ -2,17 +2,11 @@
 // content gets its keys once, from `addListKeys` in the registry entry's `migrate`. The chrome never invents a key for
 // a stored item. See docs/chrome.md → Lists and docs/paths.md.
 import { z } from "zod";
-import { parsePath } from "./path.ts";
-
-const KEY_ID = /^[A-Za-z0-9_-]+$/;
-const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
+import { isKeyId as isKey, parsePath } from "./path.ts";
 
 /** What the store says when an item has no usable `_key`. */
 export const MISSING_KEY_MESSAGE =
   "Each item needs a _key: a short id of letters, digits, _ or -. Give new items one, and key existing content with addListKeys in the schema's migrate.";
-
-const isKey = (value: unknown): value is string =>
-  typeof value === "string" && KEY_ID.test(value) && !FORBIDDEN.has(value);
 
 /**
  * An array of `item`s that each carry a `_key`, unique within the array. An item without one, or with one the paths
@@ -74,22 +68,20 @@ function keyAt(node: unknown, segments: readonly (string | number)[]): unknown {
 
 function keyItems(list: unknown): unknown {
   if (!Array.isArray(list)) return list;
-  const used = new Set(list.map((entry) => (entry as { _key?: unknown } | null)?._key).filter(isKey));
-  if (
-    list.every(
-      (entry) =>
-        entry === null ||
-        typeof entry !== "object" ||
-        Array.isArray(entry) ||
-        isKey((entry as { _key?: unknown })._key),
-    )
-  ) {
-    return list;
+  const isItem = (entry: unknown): entry is Record<string, unknown> =>
+    entry !== null && typeof entry === "object" && !Array.isArray(entry);
+  // The first item with a usable key keeps it; a later one with the same key gets a new one, as an unkeyed item does.
+  const keep = new Set<unknown>();
+  const used = new Set<string>();
+  for (const entry of list) {
+    if (!isItem(entry) || !isKey(entry["_key"]) || used.has(entry["_key"])) continue;
+    used.add(entry["_key"]);
+    keep.add(entry);
   }
+  if (list.every((entry) => !isItem(entry) || keep.has(entry))) return list;
   let next = 0;
   return list.map((entry: unknown) => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
-    if (isKey((entry as { _key?: unknown })._key)) return entry;
+    if (!isItem(entry) || keep.has(entry)) return entry;
     while (used.has(`k${next}`)) next += 1;
     const key = `k${next}`;
     used.add(key);

@@ -56,6 +56,25 @@ describe("addListKeys", () => {
     expect(addListKeys(keyed, ["artists"])).toBe(keyed);
   });
 
+  test("a key used twice keeps its first item; the later one gets a new key, so the list validates", () => {
+    const keyed = addListKeys(
+      {
+        team: [
+          { _key: "a", n: 1 },
+          { _key: "a", n: 2 },
+        ],
+      },
+      ["team"],
+    );
+    expect(keyed).toEqual({
+      team: [
+        { _key: "a", n: 1 },
+        { _key: "k0", n: 2 },
+      ],
+    });
+    expect(keyedItems(z.object({ n: z.number() })).safeParse((keyed as { team: unknown[] }).team).success).toBe(true);
+  });
+
   test("keys several lists, including nested paths, and leaves non-objects alone", () => {
     expect(addListKeys({ a: [{ x: 1 }], b: { c: [{ y: 2 }, "text"] } }, ["a", "b.c"])).toEqual({
       a: [{ _key: "k0", x: 1 }],
