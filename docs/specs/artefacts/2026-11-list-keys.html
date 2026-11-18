@@ -1,0 +1,1248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>List keys</title>
+    <style>
+      /* ==========================================================================================================
+         1. COPIED FROM src/chrome/chrome.css (tokens, fields, buttons, focus ring, bar, toast, popover). Unchanged
+            except that the zero-specificity :where() wrapper is kept and position:fixed surfaces are placed inside
+            the demo frames by section 3. This file is self-contained so it still opens when the repo moves.
+         ========================================================================================================== */
+      :where(.cms-root, .cms-field, .cms-listedit, .cms-item) {
+        --cms-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --cms-size-sm: 0.8125rem;
+        --cms-size-md: 0.9375rem;
+        --cms-line: 1.4;
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-success: #1f7a45;
+        --cms-warning: #a15c07;
+        --cms-outline: 2px dashed #2557d6;
+        --cms-radius: 6px;
+        --cms-space-1: 4px;
+        --cms-space-2: 8px;
+        --cms-space-3: 12px;
+        --cms-space-4: 16px;
+        --cms-space-5: 24px;
+        --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+        --cms-z: 1000;
+        --cms-control-h: 44px;
+        --cms-sheet-max-h: 70vh;
+      }
+      :where(.cms-field) {
+        outline: var(--cms-outline);
+        outline-offset: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        cursor: text;
+      }
+      :where(.cms-field:hover, .cms-field:focus-visible) {
+        outline-color: var(--cms-fg);
+      }
+      :where(.cms-field--editing) {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+      }
+      :where(.cms-root) {
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        line-height: var(--cms-line);
+        color: var(--cms-fg);
+      }
+      .cms-root [hidden] {
+        display: none;
+      }
+      :where(.cms-root *, .cms-root *::before, .cms-root *::after) {
+        box-sizing: border-box;
+      }
+      :where(.cms-btn) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--cms-space-1);
+        min-height: var(--cms-control-h);
+        min-width: var(--cms-control-h);
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        color: var(--cms-fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      :where(.cms-btn--primary) {
+        border-color: var(--cms-accent);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+      }
+      :where(.cms-btn--danger) {
+        border-color: var(--cms-danger);
+        color: var(--cms-danger);
+      }
+      :where(.cms-btn--ghost) {
+        background: transparent;
+      }
+      :where(.cms-btn:disabled) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      :where(.cms-root :focus-visible, .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      :where(.cms-muted) {
+        color: var(--cms-muted);
+      }
+      :where(.cms-visually-hidden, .cms-live) {
+        position: absolute;
+        inline-size: 1em;
+        block-size: 1em;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      :where(.cms-bar) {
+        position: fixed;
+        inset-inline: var(--cms-space-4);
+        bottom: var(--cms-space-4);
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-4);
+        padding: var(--cms-space-2) var(--cms-space-4);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-bar__state) {
+        display: grid;
+        flex: 1 1 18em;
+        min-width: 0;
+      }
+      :where(.cms-bar__changes) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-bar__actions, .cms-toast__actions, .cms-popover__actions) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--cms-space-2);
+      }
+      :where(.cms-toast) {
+        position: fixed;
+        top: var(--cms-space-4);
+        left: 50%;
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        max-width: calc(100vw - 2 * var(--cms-space-4));
+        padding: var(--cms-space-2) var(--cms-space-4);
+        transform: translateX(-50%);
+        border-radius: var(--cms-radius);
+        border-inline-start: medium solid var(--cms-accent);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-toast__message) {
+        margin: 0;
+      }
+      :where(.cms-popover) {
+        position: absolute;
+        top: calc(var(--cms-popover-top, 0) + var(--cms-space-2));
+        left: var(--cms-popover-left, 0);
+        z-index: var(--cms-z);
+        display: grid;
+        gap: var(--cms-space-2);
+        width: min(22em, calc(100vw - 2 * var(--cms-space-4)));
+        padding: var(--cms-space-3);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-popover__title) {
+        margin: 0;
+        font-size: var(--cms-size-sm);
+        font-weight: 600;
+      }
+      :where(.cms-popover--note) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-toast, .cms-popover) {
+        transition:
+          opacity 160ms ease,
+          transform 200ms ease;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :where(.cms-toast, .cms-popover) {
+          transition: opacity 120ms linear;
+        }
+      }
+
+      /* ==========================================================================================================
+         2. PROPOSED: list editing. These are the only new chrome rules. Same tokens, same :where() zero
+            specificity, no raw colours or sizes. Hosts restyle them from their own stylesheet like everything else.
+         ========================================================================================================== */
+
+      /* The rule (Yassine, 2026-11-11): no dashed outline sits inside or across another. A list is ONE dashed
+         outline. Inside it, a single dashed line separates one item from the next, and one field from the next
+         inside an item. Every line ends where it meets another; none overlaps. States inside the grid (hover,
+         editing, keyboard focus) are solid and drawn inside the cell, so they never touch a dashed line either. */
+      :where(.cms-listedit) {
+        --cms-list-gap: calc(var(--cms-control-h) + var(--cms-space-4)); /* room for a 44px toolbar on a line */
+        --cms-list-pad: var(--cms-space-3); /* outline to content, left and right */
+        --cms-list-line: thin dashed var(--cms-accent); /* the separators */
+        --cms-list-tint: color-mix(in srgb, var(--cms-accent) 7%, transparent);
+        position: relative;
+      }
+      /* The one outline. Its top edge sits half a gap above the first row, so the first item's top edge is the
+         same height as every other item's separator, and its toolbar sits on it the same way. */
+      :where(.cms-listedit__frame) {
+        position: absolute;
+        inset: calc(-0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad)) calc(-1 * var(--cms-list-pad));
+        border: var(--cms-outline);
+        border-radius: var(--cms-radius);
+        pointer-events: none;
+      }
+      /* The list's name and count sit ON the outline's top edge, like a fieldset legend: no box of its own. */
+      :where(.cms-listedit__tag) {
+        position: absolute;
+        top: calc(-0.5 * var(--cms-list-gap));
+        left: 0;
+        z-index: 1;
+        transform: translateY(-50%);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-sm);
+        line-height: var(--cms-line);
+        white-space: nowrap;
+      }
+      :where(.cms-listedit__items) {
+        display: grid;
+        gap: var(--cms-list-gap);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      /* Chrome-owned rows (empty message, Add) get the same separator as an item. */
+      :where(.cms-listedit__empty) {
+        margin: 0;
+        padding: var(--cms-space-3) 0;
+        color: var(--cms-muted);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        text-align: center;
+      }
+      :where(.cms-listedit__add) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        margin: calc(0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad) + 2px) 0;
+        padding: calc(0.5 * var(--cms-list-gap)) calc(var(--cms-list-pad) - 2px) 0;
+        border-top: var(--cms-list-line);
+        font-family: var(--cms-font);
+      }
+      :where(.cms-listedit__empty + .cms-listedit__add) {
+        margin-top: var(--cms-space-3);
+        padding-top: var(--cms-space-3);
+      }
+      :where(.cms-listedit__reason) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-btn[aria-disabled="true"]) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      /* Add is an ordinary solid button: a dashed button would be a dashed box inside the outline. */
+      :where(.cms-btn--add) {
+        color: var(--cms-accent);
+      }
+
+      /* The item. Its band runs from the line above it to the line below it, the full width of the outline. */
+      :where(.cms-item) {
+        position: relative;
+        isolation: isolate;
+      }
+      :where(.cms-item__band) {
+        position: absolute;
+        inset: calc(-0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad) + 2px);
+        z-index: -1;
+        pointer-events: none;
+      }
+      :where(.cms-item + .cms-item > .cms-item__band) {
+        border-top: var(--cms-list-line);
+      }
+      /* Hover, focus inside, or open (touch): the band fills with a faint tint. No outline. */
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) > .cms-item__band {
+        background: var(--cms-list-tint);
+      }
+      :where(.cms-item--dragging) {
+        opacity: 0.6;
+      }
+      :where(.cms-item--dragging) > .cms-item__band {
+        background: color-mix(in srgb, var(--cms-accent) 16%, transparent);
+      }
+      /* Lines between an item's fields. Placed by the chrome from the fields' boxes, through custom properties
+         (style.setProperty, CSP-safe): --cms-sep-x for a vertical line, --cms-sep-y/-x/-w for a horizontal one. */
+      :where(.cms-item__sep) {
+        position: absolute;
+        pointer-events: none;
+      }
+      :where(.cms-item__sep--v) {
+        top: calc(-0.5 * var(--cms-list-gap) + 2px);
+        bottom: calc(-0.5 * var(--cms-list-gap));
+        left: var(--cms-sep-x);
+        border-left: var(--cms-list-line);
+      }
+      :where(.cms-item__sep--h) {
+        top: var(--cms-sep-y);
+        left: var(--cms-sep-x);
+        width: var(--cms-sep-w);
+        border-top: var(--cms-list-line);
+      }
+      :where([data-cells="off"] .cms-item__sep) {
+        display: none;
+      }
+      /* Fields inside a list have no outline of their own: the lines mark them. Their states are solid and
+         inset, inside the cell. */
+      :where(.cms-item .cms-field) {
+        outline: none;
+      }
+      :where(.cms-item .cms-field:hover) {
+        outline: thin solid var(--cms-fg);
+        outline-offset: -1px;
+      }
+      :where(.cms-item .cms-field--editing, .cms-item .cms-field--editing:hover) {
+        outline: 2px solid var(--cms-accent);
+        outline-offset: -2px;
+      }
+      :where(.cms-item .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: -3px;
+      }
+
+      /* The toolbar sits ON the item's top line, at the right: centred on it, like the tag on the outline. */
+      :where(.cms-item__tools) {
+        position: absolute;
+        inset-inline-end: 0;
+        bottom: calc(100% + 0.5 * var(--cms-list-gap) - 0.5 * var(--cms-control-h));
+        z-index: 1;
+        display: flex;
+        gap: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms linear;
+      }
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) > .cms-item__tools {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      :where(.cms-item__tools .cms-btn) {
+        padding: 0;
+        border: 0;
+      }
+      :where(.cms-item__danger) {
+        color: var(--cms-danger);
+      }
+      :where(.cms-item__grip) {
+        cursor: grab;
+        touch-action: none;
+      }
+      :where(.cms-item__chip) {
+        display: none;
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-item__chip-open) {
+        display: none;
+      }
+      /* Touch: tools collapse to one chip per item, on the same line (a tap target clear of the fields). */
+      :where([data-input="touch"] .cms-item__tools) {
+        opacity: 1;
+        pointer-events: auto;
+        background: transparent;
+        box-shadow: none;
+      }
+      :where([data-input="touch"] .cms-item__chip) {
+        display: inline-flex;
+        background: var(--cms-bg);
+      }
+      :where([data-input="touch"] .cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+        display: none;
+      }
+      :where([data-input="touch"] .cms-item[data-open] > .cms-item__tools) {
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where([data-input="touch"] .cms-item[data-open] > .cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+        display: inline-flex;
+      }
+      :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-closed) {
+        display: none;
+      }
+      :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-open) {
+        display: inline;
+      }
+      :where([data-input="touch"] .cms-item:hover:not([data-open], :focus-within)) > .cms-item__band {
+        background: none;
+      }
+
+      /* ==========================================================================================================
+         3. PROTOTYPE PAGE ONLY: this document's layout, the stand-in host sites, and the frames.
+         ========================================================================================================== */
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1280px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 64px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 78ch;
+        margin: 4px 0 16px;
+      }
+      code {
+        font-size: 0.85em;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+      }
+      .tag.rec {
+        background: #dcf3e6;
+        color: #1f7a45;
+      }
+      .tag.now {
+        background: #fde8e6;
+        color: #b42318;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        align-items: start;
+        margin: 16px 0;
+      }
+      @media (max-width: 900px) {
+        .pair {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      figure {
+        margin: 0;
+        min-width: 0;
+      }
+      figcaption {
+        margin: 0 0 6px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .frame {
+        position: relative;
+        overflow: hidden;
+        border-radius: 10px;
+        border: 1px solid #e3e5eb;
+        background: #faf8f3;
+        color-scheme: light;
+      }
+      .host {
+        padding: 24px 28px 40px;
+        font-family: Georgia, "Times New Roman", serif;
+        color: #2a2622;
+      }
+      .host h1 {
+        margin: 0 0 8px;
+        font-size: 1.1rem;
+        letter-spacing: 0.02em;
+      }
+      .host h2 {
+        margin: 32px 0 56px;
+        font-size: 1.3rem;
+      }
+      .host h4 {
+        margin: 0;
+        font-size: 1.05rem;
+      }
+      .host p {
+        margin: 2px 0 0;
+        color: #5a534a;
+      }
+      .host .plain {
+        display: grid;
+        gap: 14px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .host .plain-row {
+        display: flex;
+        gap: 16px;
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .host .plain-row > li {
+        flex: 0 0 9.5rem;
+        padding: 10px;
+        border-radius: 8px;
+        background: #efe9dd;
+      }
+      .host .cms-field {
+        display: block;
+      }
+      .host .dish {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 2px 12px;
+        margin-top: 6px;
+        font-size: 0.95rem;
+      }
+      .host .dish + .dish {
+        margin-top: 2px;
+      }
+      .host .price {
+        color: #5a534a;
+      }
+      .frame .cms-bar {
+        position: static;
+        margin: 0 var(--cms-space-4) var(--cms-space-4);
+        border: thin solid var(--cms-border);
+      }
+      .frame .cms-toast {
+        position: absolute;
+        top: var(--cms-space-4);
+      }
+      .frame .cms-listedit__undo {
+        margin-inline-start: var(--cms-space-2);
+      }
+      .callout {
+        margin: 8px 0 0;
+        padding: 10px 14px;
+        border-radius: 8px;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+        font-size: 0.88rem;
+        color: #3a3e4a;
+      }
+      .callout b {
+        color: #16181d;
+      }
+      .callout.bad {
+        border-color: #f3c4bf;
+        background: #fff7f6;
+      }
+      .console {
+        margin: 0;
+        border-top: 1px solid #2b2f38;
+        background: #1e2027;
+        color: #d7dae2;
+        font:
+          12px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .console__bar {
+        display: flex;
+        gap: 16px;
+        padding: 6px 12px;
+        border-bottom: 1px solid #2b2f38;
+        color: #9aa0ad;
+      }
+      .console__bar b {
+        color: #e9ebf2;
+        font-weight: 600;
+      }
+      .console__row {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 6px;
+        padding: 8px 12px;
+        background: #332b00;
+        color: #f2d96b;
+        border-bottom: 1px solid #4a3f00;
+      }
+      .console__row span {
+        overflow-wrap: anywhere;
+      }
+      .timeline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 12px 0 0;
+      }
+      .tick {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+        font-size: 0.85rem;
+      }
+      .tick h4 {
+        margin: 0 0 6px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .tick .state {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 0;
+        border-top: 1px dashed #e3e5eb;
+      }
+      .tick .on {
+        color: #1f7a45;
+        font-weight: 600;
+      }
+      .tick .off {
+        color: #8a8f9c;
+      }
+      .tick .warn {
+        color: #b42318;
+        font-weight: 600;
+      }
+      @media (max-width: 900px) {
+        .timeline {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 16px 0;
+      }
+      @media (max-width: 1000px) {
+        .cards {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      .card {
+        padding: 14px 16px;
+        border-radius: 10px;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+        font-size: 0.9rem;
+      }
+      .card.rec {
+        border-color: #9bd3b3;
+        box-shadow: 0 0 0 2px #dcf3e6;
+      }
+      .card h3 {
+        margin: 0 0 6px;
+        font-size: 0.95rem;
+      }
+      .card p {
+        margin: 6px 0 0;
+      }
+      .card .needs {
+        color: #3a3e4a;
+      }
+      .card .breaks {
+        color: #8a2a20;
+      }
+      .card.rec .breaks {
+        color: #1f5a37;
+      }
+      main > h3 {
+        font-size: 1rem;
+        margin: 32px 0 4px;
+      }
+      .inspect {
+        margin-left: 8px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: #1e2027;
+        color: #f2d96b;
+        font:
+          11px/1.5 ui-monospace,
+          Menlo,
+          monospace;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .host .wrong {
+        background: #fde8e6;
+        box-shadow: inset 3px 0 0 #b42318;
+      }
+      .host .right {
+        background: #dcf3e6;
+        box-shadow: inset 3px 0 0 #1f7a45;
+      }
+      .devcode {
+        border-radius: 10px;
+        background: #1e2027;
+        color: #d7dae2;
+        overflow: hidden;
+      }
+      .devcode__label {
+        margin: 0;
+        padding: 10px 14px 4px;
+        color: #9aa0ad;
+        font-size: 0.8rem;
+      }
+      .devcode pre {
+        margin: 0;
+        padding: 4px 14px 12px;
+        font:
+          12.5px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        overflow-x: auto;
+      }
+      .tablewrap {
+        overflow-x: auto;
+      }
+      .compare {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        font-size: 0.88rem;
+      }
+      .compare th,
+      .compare td {
+        padding: 8px 10px;
+        border: 1px solid #e3e5eb;
+        text-align: left;
+        vertical-align: top;
+      }
+      .compare thead th {
+        background: #eceef3;
+      }
+      .compare .good {
+        background: #f0faf4;
+        color: #1f5a37;
+        font-weight: 600;
+      }
+      .compare .bad {
+        background: #fff7f6;
+        color: #8a2a20;
+      }
+      .asks {
+        max-width: 78ch;
+        padding-left: 20px;
+      }
+      .asks li {
+        margin: 10px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>List keys: who is responsible for them</h1>
+      <p class="lead">
+        Issue #28 (edit lists: add, remove and reorder keyed array items). Two recommendations of mine fell apart on a
+        detail, which means there is a wider decision underneath:
+        <b>where an item's <code>_key</code> comes from, and who is responsible for it.</b> This page explains why keys
+        matter, the four places they could come from, and what each looks like in situ, for the editor and for the
+        site's developer. Frames are stills of a desktop page in edit mode, in the chrome's own look.
+      </p>
+
+      <!-- ===================================== 1. Why keys ===================================== -->
+      <h2>1. Why a list needs keys</h2>
+      <p class="note">
+        Every edit names what it changes by an address. Without a key, the only address an item has is its position:
+        “the 3rd artist”. Positions change when an item is added, removed or moved, so an edit that is still waiting (it
+        failed to save and will be retried, or it is queued) can land on whichever item has moved into that place. A key
+        is a short id stored inside the item (<code>{ _key: "i3", name: "Ines" }</code>) that never changes, so the
+        address “the artist with key i3” always names the same artist.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Addressed by position <span class="tag now">an edit can land on the wrong item</span></figcaption>
+          <div class="frame" data-demo="why-position"></div>
+          <p class="callout bad">
+            <b>What happens:</b> the change to Ines's line fails to save (offline). The editor removes Tobias. Ines is
+            now 2nd, Kofi 3rd. Retry sends the change to “artist 3”, which is Kofi.
+          </p>
+        </figure>
+        <figure>
+          <figcaption>Addressed by key <span class="tag rec">the edit follows the item</span></figcaption>
+          <div class="frame" data-demo="why-key"></div>
+          <p class="callout">
+            <b>The same steps:</b> Retry sends the change to “the artist with key i3”. That is Ines, wherever she sits.
+          </p>
+        </figure>
+      </div>
+
+      <!-- ===================================== 2. The decision ===================================== -->
+      <h2>2. The decision: where do keys come from?</h2>
+      <p class="note">
+        New items get a key from the chrome's Add, so the question is about content that already exists without keys.
+        Something has to give those items keys. There are four candidates. Each needs one thing to be true, and that is
+        where my earlier recommendations went wrong.
+      </p>
+      <div class="cards">
+        <article class="card">
+          <h3>A · The editor, on the first change <span class="tag now">built now</span></h3>
+          <p>The first Add, Remove or Move in a list writes a key into every item, then does what was pressed.</p>
+          <p class="needs"><b>Needs:</b> the page to show the items by key right after that write.</p>
+          <p class="breaks">
+            <b>Breaks:</b> the write is a change the editor didn't ask for. If the page still shows items by position,
+            the press does nothing. Any unrelated validation error turns list editing off.
+          </p>
+        </article>
+        <article class="card">
+          <h3>B · The schema, when content is read <span class="tag now">my first pick, unsafe</span></h3>
+          <p>A schema helper adds a key to any item without one, every time the content passes through the schema.</p>
+          <p class="needs"><b>Needs:</b> what the schema adds to be saved.</p>
+          <p class="breaks">
+            <b>Breaks:</b> the store checks content against the schema on every read but saves nothing. Each page load
+            invents new keys that aren't in the store, so edits to those items fail.
+          </p>
+        </article>
+        <article class="card">
+          <h3>C · The store, when content is written</h3>
+          <p>The store is told which lists are keyed, and any write to those documents adds and saves missing keys.</p>
+          <p class="needs"><b>Needs:</b> someone to save each document once before its lists can be edited.</p>
+          <p class="breaks">
+            <b>Breaks:</b> a list nobody has saved since the change shows no list buttons, next to lists that do. Every
+            store a site brings has to do the same (a new rule in the contract suite).
+          </p>
+        </article>
+        <article class="card rec">
+          <h3>D · The site's content <span class="tag rec">recommended</span></h3>
+          <p>
+            The schema requires a key on every item (<code>keyedItems</code>), so the store refuses unkeyed items.
+            Existing content gets its keys once, from a script (<code>addListKeys</code>) run at deploy or in a
+            migration.
+          </p>
+          <p class="needs"><b>Needs:</b> the site's developer to run the fill once per list when adopting.</p>
+          <p class="breaks">
+            <b>Breaks:</b> nothing at runtime. If the fill is skipped, that list shows the single outline with no list
+            buttons, and the console says to run it.
+          </p>
+        </article>
+      </div>
+
+      <!-- ===================================== 3. In situ ===================================== -->
+      <h2>3. What each looks like for the editor</h2>
+      <h3>A · The editor keys on the first change</h3>
+      <p class="note">
+        The editor presses Remove on Tobias in a list whose items have no keys. The chrome writes keys into all three
+        items (a draft change), asks the page again, and the page still renders the items by position. Nothing was
+        removed, the toolbar has gone, and the bar counts a change the editor never made.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Before the press</figcaption>
+          <div class="frame" data-demo="a-before"></div>
+        </figure>
+        <figure>
+          <figcaption>After the press <span class="tag now">nothing removed, a change counted</span></figcaption>
+          <div class="frame" data-demo="a-after"></div>
+        </figure>
+      </div>
+
+      <h3>B · The schema keys on read</h3>
+      <p class="note">
+        Two loads of the same page. Each load passes the content through the schema, which invents keys; neither set is
+        saved. The editor opened the page at 10:02, a colleague's save made the chrome read again at 10:05, and the
+        editor's next save goes to a key that no longer exists anywhere.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Page load at 10:02 <span class="inspect">data-edit-item = artists[_key=k9x2…]</span></figcaption>
+          <div class="frame" data-demo="b-first"></div>
+        </figure>
+        <figure>
+          <figcaption>
+            After a re-read at 10:05 <span class="inspect">data-edit-item = artists[_key=q2mf…]</span>
+          </figcaption>
+          <div class="frame" data-demo="b-second"></div>
+        </figure>
+      </div>
+
+      <h3>C · The store keys on write</h3>
+      <p class="note">
+        The same site, two pages. The roster's document was saved after the change, so its items have keys. The events'
+        document hasn't been saved since: its list has no buttons until somebody edits any field on that page and saves.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Artists: saved since <span class="tag rec">list buttons</span></figcaption>
+          <div class="frame" data-demo="c-saved"></div>
+        </figure>
+        <figure>
+          <figcaption>Events: not saved since <span class="tag now">no list buttons yet</span></figcaption>
+          <div class="frame" data-demo="c-unsaved"></div>
+        </figure>
+      </div>
+
+      <h3>D · The site owns keys <span class="tag rec">recommended</span></h3>
+      <p class="note">
+        The editor never sees keys being made: every list has its buttons from the first load. The work is the site
+        developer's, once, when adopting the editor. Shown here: the developer's two changes, and the one thing the
+        editor would see if a fill were missed.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Every list, every load <span class="tag rec">full list chrome</span></figcaption>
+          <div class="frame" data-demo="d-editor"></div>
+        </figure>
+        <figure>
+          <figcaption>The site developer's side <span class="tag">once, at adoption</span></figcaption>
+          <div class="devcode">
+            <p class="devcode__label">1 · The schema requires a key (content/schema.ts)</p>
+            <pre><code>import { keyedItems } from "@yl/editor";
+
+artists: keyedItems(z.object({
+  name: z.string(),
+  line: z.string(),
+})),</code></pre>
+            <p class="devcode__label">2 · Existing content gets its keys, once (scripts/add-list-keys.ts)</p>
+            <pre><code>import { addListKeys } from "@yl/editor";
+
+await addListKeys(store, "artist/list", "artists");
+// → wrote _key into 6 items of artist/list:artists</code></pre>
+            <p class="devcode__label">If the fill was missed: that list only, and the console says why</p>
+            <div class="console__row">
+              <span>⚠</span
+              ><span
+                >[yl-editor] artist/list:artists has no Add, Remove or Move: its items have no _key, so an edit can't be
+                tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.</span
+              >
+            </div>
+          </div>
+        </figure>
+      </div>
+
+      <!-- ===================================== 4. Comparison ===================================== -->
+      <h2>4. Side by side</h2>
+      <div class="tablewrap">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th></th>
+              <th>A · editor, first change</th>
+              <th>B · schema, on read</th>
+              <th>C · store, on write</th>
+              <th>D · site's content</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Editor sees list buttons</th>
+              <td>Yes, until a press fails</td>
+              <td>Yes, but saves fail</td>
+              <td>Only once the page was saved</td>
+              <td class="good">Always</td>
+            </tr>
+            <tr>
+              <th>Changes nobody asked for</th>
+              <td class="bad">The keying write</td>
+              <td>None saved</td>
+              <td>Bundled into the next save</td>
+              <td class="good">None</td>
+            </tr>
+            <tr>
+              <th>Edits can land on another item</th>
+              <td>No, once keyed</td>
+              <td class="bad">Edits fail outright</td>
+              <td>No</td>
+              <td class="good">No</td>
+            </tr>
+            <tr>
+              <th>Site developer's work</th>
+              <td class="good">None</td>
+              <td>Add the helper</td>
+              <td>Name the lists; custom stores implement it</td>
+              <td>Add the helper; run the fill once</td>
+            </tr>
+            <tr>
+              <th>Code the editor carries</th>
+              <td class="bad">Keying, moving pending edits, fallbacks</td>
+              <td>None</td>
+              <td>None</td>
+              <td class="good">None</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        Where the sites stand: South of the River already stores <code>_key</code> on its artists and events, so D costs
+        it one schema change and no fill. Portfolio and skinmenu would run the fill once for each list they make
+        editable.
+      </p>
+
+      <h2>5. What I'd like you to decide</h2>
+      <ol class="asks">
+        <li>
+          <b>Where keys come from: A, B, C or D.</b> I recommend D: the content owns its keys, the editor never invents
+          them, and nothing surprising happens at runtime. It replaces ruling 3b (the editor keying on the first
+          change).
+        </li>
+        <li>
+          <b>If D: does the store refuse unkeyed items?</b> With <code>keyedItems</code> in the schema it would, so a
+          script or another tool that writes items without keys fails loudly instead of creating unkeyed content. I
+          recommend yes.
+        </li>
+      </ol>
+    </main>
+
+    <script>
+      (() => {
+        const ICONS = {
+          up: '<path d="m6 15 6-6 6 6"/>',
+          down: '<path d="m6 9 6 6 6-6"/>',
+          remove: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+          plus: '<path d="M12 5v14M5 12h14"/>',
+        };
+        const icon = (name) =>
+          `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+        const esc = (text) =>
+          String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+        const tools = (name, index, count, open) =>
+          `<div class="cms-root cms-item__tools" role="toolbar" aria-label="${esc(name)}, ${index + 1} of ${count}: actions" ${open ? "data-pinned" : ""}>` +
+          `<button type="button" class="cms-btn cms-btn--ghost" aria-label="Move ${esc(name)} up" ${index === 0 ? 'aria-disabled="true"' : ""}>${icon("up")}</button>` +
+          `<button type="button" class="cms-btn cms-btn--ghost" aria-label="Move ${esc(name)} down" ${index === count - 1 ? 'aria-disabled="true"' : ""}>${icon("down")}</button>` +
+          `<button type="button" class="cms-btn cms-btn--ghost cms-item__danger" aria-label="Remove ${esc(name)}">${icon("remove")}</button></div>`;
+
+        /** A list with the chrome's grid marking. `body(item)` returns the item's fields. */
+        function chromeList({
+          label,
+          noun,
+          max,
+          items,
+          body,
+          open = -1,
+          undo = false,
+          tagless = false,
+          actions = true,
+        }) {
+          const rows = items
+            .map(
+              (item, index) =>
+                `<li class="cms-item" ${index === open ? "data-open" : ""}>${actions ? tools(item.name, index, items.length, index === open) : ""}<span class="cms-root cms-item__band" aria-hidden="true"></span>${body(item)}</li>`,
+            )
+            .join("");
+          const tag = max ? `${label} · ${items.length} of ${max}` : `${label} · ${items.length}`;
+          return `<section class="cms-listedit" aria-label="${esc(tag)}"><span class="cms-root cms-listedit__frame" aria-hidden="true"></span>${tagless ? "" : `<span class="cms-listedit__tag cms-root" aria-hidden="true">${esc(tag)}</span>`}<ul class="cms-listedit__items">${rows}</ul>${actions ? "" : "<!--"}<div class="cms-listedit__add cms-root"><button type="button" class="cms-btn cms-btn--add">${icon("plus")} Add ${esc(noun)}</button>${undo ? '<button type="button" class="cms-btn cms-listedit__undo">Undo</button>' : ""}</div>${actions ? "" : "-->"}</section>`;
+        }
+
+        const field = (tag, text, extra = "") => `<${tag} class="cms-field" ${extra}>${esc(text)}</${tag}>`;
+        const artistBody = (artist) => `<div>${field("h4", artist.name)}${field("p", artist.line)}</div>`;
+
+        const ROSTER = [
+          { name: "Mara Okoye", line: "Field recordings and slow synths" },
+          { name: "Tobias Lindqvist", line: "Tape loops, one lamp" },
+          { name: "Ines Duarte", line: "Cello, pedals, a small choir" },
+        ];
+        const SECTIONS = [
+          {
+            name: "Starters",
+            dishes: [
+              ["Charred leeks", "£7"],
+              ["Smoked eel", "£9"],
+            ],
+          },
+          {
+            name: "Mains",
+            dishes: [
+              ["Hake, brown butter", "£19"],
+              ["Barley, wild garlic", "£15"],
+            ],
+          },
+        ];
+
+        const bar = (changes = "drafts save as you go") =>
+          `<div class="cms-root cms-bar" role="region" aria-label="Editing"><div class="cms-bar__state"><span>Editing as Maya (Editor)</span><span class="cms-bar__changes">${esc(changes)}</span></div><div class="cms-bar__actions"><button type="button" class="cms-btn cms-btn--ghost">Revisions</button><button type="button" class="cms-btn cms-btn--ghost">Done</button><button type="button" class="cms-btn cms-btn--primary">Publish</button></div></div>`;
+        const toast = (message, buttons, kind = "info") =>
+          `<div class="cms-root cms-toast" data-kind="${kind}"><p class="cms-toast__message">${esc(message)}</p><div class="cms-toast__actions">${buttons
+            .map(
+              (b) =>
+                `<button type="button" class="cms-btn ${b.primary ? "cms-btn--primary" : "cms-btn--ghost"}">${esc(b.label)}</button>`,
+            )
+            .join("")}</div></div>`;
+
+        const KOFI = { name: "Kofi Mensah", line: "Drum machines and dub" };
+        const EVENTS = [
+          { name: "Winter Warehouse", line: "5 Dec 2026 · Dock Road Arches" },
+          { name: "Listening Room", line: "12 Dec 2026 · St Anne's Hall" },
+          { name: "New Year Drift", line: "9 Jan 2027 · The Boathouse" },
+        ];
+        const page = (title, list, extra = "", changes) =>
+          `<div class="host"><h1>Harbour Collective</h1><h2>${esc(title)}</h2>${list}</div>${extra}${bar(changes)}`;
+        const artists = (items, options = {}) =>
+          chromeList({ label: "Artists", noun: "artist", max: 6, items, body: options.body ?? artistBody, ...options });
+        const marked = (wrongName) => (artist) =>
+          `<div>${field("h4", artist.name)}<p class="cms-field ${artist.name === wrongName ? "wrong" : artist.edited ? "right" : ""}">${esc(artist.line)}</p></div>`;
+        const DEMOS = {
+          "why-position": () =>
+            page(
+              "Artists",
+              artists([ROSTER[0], ROSTER[2], { ...KOFI, line: "Cello, pedals, a choir of twelve" }], {
+                body: marked("Kofi Mensah"),
+              }),
+              "",
+              "2 changes on this page",
+            ),
+          "why-key": () =>
+            page(
+              "Artists",
+              artists([ROSTER[0], { ...ROSTER[2], line: "Cello, pedals, a choir of twelve", edited: true }, KOFI], {
+                body: marked(""),
+              }),
+              "",
+              "2 changes on this page",
+            ),
+          "a-before": () =>
+            page("Artists", artists([ROSTER[0], ROSTER[1], ROSTER[2]], { open: 1 }), "", "No changes yet"),
+          "a-after": () =>
+            page(
+              "Artists",
+              artists([ROSTER[0], ROSTER[1], ROSTER[2]], { actions: false }),
+              "",
+              "1 change on this page",
+            ),
+          "b-first": () => page("Artists", artists([ROSTER[0], ROSTER[1], ROSTER[2]])),
+          "b-second": () =>
+            page(
+              "Artists",
+              artists([ROSTER[0], ROSTER[1], ROSTER[2]]),
+              toast(
+                "Couldn't save: no item with _key=k9x2… in artists. The page has moved on since it loaded.",
+                [{ label: "Retry", primary: true }],
+                "error",
+              ),
+              "1 change on this page",
+            ),
+          "c-saved": () => page("Artists", artists([ROSTER[0], ROSTER[1], ROSTER[2]])),
+          "c-unsaved": () =>
+            page(
+              "Events",
+              chromeList({ label: "Events", noun: "event", max: 8, items: EVENTS, body: artistBody, actions: false }),
+            ),
+          "d-editor": () => page("Artists", artists([ROSTER[0], ROSTER[1], ROSTER[2]], { open: 1 })),
+        };
+        const TIMELINES = {};
+
+        for (const node of document.querySelectorAll("[data-demo]")) node.innerHTML = DEMOS[node.dataset.demo]();
+        for (const node of document.querySelectorAll("[data-timeline]")) {
+          node.innerHTML = TIMELINES[node.dataset.timeline]
+            .map(
+              ([title, rows]) =>
+                `<div class="tick"><h4>${esc(title)}</h4>${rows
+                  .map(
+                    ([what, kind, detail]) =>
+                      `<div class="state"><span>${esc(what)}</span><span class="${kind}">${esc(detail)}</span></div>`,
+                  )
+                  .join("")}</div>`,
+            )
+            .join("");
+        }
+
+        // Lines between an item's own fields (a nested item's fields belong to its own row), as the chrome draws them.
+        function paintItem(li) {
+          li.querySelectorAll(":scope > .cms-item__sep").forEach((node) => node.remove());
+          const box = li.getBoundingClientRect();
+          const pad =
+            parseFloat(getComputedStyle(li.closest(".cms-listedit")).getPropertyValue("--cms-list-pad")) || 12;
+          const fields = [...li.querySelectorAll(".cms-field")]
+            .filter((node) => node.closest(".cms-item") === li)
+            .map((node) => {
+              const r = node.getBoundingClientRect();
+              return { l: r.left - box.left, r: r.right - box.left, t: r.top - box.top, b: r.bottom - box.top };
+            });
+          const overlapY = (a, b) => Math.min(a.b, b.b) - Math.max(a.t, b.t) > 1;
+          const overlapX = (a, b) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 1;
+          const xs = [];
+          const hs = [];
+          for (const a of fields)
+            for (const b of fields) {
+              if (a === b) continue;
+              if (a.r <= b.l && overlapY(a, b)) {
+                const between = fields.some((c) => c !== a && c !== b && c.l >= a.r && c.r <= b.l && overlapY(c, a));
+                const x = (a.r + b.l) / 2;
+                if (!between && !xs.some((other) => Math.abs(other - x) < 2)) xs.push(x);
+              }
+              if (a.b <= b.t && overlapX(a, b)) {
+                const between = fields.some((c) => c !== a && c !== b && c.t >= a.b && c.b <= b.t && overlapX(c, a));
+                if (!between) hs.push({ y: (a.b + b.t) / 2, l: Math.min(a.l, b.l), r: Math.max(a.r, b.r) });
+              }
+            }
+          const edgeL = -pad + 2;
+          const edgeR = box.width + pad - 2;
+          for (const x of xs) {
+            const line = document.createElement("span");
+            line.className = "cms-root cms-item__sep cms-item__sep--v";
+            line.setAttribute("aria-hidden", "true");
+            line.style.setProperty("--cms-sep-x", `${x}px`);
+            li.append(line);
+          }
+          const drawn = [];
+          for (const h of hs) {
+            const left = Math.max(edgeL, ...xs.filter((x) => x <= h.l + 1));
+            const right = Math.min(edgeR, ...xs.filter((x) => x >= h.r - 1));
+            if (drawn.some((d) => Math.abs(d.y - h.y) < 2 && Math.abs(d.left - left) < 2)) continue;
+            drawn.push({ y: h.y, left });
+            const line = document.createElement("span");
+            line.className = "cms-root cms-item__sep cms-item__sep--h";
+            line.setAttribute("aria-hidden", "true");
+            const touchesV = xs.some((x) => Math.abs(x - left) < 2);
+            line.style.setProperty("--cms-sep-x", `${left + (touchesV ? 1 : 0)}px`);
+            line.style.setProperty("--cms-sep-y", `${h.y}px`);
+            line.style.setProperty("--cms-sep-w", `${right - left - (touchesV ? 1 : 0)}px`);
+            li.append(line);
+          }
+        }
+        const paintAll = () => document.querySelectorAll(".cms-item").forEach(paintItem);
+        paintAll();
+        new ResizeObserver(paintAll).observe(document.body);
+      })();
+    </script>
+  </body>
+</html>
