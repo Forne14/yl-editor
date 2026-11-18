@@ -910,28 +910,6 @@ describe("the rulings of 2026-11-18", () => {
     ]);
   });
 
-  test("a keyed item's field rendered by position is saved by key", async () => {
-    const edit = editable(KEY);
-    const attrs = (record: Record<string, string>) =>
-      Object.entries(record)
-        .map(([name, value]) => ` ${name}="${value}"`)
-        .join("");
-    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
-      .map(
-        (artist, index) =>
-          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
-      )
-      .join("")}</ul></main>`;
-    await mount();
-    expect(toolButton(0, "down")).not.toBeNull();
-    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
-    tobias.click();
-    tobias.textContent = "Tobi";
-    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    await settle();
-    expect(fieldCalls).toEqual(["artists[_key=b].name"]);
-  });
-
   test("Undo that hits a conflict drops the removal and says it can't be put back", async () => {
     listAttrs = { ...listAttrs, min: 0 };
     document.body.innerHTML = `<main id="page">${renderList()}</main>`;
@@ -996,28 +974,6 @@ describe("eleventh review round", () => {
 });
 
 describe("twelfth review round", () => {
-  const attrs = (record: Record<string, string>) =>
-    Object.entries(record)
-      .map(([name, value]) => ` ${name}="${value}"`)
-      .join("");
-
-  test("a field inside an item that names another entry keeps its own path", async () => {
-    const edit = editable(KEY);
-    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
-      .map(
-        (artist, index) =>
-          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3><small${attrs(edit(`artists.${(index + 1) % 2}.name`, "text"))}>next</small></li>`,
-      )
-      .join("")}</ul></main>`;
-    await mount();
-    const teaser = items()[0]?.querySelector("small") as HTMLElement;
-    teaser.click();
-    teaser.textContent = "Tobi";
-    teaser.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    await settle();
-    expect(fieldCalls).toEqual(["artists.1.name"]);
-  });
-
   test("Undo puts an item back after its old neighbour, even after another change", async () => {
     artists.push({ _key: "c", name: "Ines" });
     listAttrs = { ...listAttrs, min: 0, max: 5 };
@@ -1044,48 +1000,6 @@ describe("twelfth review round", () => {
     copies()[1]?.querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
     await settle();
     expect(copies()[1]?.contains(document.activeElement)).toBe(true);
-  });
-});
-
-describe("thirteenth review round", () => {
-  test("a field rendered by position inside a keyed item stays with its item after Move, Remove and Undo", async () => {
-    artists.push({ _key: "c", name: "Ines" });
-    listAttrs = { ...listAttrs, min: 0, max: 5 };
-    const edit = editable(KEY);
-    const attrs = (record: Record<string, string>) =>
-      Object.entries(record)
-        .map(([name, value]) => ` ${name}="${value}"`)
-        .join("");
-    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
-      .map(
-        (artist, index) =>
-          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
-      )
-      .join("")}</ul></main>`;
-    await mount();
-    // The page renders it by position: Move, Remove and Undo take the page's markup, with the right addresses.
-    pageAnswer = () =>
-      new Response(
-        `<!doctype html><main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
-          .map(
-            (artist, index) =>
-              `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
-          )
-          .join("")}</ul></main>`,
-      );
-    toolButton(2, "up").click();
-    await settle();
-    toolButton(2, "remove").click();
-    await settle();
-    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
-    await settle();
-    expect(names()).toEqual(["Mara", "Ines", "Tobias"]);
-    const tobias = items()[2]?.querySelector("h3") as HTMLElement;
-    tobias.click();
-    tobias.textContent = "Tobi";
-    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    await settle();
-    expect(fieldCalls).toEqual(["artists[_key=b].name"]);
   });
 });
 
@@ -1139,5 +1053,43 @@ describe("keys are the content's (ruled 2026-11-18)", () => {
     expect(fieldCalls).toEqual([]);
     expect(arrayCalls).toEqual([]);
     warn.mockRestore();
+  });
+});
+
+describe("fields by key are the site's (ruled 2026-11-18)", () => {
+  test("a keyed item's field addressed by position leaves the list with one outline, no list actions, and a console note", async () => {
+    const edit = editable(KEY);
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mount();
+    expect(list().querySelectorAll(".cms-list__frame")).toHaveLength(1);
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(warn.mock.calls[0]?.[0]).toContain("its field artists.0.name is addressed by position inside a keyed item");
+    warn.mockRestore();
+  });
+
+  test("fields rendered with itemFields keep the full list chrome", async () => {
+    const edit = editable(KEY);
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit.itemFields("artists", artist, index)("name", "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+    await mount();
+    expect(toolButton(0, "down")).not.toBeNull();
   });
 });

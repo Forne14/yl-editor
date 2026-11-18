@@ -53,6 +53,16 @@ export interface Editable {
   list(path: string, attrs?: EditableListAttrs): Record<string, string>;
   /** One item's attributes, addressed with `itemPath` so a keyed item survives a concurrent reorder. */
   item(listPath: string, item: unknown, index: number): Record<string, string>;
+  /**
+   * The field attributes for one item's fields, addressed through the item (`artists[_key=i3].name`), so an edit stays
+   * with its item after an add, remove or move. A keyed item's field addressed by position leaves the list without
+   * list actions.
+   */
+  itemFields(
+    listPath: string,
+    item: unknown,
+    index: number,
+  ): (name: string, type: EditFieldType, attrs?: EditableAttrs) => Record<string, string>;
 }
 
 function limit(value: number | undefined, name: string): string | undefined {
@@ -101,5 +111,9 @@ export function editable(docKey: string | undefined): Editable {
     parsePath(path);
     return { "data-edit-item": `${docKey}:${path}` };
   };
-  return Object.assign(field, { list, item });
+  const itemFields = (listPath: string, value: unknown, index: number) => {
+    const base = itemPath(listPath, value, index);
+    return (name: string, type: EditFieldType, attrs?: EditableAttrs) => field(`${base}.${name}`, type, attrs);
+  };
+  return Object.assign(field, { list, item, itemFields });
 }

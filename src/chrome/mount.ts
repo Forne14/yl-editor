@@ -454,7 +454,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * How a list is dressed (rulings on #28, 2026-11-15 and 2026-11-18):
    * - a list inside another list's item gets no list chrome: its fields are cells of the outer item's row;
    * - every copy of a list on the page gets list chrome, and a change shows in all of them;
-   * - keyed items get the full toolbar, and their fields are saved by key whatever path the page renders;
+   * - keyed items get the full toolbar when their fields are addressed by key too;
    * - keys are the content's (`keyedItems`, `addListKeys`): the chrome never invents one for a stored item. A list
    *   with an item rendered without a key keeps the one outline and grid with no list actions, and the console tells
    *   the site's developer why.
@@ -468,11 +468,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       list.nested = outerRecord !== undefined && session.documents.get(outerRecord.info.key)?.access.edit === true;
     }
     if (list.nested || session.documents.get(list.info.key)?.access.edit !== true) return;
-    if (list.items.some((item) => item.itemKey === undefined)) {
+    const unkeyed = list.items.some((item) => item.itemKey === undefined);
+    const byPosition = unkeyed ? undefined : fieldByPosition(list);
+    if (unkeyed || byPosition !== undefined) {
       if (!warned.has(list.id)) {
         warned.add(list.id);
         console.warn(
-          `[yl-editor] ${list.id} has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.`,
+          unkeyed
+            ? `[yl-editor] ${list.id} has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.`
+            : `[yl-editor] ${list.id} has no Add, Remove or Move: its field ${byPosition} is addressed by position inside a keyed item. Render an item's fields with editable(docKey).itemFields(path, item, index). See docs/chrome.md → Lists.`,
         );
       }
       attachList(list, strings, { actions: false, canAdd: false, canUndo: false, add() {}, undo() {}, act() {} });
@@ -492,38 +496,20 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const warned = new Set<string>();
 
   /**
-   * A keyed item's fields are saved by key, whatever path the page rendered (`artists.2.name` is saved as
-   * `artists[_key=i3].name`), so a remove or move can't put a failed or queued edit into another item.
+   * The first field inside the list's items addressed by position (`artists.2.name`), if any. After an add, remove
+   * or move that address names another item, so such a list gets no list actions (ruled 2026-11-18): the site renders
+   * an item's fields by key, with `editable(docKey).itemFields(path, item, index)`.
    */
-  function keyFieldPaths(records: readonly FieldRecord[]): void {
-    const byElement = new Map(records.map((record) => [record.element, record]));
-    for (const list of lists) {
-      if (list.nested) continue;
-      const prefix = `${list.info.path}.`;
-      list.items.forEach((item, position) => {
-        if (item.itemKey === undefined) return;
-        for (const node of item.element.querySelectorAll<HTMLElement>("[data-edit-field]")) {
-          const record = byElement.get(node);
-          if (!record || record.info.key !== list.info.key || !record.info.path.startsWith(prefix)) continue;
-          // Only the item's own index: a field naming another entry (a teaser of the next artist) keeps its path.
-          const index = /^(\d+)(?=\.|$)/.exec(record.info.path.slice(prefix.length))?.[1];
-          if (index === undefined || Number(index) !== position) continue;
-          record.info.path = item.path + record.info.path.slice(prefix.length + index.length);
-          record.id = `${record.info.key}:${record.info.path}`;
-        }
-      });
-    }
-  }
-
-  /** Whether any field inside the list's items is addressed by position (`artists.2.name`) in the page's markup. */
-  function renderedByIndex(list: ListRecord): boolean {
+  function fieldByPosition(list: ListRecord): string | undefined {
     const prefix = `${list.info.key}:${list.info.path}.`;
-    return list.items.some((item) =>
-      [...item.element.querySelectorAll<HTMLElement>("[data-edit-field]")].some((node) => {
+    for (const item of list.items) {
+      for (const node of item.element.querySelectorAll<HTMLElement>("[data-edit-field]")) {
         const address = node.dataset.editField ?? "";
-        return address.startsWith(prefix) && /^\d/.test(address.slice(prefix.length));
-      }),
-    );
+        if (address.startsWith(prefix) && /^\d/.test(address.slice(prefix.length)))
+          return address.slice(list.info.key.length + 1);
+      }
+    }
+    return undefined;
   }
 
   /** Every copy of a list on the page, in page order. */
@@ -656,9 +642,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     stored: readonly unknown[] | null,
     restores?: Map<HTMLElement, Restore>,
   ) {
-    // A copy whose fields were rendered by position can't be rearranged: its addresses would then name other items,
-    // so the page renders it again with the right ones.
-    let needsPage = stored === null || copiesOf(id).some(renderedByIndex);
+    let needsPage = stored === null;
     if (!needsPage && stored !== null) {
       for (const copy of copiesOf(id)) {
         if (!arrangeList(copy, stored, restores?.get(copy.element))) needsPage = true;
@@ -819,7 +803,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     for (const record of added) record.cleared = clearedOf.get(record.element);
     const addedLists = nodes.flatMap((node) => scanLists(node));
     lists.push(...addedLists);
-    keyFieldPaths(added);
     fields.push(...added);
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of added) {
@@ -1964,7 +1947,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
     lists = scanLists(scanRoot);
-    keyFieldPaths(fields);
   }
 
   /** Marks each field editable or locked from what the session knows, and dresses fields and lists while editing. */

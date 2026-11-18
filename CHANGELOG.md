@@ -23,8 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `EditableListAttrs` (from `@yl/editor` and `@yl/editor/chrome`) and `ListOptions` (chrome). New `chrome.css`
   tokens `--cms-list-pad`, `--cms-list-line`, `--cms-list-tint`, and new `defaultStrings` keys listed in
   `docs/chrome.md` → Strings. Items must have a `_key` for list actions; a list without keys keeps its outline with no list actions and a
-  console note; a keyed item's fields are saved by key
-  whatever path the page renders; a list rendered twice keeps list chrome on every copy; a nested list's fields are
+  console note, and so does a keyed item whose fields are addressed by position (render them with the new
+  `editable(docKey).itemFields(path, item, index)`); a list rendered twice keeps list chrome on every copy; a nested list's fields are
   cells of the outer row; each removal has its own 15 s Undo, and an Undo after a conflict is dropped. Move,
   Remove and Undo rearrange the page's own markup; Add and Duplicate swap in the list's new markup from the page, and
   other fields keep their state and any open editor meanwhile.

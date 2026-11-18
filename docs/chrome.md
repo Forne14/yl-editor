@@ -227,18 +227,19 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 ### Lists
 
 A keyed array (a roster, a list of events) can be edited as a list: add, remove, move up and down, and duplicate. Mark
-the list element with `edit.list(path, attrs)` and each item with `edit.item(path, item, index)`. The item's fields
-are ordinary fields, addressed with `itemPath` so a save lands on the right item after a concurrent reorder.
+the list element with `edit.list(path, attrs)`, each item with `edit.item(path, item, index)`, and the item's fields
+with `edit.itemFields(path, item, index)`, which addresses them through the item (`artists[_key=i3].name`), so an
+edit stays with its item after an add, remove or move.
 
 ```astro
 ---
-import { editable, itemPath } from "@yl/editor";
+import { editable } from "@yl/editor";
 const edit = editable(editor ? "artist/list" : undefined);
 ---
 <ul {...edit.list("artists", { label: "Artists", noun: "artist", plural: "artists", min: 1, max: 6, itemLabel: "name" })}>
   {artists.map((artist, index) => (
     <li {...edit.item("artists", artist, index)}>
-      <h3 {...edit(`${itemPath("artists", artist, index)}.name`, "text", { label: "Name" })}>{artist.name}</h3>
+      <h3 {...edit.itemFields("artists", artist, index)("name", "text", { label: "Name" })}>{artist.name}</h3>
     </li>
   ))}
 </ul>
@@ -274,10 +275,10 @@ mountEditor({
 
 **How a list is dressed** (rulings on #28, edit lists: add, remove and reorder keyed array items):
 
-- **Keyed items** get the full list chrome. Their fields are saved by key whatever path the page renders: a field
-  rendered as `artists.2.name` inside the item `artists[_key=i3]` is saved to `artists[_key=i3].name`, so a remove
-  or move can't put a failed or queued edit into another item. A list whose fields are rendered by position is redrawn by
-  the page after a Move, Remove or Undo, so its addresses stay right.
+- **Keyed items, with fields addressed by key** (`itemFields`) get the full list chrome. A field addressed by position
+  inside a keyed item (`artists.2.name`) would name another item after an add, remove or move, so that list keeps the
+  one outline and grid with every field editable but no toolbar, Add or Undo, and `console.warn` names the field. The
+  chrome never rewrites an address.
 - **Keys are the content's.** The chrome never invents a key for a stored item; only an item it adds gets one.
   Require them in the schema with `keyedItems(itemSchema)` from `@yl/editor`: the store then refuses an item
   without a usable, unique `_key`, with an error that says a key must be provided. Key existing content once with
