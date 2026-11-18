@@ -405,10 +405,11 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     full && handlers.canAdd ? fullReason : "",
   ]);
   record.addButton = undefined;
+  record.undoButton = undefined;
   const addChildren: (Node | null)[] = [];
   if (total === 0)
     addChildren.push(element("p", { class: "cms-list__empty" }, [format(strings.listEmpty, { plural: info.plural })]));
-  if (handlers.canAdd) {
+  if (handlers.actions && handlers.canAdd) {
     const add = element("button", {
       type: "button",
       class: "cms-btn cms-list__add-button",
@@ -421,12 +422,14 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     record.addButton = add;
     addChildren.push(element("div", { class: "cms-list__add-line" }, [add, reason, tagCopy]));
   }
-  const undo = element("button", { type: "button", class: "cms-btn cms-list__undo", hidden: !handlers.canUndo }, [
-    strings.undo,
-  ]);
-  undo.addEventListener("click", () => handlers.undo());
-  record.undoButton = undo;
-  addChildren.push(undo);
+  if (handlers.actions) {
+    const undo = element("button", { type: "button", class: "cms-btn cms-list__undo", hidden: !handlers.canUndo }, [
+      strings.undo,
+    ]);
+    undo.addEventListener("click", () => handlers.undo());
+    record.undoButton = undo;
+    addChildren.push(undo);
+  }
   const addBand = element("span", { class: "cms-item__band", "aria-hidden": "true" });
   const addRow = handlers.actions
     ? element(childTag, { class: "cms-root cms-list__add" }, [...addChildren, addBand])
@@ -434,9 +437,6 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   if (addRow) {
     host.append(addRow);
     added.push(addRow);
-  } else {
-    record.addButton = undefined;
-    record.undoButton = undefined;
   }
 
   const separators: HTMLElement[] = [];

@@ -270,14 +270,26 @@ export class Session {
       if (slot.key !== key || slot.sending || (slot.state !== "failed" && !slot.pending)) continue;
       const path = to(slot.path);
       if (path === undefined || path === slot.path) continue;
-      // Its own flush: the old slot's, if any, finds nothing left to send.
-      const moved: SaveSlot = { ...slot, id: `${key}:${path}`, path, scheduled: undefined };
+      const there = this.slots.get(`${key}:${path}`);
+      // The old slot stops either way: at its index path it would write into another item.
       this.slots.delete(slot.id);
-      this.slots.set(moved.id, moved);
-      if (moved.pending && !moved.scheduled) moved.scheduled = this.enqueue(key, () => this.flush(moved));
-      // The old slot stops: anything still scheduled for it finds nothing to send.
+      const queued = slot.pending;
+      const value = queued ?? (slot.state === "failed" ? { value: slot.failedValue } : undefined);
       slot.pending = undefined;
-      slot.state = "idle";
+      slot.failedValue = undefined;
+      slot.conflict = undefined;
+      this.setState(slot, "idle");
+      // A value already held at the keyed path is the newer one for that field: it stays, and this one goes.
+      if (!value || (there && (there.pending || there.sending || there.state === "failed"))) continue;
+      const moved: SaveSlot = { id: `${key}:${path}`, key, path, state: "failed", failedValue: value.value };
+      this.slots.set(moved.id, moved);
+      if (queued) {
+        // Still on its way: it goes out at the keyed path, after the write that keyed the list.
+        moved.failedValue = undefined;
+        moved.pending = queued;
+        moved.state = "saving";
+        moved.scheduled = this.enqueue(key, () => this.flush(moved));
+      }
       this.events.stateChanged(moved);
     }
   }

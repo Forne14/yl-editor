@@ -1160,3 +1160,37 @@ describe("twelfth review round", () => {
     expect(copies()[1]?.contains(document.activeElement)).toBe(true);
   });
 });
+
+describe("thirteenth review round", () => {
+  test("a field rendered by position inside a keyed item stays with its item after Move, Remove and Undo", async () => {
+    artists.push({ _key: "c", name: "Ines" });
+    listAttrs = { ...listAttrs, min: 0, max: 5 };
+    const edit = editable(KEY);
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+    await mount();
+    // The address is rewritten to the key on the element itself.
+    expect(items()[2]?.querySelector("h3")?.dataset.editField).toBe(`${KEY}:artists[_key=c].name`);
+    toolButton(2, "up").click();
+    await settle();
+    toolButton(2, "remove").click();
+    await settle();
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Ines", "Tobias"]);
+    const tobias = items()[2]?.querySelector("h3") as HTMLElement;
+    tobias.click();
+    tobias.textContent = "Tobi";
+    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    expect(fieldCalls).toEqual(["artists[_key=b].name"]);
+  });
+});

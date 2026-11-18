@@ -175,6 +175,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (left <= 0) locks.delete(key);
     else locks.set(key, left);
   };
+  /** An element Undo puts back in one copy of a list, and where it was: its markup is the host's. */
+  interface Restore {
+    key: string;
+    element: HTMLElement;
+    parent: Node;
+    next: Node | null;
+  }
   /** One removal Undo can put back. */
   interface Removal {
     listId: string;
@@ -184,7 +191,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     index: number;
     name: string;
     /** Per copy of the list (by its element): the item's own element, and where it was. Its markup is the host's. */
-    places: Map<HTMLElement, { key: string; element: HTMLElement; parent: Node; next: Node | null }>;
+    places: Map<HTMLElement, Restore>;
     /** The keys either side of it when it went, so Undo puts it back between them. */
     before: string | undefined;
     after: string | undefined;
@@ -605,6 +612,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           if (index === undefined || Number(index) !== position) continue;
           record.info.path = item.path + record.info.path.slice(prefix.length + index.length);
           record.id = `${record.info.key}:${record.info.path}`;
+          // Written on the element too: a later Move or Undo rearranges this markup, and the index it was rendered
+          // with would then name another item. The keyed address names the same value, so it stays after Done.
+          node.dataset.editField = record.id;
         }
       });
     }
@@ -666,14 +676,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return after === undefined ? { written: false, conflict: false } : { written: true, stored: after };
   }
 
-  /** An element Undo puts back in one copy of a list, and where it was: its markup is the host's. */
-  interface Restore {
-    key: string;
-    element: HTMLElement;
-    parent: Node;
-    next: Node | null;
-  }
-
   /**
    * Move, Remove and Undo need no markup from the page: every item is keyed, so the chrome puts the items' own elements
    * in the stored order and takes out the ones no longer stored. Each item keeps a place the items hold now (or, for an
@@ -694,6 +696,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     const order = stored.map(itemKeyOf);
     if (order.some((itemKey) => itemKey === undefined || !elements.has(itemKey))) return false;
+    // The same key twice in the store: only the page knows which element is which.
+    if (new Set(order).size !== order.length) return false;
     const parents = new Set<Node | null>([...elements.values()].map((element) => element.parentNode).filter(Boolean));
     if (restore) parents.add(restore.parent);
     if (parents.size > 1) return false;
@@ -747,13 +751,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     stored: readonly unknown[] | null,
     restores?: Map<HTMLElement, Restore>,
   ) {
-    let fetch = stored === null;
+    let needsPage = stored === null;
     if (stored !== null) {
       for (const copy of copiesOf(id)) {
-        if (!arrangeList(copy, stored, restores?.get(copy.element))) fetch = true;
+        if (!arrangeList(copy, stored, restores?.get(copy.element))) needsPage = true;
       }
     }
-    if (fetch) await swapLists(key);
+    if (needsPage) await swapLists(key);
   }
 
   /**
@@ -859,20 +863,23 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     // Read after the fetch: the lists on the page now. A list inside another of the documents' lists comes with it.
     // A list inside another (of any document) comes with its outermost list, which is the one swapped.
-    const outermost = (list: ListRecord) =>
-      lists
-        .filter((outer) => outer.element.isConnected && outer.element.contains(list.element) && !outer.nested)
-        .find((outer) => !lists.some((other) => other !== outer && other.element.contains(outer.element))) ?? list;
+    const outermost = (list: ListRecord) => {
+      let top = list.element;
+      for (let up = top.parentElement?.closest<HTMLElement>("[data-edit-list]"); up;) {
+        top = up;
+        up = up.parentElement?.closest<HTMLElement>("[data-edit-list]");
+      }
+      return lists.find((outer) => outer.element === top) ?? list;
+    };
     const own = lists.filter((list) => keys.has(list.info.key) && list.element.isConnected).map(outermost);
     const targets = [...new Set(own)].sort((a, b) =>
       a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
     );
-    const seen = new Map<string, number>();
     const swapped: HTMLElement[] = [];
     let missing = false;
     for (const list of targets) {
-      const index = seen.get(list.id) ?? 0;
-      seen.set(list.id, index + 1);
+      // Its place among every copy on the page, not only among the copies being swapped.
+      const index = copiesOf(list.id).indexOf(list);
       const node = fresh.get(list.id)?.filter((candidate) => !candidate.parentElement?.closest("[data-edit-list]"))[
         index
       ];

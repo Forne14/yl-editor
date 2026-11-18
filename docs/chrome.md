@@ -276,7 +276,8 @@ mountEditor({
 
 - **Keyed items** get the full list chrome. Their fields are saved by key whatever path the page renders: a field
   rendered as `artists.2.name` inside the item `artists[_key=i3]` is saved to `artists[_key=i3].name`, so a remove
-  or move can't put a failed or queued edit into another item.
+  or move can't put a failed or queued edit into another item. The chrome writes the keyed address onto the field's
+  `data-edit-field` too, so the markup it rearranges keeps naming the same item; it stays after Done.
 - **Items with no `_key`** get the full list chrome too. Their first Add, Remove or Move writes a `_key` into every
   item, in one write to the list's path, then takes the page's markup (which must now render the items by key) and
   goes on. That needs the schema to accept `_key`. If it refuses, or the items aren't objects, the list keeps the one
