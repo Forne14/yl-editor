@@ -1093,3 +1093,25 @@ describe("fields by key are the site's (ruled 2026-11-18)", () => {
     expect(toolButton(0, "down")).not.toBeNull();
   });
 });
+
+describe("seventeenth review round", () => {
+  test("removing the last item of a list with no Add leaves focus on the list's Undo", async () => {
+    artists = [{ _key: "a", name: "Mara" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount({ lists: {} });
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.activeElement).toBe(list().querySelector(".cms-list__undo"));
+  });
+
+  test("a newItem that returns a _key already in the list gets a fresh one", async () => {
+    listAttrs = { ...listAttrs, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount({ lists: { [LIST]: { newItem: () => ({ _key: "a", name: "New artist" }) } } });
+    addButton()?.click();
+    await settle();
+    const op = arrayCalls[0]?.op as Extract<ArrayOp, { kind: "insert" }>;
+    expect((op.value as Artist)._key).not.toBe("a");
+  });
+});

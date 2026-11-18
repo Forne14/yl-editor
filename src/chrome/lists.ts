@@ -53,7 +53,9 @@ export interface ListRecord {
   id: string;
   items: ItemRecord[];
   detach?: () => void;
-  /** Inside an item of another list: no list chrome of its own; its fields are cells of the outer item's row. */
+  /** Inside an item of another list, as scanned. Whether that keeps it from list chrome depends on the outer list. */
+  insideItem: boolean;
+  /** Inside an item of a list the chrome dresses: no list chrome of its own; its fields are cells of that row. */
   nested: boolean;
   /** Redraws the lines; a no-op until attached. */
   paint: () => void;
@@ -101,7 +103,7 @@ function scanItems(list: HTMLElement, info: ListInfo): ItemRecord[] {
     if (!address || address.key !== info.key) continue;
     const rest = address.path.slice(info.path.length);
     if (!address.path.startsWith(info.path) || !ITEM_REST.test(rest)) continue;
-    // A forbidden id is no key at all: the chrome keys the item afresh on its first change.
+    // A forbidden id is no key at all: the item counts as unkeyed, so the list gets no list actions.
     const itemKey = KEYED_ITEM.exec(address.path)?.[1];
     items.push({ element: target, path: address.path, itemKey: isItemKey(itemKey) ? itemKey : undefined });
   }
@@ -124,6 +126,7 @@ export function scanLists(root: HTMLElement): ListRecord[] {
       info,
       id: `${info.key}:${info.path}`,
       items: scanItems(target, info),
+      insideItem: target.parentElement?.closest("[data-edit-item]")?.closest("[data-edit-list]") != null,
       nested: target.parentElement?.closest("[data-edit-item]")?.closest("[data-edit-list]") != null,
       paint: () => undefined,
     });

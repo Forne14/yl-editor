@@ -462,10 +462,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   function attachListRecord(list: ListRecord): void {
     list.detach?.();
     // Nested means inside an item of a list the chrome dresses: under a list the editor can't edit, it is top-level.
-    if (list.nested) {
+    // Worked out afresh from where it was scanned each time, as the outer list's access can change.
+    if (list.insideItem) {
       const outer = list.element.parentElement?.closest("[data-edit-item]")?.closest<HTMLElement>("[data-edit-list]");
       const outerRecord = lists.find((other) => other.element === outer);
-      list.nested = outerRecord !== undefined && session.documents.get(outerRecord.info.key)?.access.edit === true;
+      list.nested = outerRecord === undefined || session.documents.get(outerRecord.info.key)?.access.edit === true;
     }
     if (list.nested || session.documents.get(list.info.key)?.access.edit !== true) return;
     const unkeyed = list.items.some((item) => item.itemKey === undefined);
@@ -607,11 +608,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (restore) {
       const place = document.createComment("");
       restore.parent.insertBefore(place, restore.next?.parentNode === restore.parent ? restore.next : null);
-      places.splice(
-        places.findIndex((other) => place.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING) >>> 0,
-        0,
-        place,
+      const after = places.findIndex(
+        (other) => place.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING,
       );
+      places.splice(after < 0 ? places.length : after, 0, place);
     }
     for (const element of elements.values()) element.remove();
     order.forEach((itemKey, index) => places[index]?.before(elements.get(itemKey as string) as HTMLElement));
@@ -913,7 +913,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const copy = copiesOf(list.id).indexOf(list);
     const value: Record<string, unknown> = { ...make() };
     // A `_key` the paths can't carry would leave the new item addressed by index: the chrome makes its own instead.
-    if (!isItemKey(value["_key"])) value["_key"] = newItemKey();
+    // A fixed `_key` from newItem would be used twice: the chrome makes a fresh one when it is taken.
+    if (!isItemKey(value["_key"]) || list.items.some((item) => item.itemKey === value["_key"])) {
+      value["_key"] = newItemKey();
+    }
     const itemKey = String(value["_key"]);
     const ok = await listWriteAndSwap(list, format(strings.listAdd, { noun: list.info.noun }), (items) => ({
       kind: "insert",
@@ -1044,7 +1047,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const next = fresh?.items[position] ?? fresh?.items[position - 1];
     if (!focusIsFree(fresh)) return;
     if (next) focusTools(next);
-    else fresh?.addButton?.focus();
+    // No item left, and maybe no Add: focus goes to the list's Undo, so the keyboard user stays in the list.
+    else (fresh?.addButton ?? fresh?.undoButton)?.focus();
   }
 
   const UNDO_MS = 15000;
