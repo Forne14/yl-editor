@@ -305,8 +305,13 @@ export class Session {
       if (slot.state === "failed") {
         slot.failedValue = undefined;
         slot.conflict = undefined;
-      } else if (slot.pending && !slot.sending) {
+      } else if (slot.pending) {
+        // One already on the wire went out before the change; the newer value queued behind it would not.
         slot.pending = undefined;
+        if (slot.sending) {
+          dropped.push(slot.path);
+          continue;
+        }
       } else continue;
       dropped.push(slot.path);
       this.setState(slot, "idle");

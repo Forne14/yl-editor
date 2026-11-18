@@ -1177,8 +1177,16 @@ describe("thirteenth review round", () => {
       )
       .join("")}</ul></main>`;
     await mount();
-    // The address is rewritten to the key on the element itself.
-    expect(items()[2]?.querySelector("h3")?.dataset.editField).toBe(`${KEY}:artists[_key=c].name`);
+    // The page renders it by position: Move, Remove and Undo take the page's markup, with the right addresses.
+    pageAnswer = () =>
+      new Response(
+        `<!doctype html><main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+          .map(
+            (artist, index) =>
+              `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
+          )
+          .join("")}</ul></main>`,
+      );
     toolButton(2, "up").click();
     await settle();
     toolButton(2, "remove").click();
@@ -1192,5 +1200,41 @@ describe("thirteenth review round", () => {
     tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await settle();
     expect(fieldCalls).toEqual(["artists[_key=b].name"]);
+  });
+});
+
+describe("fourteenth review round", () => {
+  test("after Add, each copy of a list keeps its own markup", async () => {
+    listAttrs = { ...listAttrs, max: 5 };
+    const page = () =>
+      `<main id="page">${renderList()}<aside id="compact">${renderList().replaceAll("<h3", '<h3 class="compact"')}</aside></main>`;
+    document.body.innerHTML = page();
+    pageAnswer = () => new Response(`<!doctype html>${page()}`);
+    await mount();
+    addButton()?.click();
+    await settle();
+    const copies = [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+    expect(copies[0]?.querySelector("h3.compact")).toBeNull();
+    expect(copies[1]?.querySelector("h3.compact")).not.toBeNull();
+    expect(copies[1]?.closest("#compact")).not.toBeNull();
+  });
+
+  test("an Undo that hits a conflict drops every removal of that document", async () => {
+    artists.push({ _key: "c", name: "Ines" });
+    listAttrs = { ...listAttrs, min: 0, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    toolButton(0, "remove").click();
+    await settle();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
   });
 });

@@ -463,7 +463,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const unkeyed = list.items.some((item) => item.itemKey === undefined);
     if (unkeyed && !keyless.has(list.id)) {
       const stored = valueAtPath(session.documents.get(list.info.key)?.payload, list.info.path);
-      if (Array.isArray(stored) && stored.some((entry) => typeof entry !== "object" || entry === null)) {
+      if (
+        Array.isArray(stored) &&
+        stored.some((entry) => typeof entry !== "object" || entry === null || Array.isArray(entry))
+      ) {
         keyless.set(list.id, NO_KEY(list.id));
       }
     }
@@ -545,7 +548,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           key,
           guarded(key, async (expectedVersion) => {
             const items = await storedItems(list);
-            if (items.some((entry) => typeof entry !== "object" || entry === null)) {
+            if (items.some((entry) => typeof entry !== "object" || entry === null || Array.isArray(entry))) {
               notObjects = true;
               return;
             }
@@ -612,12 +615,20 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           if (index === undefined || Number(index) !== position) continue;
           record.info.path = item.path + record.info.path.slice(prefix.length + index.length);
           record.id = `${record.info.key}:${record.info.path}`;
-          // Written on the element too: a later Move or Undo rearranges this markup, and the index it was rendered
-          // with would then name another item. The keyed address names the same value, so it stays after Done.
-          node.dataset.editField = record.id;
         }
       });
     }
+  }
+
+  /** Whether any field inside the list's items is addressed by position (`artists.2.name`) in the page's markup. */
+  function renderedByIndex(list: ListRecord): boolean {
+    const prefix = `${list.info.key}:${list.info.path}.`;
+    return list.items.some((item) =>
+      [...item.element.querySelectorAll<HTMLElement>("[data-edit-field]")].some((node) => {
+        const address = node.dataset.editField ?? "";
+        return address.startsWith(prefix) && /^\d/.test(address.slice(prefix.length));
+      }),
+    );
   }
 
   /** Every copy of a list on the page, in page order. */
@@ -670,7 +681,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         }),
       );
     } catch (error) {
-      // Shown by `lifecycle`.
+      // Shown by `lifecycle`. After a conflict the content is another editor's: no removal of it can be put back.
+      if (isConflict(error)) forgetRemovals(key);
       return { written: false, conflict: isConflict(error) };
     }
     return after === undefined ? { written: false, conflict: false } : { written: true, stored: after };
@@ -751,8 +763,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     stored: readonly unknown[] | null,
     restores?: Map<HTMLElement, Restore>,
   ) {
-    let needsPage = stored === null;
-    if (stored !== null) {
+    // A copy whose fields were rendered by position can't be rearranged: its addresses would then name other items,
+    // so the page renders it again with the right ones.
+    let needsPage = stored === null || copiesOf(id).some(renderedByIndex);
+    if (!needsPage && stored !== null) {
       for (const copy of copiesOf(id)) {
         if (!arrangeList(copy, stored, restores?.get(copy.element))) needsPage = true;
       }
@@ -877,9 +891,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     );
     const swapped: HTMLElement[] = [];
     let missing = false;
+    // Each target's place among every copy on the page, taken before any of them is replaced.
+    const places = new Map(targets.map((list) => [list, copiesOf(list.id).indexOf(list)]));
     for (const list of targets) {
-      // Its place among every copy on the page, not only among the copies being swapped.
-      const index = copiesOf(list.id).indexOf(list);
+      const index = places.get(list) ?? 0;
       const node = fresh.get(list.id)?.filter((candidate) => !candidate.parentElement?.closest("[data-edit-list]"))[
         index
       ];
@@ -936,9 +951,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   function isBusy(node: Element): boolean {
     // Either way round: a locked list's swap replaces what is inside it, and replacing a list that holds a locked one
     // would bring back that list's older markup.
-    return lists.some(
-      (list) => locks.has(list.info.key) && (list.element.contains(node) || node.contains(list.element)),
-    );
+    // And anything in the outermost list a locked list sits in: that is what its swap replaces.
+    return lists.some((list) => {
+      if (!locks.has(list.info.key)) return false;
+      let top: HTMLElement = list.element;
+      for (let up = top.parentElement?.closest<HTMLElement>("[data-edit-list]"); up;) {
+        top = up;
+        up = up.parentElement?.closest<HTMLElement>("[data-edit-list]");
+      }
+      return top.contains(node) || node.contains(list.element);
+    });
   }
 
   /** A press inside a list waiting for the page: say so, rather than nothing happening. */
@@ -1074,7 +1096,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       const ok = await listWriteAndSwap(list, label, (items) => {
         const from = storedIndex(items, item);
         const original = items[from];
-        if (from < 0 || typeof original !== "object" || original === null) return undefined;
+        if (from < 0 || typeof original !== "object" || original === null || Array.isArray(original)) return undefined;
         return { kind: "insert", index: from + 1, value: { ...(original as object), _key: itemKey } };
       });
       if (!ok) return;
@@ -1163,8 +1185,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     entry.expired = true;
     const at = removals.indexOf(entry);
     if (at >= 0) removals.splice(at, 1);
+    const showing = entry.toast !== undefined && toast.isShowing(entry.toast);
     if (entry.toast !== undefined) toast.hideIf(entry.toast);
-    syncUndoButtons();
+    // An older removal still in its window gets its toast back.
+    const previous = removals.at(-1);
+    if (showing && previous) showRemovalToast(previous);
+    else syncUndoButtons();
   }
 
   /** Each copy of a list shows Undo while one of the list's removals can still be undone. */
