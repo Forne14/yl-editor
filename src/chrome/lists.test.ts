@@ -26,6 +26,8 @@ const OTHER = "other/list";
 let guests: Artist[] | undefined;
 let otherVersion: number;
 let fieldCalls: string[];
+/** The store refuses a whole-list write that adds `_key` (a schema without it). */
+let refuseKeys: boolean;
 let version: number;
 let canEdit: boolean;
 let listAttrs: EditableListAttrs;
@@ -138,6 +140,9 @@ function installFetch(): void {
         fieldCalls.push((JSON.parse(String(init.body)) as { path: string }).path);
         if (failFields) return json({ error: { code: "internal", message: "down" } }, 500);
         const written = JSON.parse(String(init.body)) as { path: string; value: unknown };
+        if (refuseKeys && written.path === "artists") {
+          return json({ error: { code: "validation", message: "Unrecognized key: _key" } }, 422);
+        }
         // A whole-list write (the chrome keying an unkeyed list) is stored, as the store would.
         if (written.path === "artists" && Array.isArray(written.value)) artists = written.value as Artist[];
         version += 1;
@@ -192,6 +197,7 @@ beforeEach(() => {
   guests = undefined;
   otherVersion = 2;
   fieldCalls = [];
+  refuseKeys = false;
   published = artists.map((artist) => ({ ...artist }));
   failFields = false;
   canEdit = true;
@@ -545,8 +551,6 @@ describe("third review round", () => {
     expect(names()).toEqual(["Mara", "Tobias"]);
   });
 });
-
-describe("fourth review round", () => {});
 
 describe("fifth review round", () => {
   /** Holds every page fetch until `release` is called. */
@@ -953,7 +957,7 @@ describe("the rulings of 2026-11-18", () => {
     document.body.innerHTML = `<main id="page">${renderList()}</main>`;
     await mount();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    failFields = true;
+    refuseKeys = true;
     toolButton(0, "down").click();
     await settle();
     expect(arrayCalls).toEqual([]);
@@ -998,6 +1002,56 @@ describe("the rulings of 2026-11-18", () => {
       vi.advanceTimersByTime(6000);
       expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
       expect(guestList()?.querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("eleventh review round", () => {
+  test("a network failure while keying keeps the list's actions; the next press tries again", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    toolButton(0, "down").click();
+    await settle();
+    expect(list().querySelector(".cms-item__tools")).not.toBeNull();
+    failFields = false;
+    toolButton(0, "down").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+  });
+
+  test("a schema that refuses _key leaves the list with one outline and no actions", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    refuseKeys = true;
+    toolButton(0, "down").click();
+    await settle();
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  test("an Undo that fails after its window has closed doesn't bring the removal back", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      listAttrs = { ...listAttrs, min: 0 };
+      document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+      await mount();
+      toolButton(0, "remove").click();
+      await settle();
+      arrayAnswer = () => {
+        arrayAnswer = undefined;
+        vi.advanceTimersByTime(16000);
+        return json({ error: { code: "internal", message: "down" } }, 500);
+      };
+      list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+      await settle();
+      expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
     } finally {
       vi.useRealTimers();
     }

@@ -3,7 +3,7 @@ import { diffPayloads, type DiffEntry } from "../diff.ts";
 import { renderRichText } from "../richtext/render.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
 import type { WireArrayOp } from "../http/wire-types.ts";
-import { Disposer, KEY_ID, button, element, uniqueId, valueAtPath } from "./dom.ts";
+import { Disposer, button, element, isItemKey, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
 import {
   attachList,
@@ -189,6 +189,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     timer: ReturnType<typeof setTimeout> | undefined;
     /** The toast that offers its Undo, while that one is showing. */
     toast: number | undefined;
+    /** Its window is over: a failed Undo doesn't bring it back. */
+    expired?: boolean;
   }
   /** Removals that Undo puts back, newest last. */
   const removals: Removal[] = [];
@@ -470,7 +472,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       canAdd: options.lists?.[list.id]?.newItem !== undefined,
       canUndo: removals.some((removal) => removal.listId === list.id),
       undo: () => void undoRemoval(list.id),
-      add: () => void (unkeyed ? keyThen(list, (fresh) => addItem(fresh)) : addItem(list)),
+      add: () => {
+        if (!unkeyed) {
+          void addItem(list);
+          return;
+        }
+        // An inert Add explains itself without a write.
+        const reason = list.addButton?.dataset.reason;
+        if (reason) {
+          toast.announce(reason);
+          return;
+        }
+        void keyThen(list, format(strings.listAdd, { noun: list.info.noun }), (fresh) => addItem(fresh));
+      },
       act: (item, action, pressed) => {
         if (!unkeyed) {
           void actOnItem(list, item, action, pressed);
@@ -482,7 +496,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           return;
         }
         const position = list.items.indexOf(item);
-        void keyThen(list, (fresh) => {
+        void keyThen(list, pressed.getAttribute("aria-label") ?? action, (fresh) => {
           const freshItem = fresh.items[position];
           const freshButton = freshItem?.element.querySelector<HTMLButtonElement>(
             `:scope > .cms-item__tools [data-action="${action}"]`,
@@ -502,7 +516,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * Gives every item of an unkeyed list a `_key` in one write, then takes the page's markup (which now addresses the
    * items by key) and runs `then` on the same copy of the list. A refusal leaves the list keyless (option 1).
    */
-  async function keyThen(list: ListRecord, then: (fresh: ListRecord) => Promise<void>): Promise<void> {
+  async function keyThen(list: ListRecord, action: string, then: (fresh: ListRecord) => Promise<void>): Promise<void> {
     if (refuseBusy(list.element)) return;
     const { key, path } = list.info;
     const copy = copiesOf(list.id).indexOf(list);
@@ -512,7 +526,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       closeActive(false, true);
       try {
         await lifecycle(
-          strings.listAdd.replace("{noun}", list.info.noun),
+          action,
           key,
           guarded(key, async (expectedVersion) => {
             const items = await storedItems(list);
@@ -524,8 +538,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
               keyed = true;
               return;
             }
+            // After the entry, so a `_key` the paths can't carry (a number, a forbidden name) is replaced.
             const value = items.map((entry) =>
-              itemKeyOf(entry) === undefined ? { _key: newItemKey(), ...(entry as object) } : entry,
+              itemKeyOf(entry) === undefined ? { ...(entry as object), _key: newItemKey() } : entry,
             );
             const document = await client.field(key, path, value, expectedVersion);
             session.applyWrite(expectedVersion, document);
@@ -535,8 +550,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           }),
         );
       } catch (error) {
-        // A conflict caught the page up; anything else (the schema refused `_key`) leaves the list keyless.
-        if (!isConflict(error)) notObjects = true;
+        // Only the schema refusing `_key` makes the list keyless; a conflict or a network failure was shown, and the
+        // next press tries again.
+        if (error instanceof ContentRequestError && error.code === "validation") notObjects = true;
       }
       if (keyed) await swapLists(key);
     });
@@ -554,13 +570,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * `artists[_key=i3].name`), so a remove or move can't put a failed or queued edit into another item.
    */
   function keyFieldPaths(records: readonly FieldRecord[]): void {
+    const byElement = new Map(records.map((record) => [record.element, record]));
     for (const list of lists) {
       if (list.nested) continue;
+      const byIndex = new RegExp(`^${escapeRegExp(list.info.path)}\\.\\d+(?=\\.|$)`);
       for (const item of list.items) {
         if (item.itemKey === undefined) continue;
-        const byIndex = new RegExp(`^${escapeRegExp(list.info.path)}\\.\\d+(?=\\.|$)`);
-        for (const record of records) {
-          if (record.info.key !== list.info.key || !item.element.contains(record.element)) continue;
+        for (const node of item.element.querySelectorAll<HTMLElement>("[data-edit-field]")) {
+          const record = byElement.get(node);
+          if (!record || record.info.key !== list.info.key) continue;
           const match = byIndex.exec(record.info.path);
           if (!match) continue;
           record.info.path = item.path + record.info.path.slice(match[0].length);
@@ -823,10 +841,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       fresh.set(id, [...(fresh.get(id) ?? []), node]);
     }
     // Read after the fetch: the lists on the page now. A list inside another of the documents' lists comes with it.
-    const own = lists.filter((list) => keys.has(list.info.key) && list.element.isConnected);
-    const targets = own
-      .filter((list) => !own.some((outer) => outer !== list && outer.element.contains(list.element)))
-      .sort((a, b) => (a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    // A list inside another (of any document) comes with its outermost list, which is the one swapped.
+    const outermost = (list: ListRecord) =>
+      lists
+        .filter((outer) => outer.element.isConnected && outer.element.contains(list.element) && !outer.nested)
+        .find((outer) => !lists.some((other) => other !== outer && other.element.contains(outer.element))) ?? list;
+    const own = lists.filter((list) => keys.has(list.info.key) && list.element.isConnected).map(outermost);
+    const targets = [...new Set(own)].sort((a, b) =>
+      a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+    );
     const seen = new Map<string, number>();
     const swapped: HTMLElement[] = [];
     let missing = false;
@@ -973,7 +996,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const copy = copiesOf(list.id).indexOf(list);
     const value: Record<string, unknown> = { ...make() };
     // A `_key` the paths can't carry would leave the new item addressed by index: the chrome makes its own instead.
-    if (typeof value["_key"] !== "string" || !VALID_KEY.test(value["_key"])) value["_key"] = newItemKey();
+    if (!isItemKey(value["_key"])) value["_key"] = newItemKey();
     const itemKey = String(value["_key"]);
     const ok = await listWriteAndSwap(list, format(strings.listAdd, { noun: list.info.noun }), (items) => ({
       kind: "insert",
@@ -993,9 +1016,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     );
     if (focusIsFree(fresh)) await openFirstField(fresh, item);
   }
-
-  /** A `_key` docs/paths.md allows: the id alphabet, and not a name the paths refuse. */
-  const VALID_KEY = new RegExp(`^${KEY_ID}$`);
 
   async function actOnItem(
     list: ListRecord,
@@ -1115,6 +1135,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** A removal's window is over: its button, its toast and Ctrl/⌘+Z for it go. */
   function expireRemoval(entry: Removal): void {
+    entry.expired = true;
     const at = removals.indexOf(entry);
     if (at >= 0) removals.splice(at, 1);
     if (entry.toast !== undefined) toast.hideIf(entry.toast);
@@ -1145,7 +1166,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       return;
     }
     if (refuseBusy(list.element)) return;
-    removals.splice(removals.indexOf(last), 1);
+    const at = removals.indexOf(last);
+    removals.splice(at, 1);
     if (last.toast !== undefined) toast.hideIf(last.toast);
     syncUndoButtons();
     const written = await listWriteAndSettle(
@@ -1162,8 +1184,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         toast.show(format(strings.undoConflict, { key: last.key, item: last.name }), "error");
         return;
       }
-      // Nothing written (offline, a refusal): the removal can still be undone, within its own window.
-      removals.push(last);
+      // Nothing written (offline, a refusal): the removal can still be undone, within its own window and in its place.
+      if (last.expired) return;
+      removals.splice(Math.min(at, removals.length), 0, last);
       showRemovalToast(last);
       return;
     }
@@ -1189,6 +1212,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     for (const removal of [...removals]) {
       if (removal.key !== key) continue;
       clearTimeout(removal.timer);
+      if (removal.toast !== undefined) toast.hideIf(removal.toast);
       removals.splice(removals.indexOf(removal), 1);
     }
     syncUndoButtons();

@@ -3,7 +3,7 @@
 // crosses (docs/specs/artefacts/2026-11-list-editing.html). The host's elements are borrowed: the chrome adds
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
-import { KEY_ID, element, uniqueId } from "./dom.ts";
+import { KEY_ID, element, isItemKey, uniqueId } from "./dom.ts";
 import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
@@ -101,7 +101,9 @@ function scanItems(list: HTMLElement, info: ListInfo): ItemRecord[] {
     if (!address || address.key !== info.key) continue;
     const rest = address.path.slice(info.path.length);
     if (!address.path.startsWith(info.path) || !ITEM_REST.test(rest)) continue;
-    items.push({ element: target, path: address.path, itemKey: KEYED_ITEM.exec(address.path)?.[1] });
+    // A forbidden id is no key at all: the chrome keys the item afresh on its first change.
+    const itemKey = KEYED_ITEM.exec(address.path)?.[1];
+    items.push({ element: target, path: address.path, itemKey: isItemKey(itemKey) ? itemKey : undefined });
   }
   return items;
 }
@@ -154,10 +156,10 @@ export function newItemKey(): string {
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
 }
 
-/** A stored item's `_key`, when it has a string one. */
+/** A stored item's `_key`, when it has one the paths accept. */
 export function itemKeyOf(entry: unknown): string | undefined {
   const value = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined;
-  return typeof value === "string" ? value : undefined;
+  return isItemKey(value) ? value : undefined;
 }
 
 /** The item's index in the stored array, by its `_key` (only keyed lists get list chrome). -1 when gone. */

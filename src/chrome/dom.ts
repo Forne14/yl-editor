@@ -64,6 +64,13 @@ export function uniqueId(prefix: string): string {
 
 /** A `_key` id, as docs/paths.md defines it: the one copy the browser bundle uses. */
 export const KEY_ID = "[A-Za-z0-9_-]+";
+const KEY_PATTERN = new RegExp(`^${KEY_ID}$`);
+const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
+/** Whether `value` is a `_key` the paths accept: a string of the id alphabet, and not a name they refuse. */
+export function isItemKey(value: unknown): value is string {
+  return typeof value === "string" && KEY_PATTERN.test(value) && !FORBIDDEN_KEYS.has(value);
+}
 const KEYED_PART = new RegExp(`^(.+)\\[_key=(${KEY_ID})\\]$`);
 
 function ownChild(node: unknown, segment: string): unknown {
