@@ -1,6 +1,6 @@
 // The demo site's content model: two document types, their schemas, the default seed, and who may do what.
 import { createAccessEngine, documentAccess, type Catalogue } from "@yl/editor/access";
-import { richText, type RegistryEntry, type SchemaRegistry } from "@yl/editor";
+import { keyedItems, richText, type RegistryEntry, type SchemaRegistry } from "@yl/editor";
 import { z } from "zod";
 
 export const STATUS_OPTIONS = ["draft", "live", "archived"] as const;
@@ -18,7 +18,7 @@ export const pageSchema = z.object({
   link: z.string().nullable().optional(),
   body: z.string().optional(),
   // A keyed list: the chrome adds, removes, reorders and duplicates its items.
-  team: z.array(z.object({ _key: z.string(), name: z.string(), role: z.string().optional() })).optional(),
+  team: keyedItems(z.object({ name: z.string(), role: z.string().optional() })).optional(),
 });
 
 export const settingsSchema = z.object({ footer: z.string() });

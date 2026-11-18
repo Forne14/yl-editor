@@ -453,27 +453,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * - a list inside another list's item gets no list chrome: its fields are cells of the outer item's row;
    * - every copy of a list on the page gets list chrome, and a change shows in all of them;
    * - keyed items get the full toolbar, and their fields are saved by key whatever path the page renders;
-   * - items without a `_key` get the full toolbar too: their first Add, Remove or Move writes a `_key` into every item.
-   *   Where that can't work (the schema refused it, or the items are not objects), the list keeps the one outline and
-   *   grid with no list actions, and the console tells the site's developer why.
+   * - keys are the content's (`keyedItems`, `addListKeys`): the chrome never invents one for a stored item. A list
+   *   with an item rendered without a key keeps the one outline and grid with no list actions, and the console tells
+   *   the site's developer why.
    */
   function attachListRecord(list: ListRecord): void {
     list.detach?.();
     if (list.nested || session.documents.get(list.info.key)?.access.edit !== true) return;
-    const unkeyed = list.items.some((item) => item.itemKey === undefined);
-    if (unkeyed && !keyless.has(list.id)) {
-      const stored = valueAtPath(session.documents.get(list.info.key)?.payload, list.info.path);
-      if (
-        Array.isArray(stored) &&
-        stored.some((entry) => typeof entry !== "object" || entry === null || Array.isArray(entry))
-      ) {
-        keyless.set(list.id, NO_KEY(list.id));
-      }
-    }
-    if (unkeyed && keyless.has(list.id)) {
+    if (list.items.some((item) => item.itemKey === undefined)) {
       if (!warned.has(list.id)) {
         warned.add(list.id);
-        console.warn(keyless.get(list.id));
+        console.warn(
+          `[yl-editor] ${list.id} has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.`,
+        );
       }
       attachList(list, strings, { actions: false, canAdd: false, canUndo: false, add() {}, undo() {}, act() {} });
       return;
@@ -483,118 +475,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       canAdd: options.lists?.[list.id]?.newItem !== undefined,
       canUndo: removals.some((removal) => removal.listId === list.id),
       undo: () => void undoRemoval(list.id, undefined, list),
-      add: () => {
-        if (!unkeyed) {
-          void addItem(list);
-          return;
-        }
-        // An inert Add explains itself without a write.
-        const reason = list.addButton?.dataset.reason;
-        if (reason) {
-          toast.announce(reason);
-          return;
-        }
-        void keyThen(list, format(strings.listAdd, { noun: list.info.noun }), (fresh) => addItem(fresh));
-      },
-      act: (item, action, pressed) => {
-        if (!unkeyed) {
-          void actOnItem(list, item, action, pressed);
-          return;
-        }
-        // Inert buttons explain themselves without a write.
-        if (pressed.getAttribute("aria-disabled") === "true") {
-          if (pressed.dataset.reason) toast.announce(pressed.dataset.reason);
-          return;
-        }
-        const position = list.items.indexOf(item);
-        void keyThen(list, pressed.getAttribute("aria-label") ?? action, (fresh) => {
-          const freshItem = fresh.items[position];
-          const freshButton = freshItem?.element.querySelector<HTMLButtonElement>(
-            `:scope > .cms-item__tools [data-action="${action}"]`,
-          );
-          return freshItem && freshButton ? actOnItem(fresh, freshItem, action, freshButton) : Promise.resolve();
-        });
-      },
+      add: () => void addItem(list),
+      act: (item, action, pressed) => void actOnItem(list, item, action, pressed),
     });
   }
 
-  /**
-   * Lists the chrome can't tie to keys: one outline, no list actions. By `data-edit-list` address, with what the
-   * console tells the site's developer.
-   */
-  const keyless = new Map<string, string>();
-  const NO_KEY = (id: string) =>
-    `[yl-editor] ${id} has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.`;
-  const RENDERED_BY_INDEX = (id: string) =>
-    `[yl-editor] ${id} has no Add, Remove or Move: its items have a _key, but the page renders them by position. Render each item with editable(docKey).item(path, item, index) to turn them on. See docs/chrome.md → Lists.`;
   /** Lists the console has already warned about. */
   const warned = new Set<string>();
-
-  /**
-   * Gives every item of an unkeyed list a `_key` in one write, then takes the page's markup (which now addresses the
-   * items by key) and runs `then` on the same copy of the list. A refusal leaves the list keyless (option 1).
-   */
-  async function keyThen(list: ListRecord, action: string, then: (fresh: ListRecord) => Promise<void>): Promise<void> {
-    if (refuseBusy(list.element)) return;
-    const { key, path } = list.info;
-    const copy = copiesOf(list.id).indexOf(list);
-    let keyed = false;
-    let notObjects = false;
-    await withLock(key, async () => {
-      closeActive(false, true);
-      try {
-        await lifecycle(
-          action,
-          key,
-          guarded(key, async (expectedVersion) => {
-            const items = await storedItems(list);
-            if (items.some((entry) => typeof entry !== "object" || entry === null || Array.isArray(entry))) {
-              notObjects = true;
-              return;
-            }
-            if (items.every((entry) => itemKeyOf(entry) !== undefined)) {
-              keyed = true;
-              return;
-            }
-            // After the entry, so a `_key` the paths can't carry (a number, a forbidden name) is replaced.
-            const value = items.map((entry) =>
-              itemKeyOf(entry) === undefined ? { ...(entry as object), _key: newItemKey() } : entry,
-            );
-            const document = await client.field(key, path, value, expectedVersion);
-            session.applyWrite(expectedVersion, document);
-            session.touch(key, [path]);
-            // A failed or queued value at an index path belongs to the item at that index: it follows the item's key.
-            session.moveSaves(key, (slotPath) => {
-              const match = /^\.(\d+)(\..*)?$/.exec(slotPath.startsWith(path) ? slotPath.slice(path.length) : "");
-              const itemKey = match ? itemKeyOf(value[Number(match[1])]) : undefined;
-              return itemKey === undefined ? undefined : `${path}[_key=${itemKey}]${match?.[2] ?? ""}`;
-            });
-            updateBar();
-            keyed = true;
-          }),
-        );
-      } catch (error) {
-        // Only the schema refusing `_key` makes the list keyless; a conflict or a network failure was shown, and the
-        // next press tries again.
-        if (error instanceof ContentRequestError && error.code === "validation") notObjects = true;
-      }
-      if (keyed) await swapLists(key);
-    });
-    if (notObjects) {
-      keyless.set(list.id, NO_KEY(list.id));
-      for (const each of copiesOf(list.id)) attachListRecord(each);
-      return;
-    }
-    const fresh = copiesOf(list.id)[copy];
-    if (!keyed || !fresh) return;
-    if (fresh.items.some((item) => item.itemKey === undefined)) {
-      // The items are keyed now, but the page still renders them by position: nothing ties a press to an item.
-      keyless.set(list.id, RENDERED_BY_INDEX(list.id));
-      for (const each of copiesOf(list.id)) attachListRecord(each);
-      return;
-    }
-    await then(fresh);
-  }
 
   /**
    * A keyed item's fields are saved by key, whatever path the page rendered (`artists.2.name` is saved as

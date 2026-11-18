@@ -26,8 +26,6 @@ const OTHER = "other/list";
 let guests: Artist[] | undefined;
 let otherVersion: number;
 let fieldCalls: string[];
-/** The store refuses a whole-list write that adds `_key` (a schema without it). */
-let refuseKeys: boolean;
 let version: number;
 let canEdit: boolean;
 let listAttrs: EditableListAttrs;
@@ -140,9 +138,6 @@ function installFetch(): void {
         fieldCalls.push((JSON.parse(String(init.body)) as { path: string }).path);
         if (failFields) return json({ error: { code: "internal", message: "down" } }, 500);
         const written = JSON.parse(String(init.body)) as { path: string; value: unknown };
-        if (refuseKeys && written.path === "artists") {
-          return json({ error: { code: "validation", message: "Unrecognized key: _key" } }, 422);
-        }
         // A whole-list write (the chrome keying an unkeyed list) is stored, as the store would.
         if (written.path === "artists" && Array.isArray(written.value)) artists = written.value as Artist[];
         version += 1;
@@ -197,7 +192,6 @@ beforeEach(() => {
   guests = undefined;
   otherVersion = 2;
   fieldCalls = [];
-  refuseKeys = false;
   published = artists.map((artist) => ({ ...artist }));
   failFields = false;
   canEdit = true;
@@ -938,36 +932,6 @@ describe("the rulings of 2026-11-18", () => {
     expect(fieldCalls).toEqual(["artists[_key=b].name"]);
   });
 
-  test("an unkeyed list keys every item on its first change, then makes it", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    listAttrs = { ...listAttrs, min: 0 };
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount();
-    expect(toolButton(0, "down")).not.toBeNull();
-    toolButton(0, "remove").click();
-    await settle();
-    expect(fieldCalls).toEqual(["artists"]);
-    expect(arrayCalls.map((call) => call.op.kind)).toEqual(["remove"]);
-    expect(names()).toEqual(["Tobias"]);
-    expect(artists[0]?._key).toMatch(/^[a-z0-9]{10}$/);
-  });
-
-  test("when the keys are refused, the list keeps one outline and no list actions, and the console says why", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    refuseKeys = true;
-    toolButton(0, "down").click();
-    await settle();
-    expect(arrayCalls).toEqual([]);
-    expect(list().querySelectorAll(".cms-list__frame")).toHaveLength(1);
-    expect(list().querySelector(".cms-item__tools")).toBeNull();
-    expect(list().querySelector(".cms-list__add")).toBeNull();
-    expect(warn.mock.calls[0]?.[0]).toContain("has no Add, Remove or Move: its items have no _key");
-    warn.mockRestore();
-  });
-
   test("Undo that hits a conflict drops the removal and says it can't be put back", async () => {
     listAttrs = { ...listAttrs, min: 0 };
     document.body.innerHTML = `<main id="page">${renderList()}</main>`;
@@ -1009,33 +973,6 @@ describe("the rulings of 2026-11-18", () => {
 });
 
 describe("eleventh review round", () => {
-  test("a network failure while keying keeps the list's actions; the next press tries again", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount();
-    failFields = true;
-    toolButton(0, "down").click();
-    await settle();
-    expect(list().querySelector(".cms-item__tools")).not.toBeNull();
-    failFields = false;
-    toolButton(0, "down").click();
-    await settle();
-    expect(names()).toEqual(["Tobias", "Mara"]);
-  });
-
-  test("a schema that refuses _key leaves the list with one outline and no actions", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    refuseKeys = true;
-    toolButton(0, "down").click();
-    await settle();
-    expect(list().querySelector(".cms-item__tools")).toBeNull();
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
   test("an Undo that fails after its window has closed doesn't bring the removal back", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     try {
@@ -1063,57 +1000,6 @@ describe("twelfth review round", () => {
     Object.entries(record)
       .map(([name, value]) => ` ${name}="${value}"`)
       .join("");
-  /** Items and fields rendered by position, whatever the data holds. */
-  function byIndex(): string {
-    const edit = editable(KEY);
-    return `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
-      .map(
-        (artist, index) =>
-          `<li data-edit-item="${KEY}:artists.${index}"><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
-      )
-      .join("")}</ul></main>`;
-  }
-
-  test("keying a list moves a failed value to its item's key, so Retry writes into the same item", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount();
-    failFields = true;
-    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
-    tobias.click();
-    tobias.textContent = "Tobi";
-    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    await settle();
-    failFields = false;
-    toolButton(1, "up").click();
-    await settle();
-    expect(names()).toEqual(["Tobi", "Mara"]);
-    fieldCalls = [];
-    [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")]
-      .find((node) => node.textContent === "Retry")
-      ?.click();
-    const moved = items()[0]?.querySelector("h3") as HTMLElement;
-    expect(moved.classList.contains("cms-field--failed")).toBe(true);
-    moved.click();
-    moved.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    await settle();
-    // Tobias moved to the top: the value goes to his key, wherever he is now.
-    const tobiasKey = artists.find((artist) => artist.name === "Tobias")?._key;
-    expect(fieldCalls).toEqual([`artists[_key=${tobiasKey}].name`]);
-  });
-
-  test("a page that still renders items by position after keying drops to one outline and says why", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    document.body.innerHTML = byIndex();
-    pageAnswer = () => new Response(`<!doctype html>${byIndex()}`);
-    await mount();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    toolButton(0, "down").click();
-    await settle();
-    expect(list().querySelector(".cms-item__tools")).toBeNull();
-    expect(warn.mock.calls[0]?.[0]).toContain("the page renders them by position");
-    warn.mockRestore();
-  });
 
   test("a field inside an item that names another entry keeps its own path", async () => {
     const edit = editable(KEY);
@@ -1236,5 +1122,22 @@ describe("fourteenth review round", () => {
     list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
     await settle();
     expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+  });
+});
+
+describe("keys are the content's (ruled 2026-11-18)", () => {
+  test("a list whose items have no _key keeps one outline with no list actions, writes nothing, and the console says why", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mount();
+    expect(list().querySelectorAll(".cms-list__frame")).toHaveLength(1);
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(list().querySelector(".cms-list__add")).toBeNull();
+    expect(items()[0]?.querySelector("h3")?.classList.contains("cms-field")).toBe(true);
+    expect(warn.mock.calls[0]?.[0]).toContain("has no Add, Remove or Move: its items have no _key");
+    expect(fieldCalls).toEqual([]);
+    expect(arrayCalls).toEqual([]);
+    warn.mockRestore();
   });
 });

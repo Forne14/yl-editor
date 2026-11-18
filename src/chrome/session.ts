@@ -262,39 +262,6 @@ export class Session {
   }
 
   /**
-   * Moves failed values and saves queued but not yet sent to the path `to` returns for them (undefined keeps a path):
-   * the same item, addressed by key now instead of by index. One on the wire is left alone.
-   */
-  moveSaves(key: string, to: (path: string) => string | undefined): void {
-    for (const slot of [...this.slots.values()]) {
-      if (slot.key !== key || slot.sending || (slot.state !== "failed" && !slot.pending)) continue;
-      const path = to(slot.path);
-      if (path === undefined || path === slot.path) continue;
-      const there = this.slots.get(`${key}:${path}`);
-      // The old slot stops either way: at its index path it would write into another item.
-      this.slots.delete(slot.id);
-      const queued = slot.pending;
-      const value = queued ?? (slot.state === "failed" ? { value: slot.failedValue } : undefined);
-      slot.pending = undefined;
-      slot.failedValue = undefined;
-      slot.conflict = undefined;
-      this.setState(slot, "idle");
-      // A value already held at the keyed path is the newer one for that field: it stays, and this one goes.
-      if (!value || (there && (there.pending || there.sending || there.state === "failed"))) continue;
-      const moved: SaveSlot = { id: `${key}:${path}`, key, path, state: "failed", failedValue: value.value };
-      this.slots.set(moved.id, moved);
-      if (queued) {
-        // Still on its way: it goes out at the keyed path, after the write that keyed the list.
-        moved.failedValue = undefined;
-        moved.pending = queued;
-        moved.state = "saving";
-        moved.scheduled = this.enqueue(key, () => this.flush(moved));
-      }
-      this.events.stateChanged(moved);
-    }
-  }
-
-  /**
    * Drops the values at the paths `only` accepts, because each path now names something else: a failed value, and a
    * save queued but not yet sent (one already on the wire went out before the change and is left alone).
    */

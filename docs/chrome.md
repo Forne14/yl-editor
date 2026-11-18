@@ -278,11 +278,25 @@ mountEditor({
   rendered as `artists.2.name` inside the item `artists[_key=i3]` is saved to `artists[_key=i3].name`, so a remove
   or move can't put a failed or queued edit into another item. A list whose fields are rendered by position is redrawn by
   the page after a Move, Remove or Undo, so its addresses stay right.
-- **Items with no `_key`** get the full list chrome too. Their first Add, Remove or Move writes a `_key` into every
-  item, in one write to the list's path, then takes the page's markup (which must now render the items by key) and
-  goes on. That needs the schema to accept `_key`. If it refuses, or the items aren't objects, the list keeps the one
-  outline and grid with every field editable but no toolbar, Add or Undo, and `console.warn` tells the site's
-  developer to give each item a `_key`.
+- **Keys are the content's.** The chrome never invents a key for a stored item; only an item it adds gets one.
+  Require them in the schema with `keyedItems(itemSchema)` from `@yl/editor`: the store then refuses an item
+  without a usable, unique `_key`, with an error that says a key must be provided. Key existing content once with
+  `addListKeys(payload, paths)` in the registry entry's `migrate` (bump its `version`): it is pure, keying by place
+  (`k0`, `k1`, …), so every read sees the same keys until the next save stores them.
+
+  ```ts
+  const entry: RegistryEntry = {
+    type: "page",
+    collection: "pages",
+    version: 2,
+    schema: z.object({ artists: keyedItems(z.object({ name: z.string() })) }),
+    migrate: (from, payload) => (from < 2 ? addListKeys(payload, ["artists"]) : payload),
+  };
+  ```
+
+  A list with an item rendered without a key keeps the one outline and grid, every field editable, but no toolbar,
+  Add or Undo, and `console.warn` tells the site's developer to give each item a `_key`.
+
 - **A list inside another list's item** gets no list chrome of its own: its fields are cells of the outer item's row.
 - **A list rendered more than once** gets list chrome on every copy. A change in one is one write, and every copy shows
   it. Add and Duplicate match the page's copies to these in page order.
