@@ -272,10 +272,19 @@ mountEditor({
 });
 ```
 
-**Items must be keyed.** The list chrome appears only when every item is addressed by `_key` (`edit.item` does that
-when the item has one). An index path names whatever sits at that index, so after an add, remove or move a failed,
-queued or open edit would land in another item. A list with any item addressed by index keeps in-place editing of its
-fields and gets no list chrome. Give each array item a `_key` to edit the list.
+**How a list is dressed** (rulings on #28, edit lists: add, remove and reorder keyed array items):
+
+- **Keyed items** get the full list chrome. Their fields are saved by key whatever path the page renders: a field
+  rendered as `artists.2.name` inside the item `artists[_key=i3]` is saved to `artists[_key=i3].name`, so a remove
+  or move can't put a failed or queued edit into another item.
+- **Items with no `_key`** get the full list chrome too. Their first Add, Remove or Move writes a `_key` into every
+  item, in one write to the list's path, then takes the page's markup (which must now render the items by key) and
+  goes on. That needs the schema to accept `_key`. If it refuses, or the items aren't objects, the list keeps the one
+  outline and grid with every field editable but no toolbar, Add or Undo, and `console.warn` tells the site's
+  developer to give each item a `_key`.
+- **A list inside another list's item** gets no list chrome of its own: its fields are cells of the outer item's row.
+- **A list rendered more than once** gets list chrome on every copy. A change in one is one write, and every copy shows
+  it. Add and Duplicate match the page's copies to these in page order.
 
 A list with no `newItem` offers no Add but can still move, duplicate and remove. When `newItem` returns no `_key`, the
 chrome adds one (10 characters of `[a-z0-9]`), and Duplicate gives the copy a new one. These are the only items the
@@ -297,12 +306,14 @@ chrome creates (see docs/paths.md).
   same way.
 - An inert button (the first item's Move up, Add at `max`, Remove at `min`) stays focusable with
   `aria-disabled="true"` and announces why when pressed. Add's reason is also on screen beside it.
-- Remove takes effect at once. For 15 seconds a toast offers Undo, and so does a button in the list's last row, right
-  after the items, so Tab from the list reaches it (`.cms-list__undo`). In the same 15 seconds, Ctrl+Z or ⌘Z with focus
-  in the list (not in a field being edited) undoes that list's last removal. Undo inserts the same item, `_key` and
-  all, where it was, and puts its own element back. Discard and Restore forget the removals of their document. A value
-  that failed to save, or was still queued, inside the removed item has nowhere left to go: it is dropped, and the toast
-  says so (`removedDroppedToast`).
+- Remove takes effect at once. Each removal can be undone for its own 15 seconds: a toast offers Undo, and so does a
+  button in the list's last row, right after the items, so Tab from the list reaches it (`.cms-list__undo`). In that
+  time Ctrl+Z or ⌘Z with focus in the list (not in a field being edited) undoes that list's last removal. Nothing
+  pauses or extends another removal's window. Undo inserts the same item, `_key` and all, where it was, and puts its
+  own element back in every copy. If another editor changed the document meanwhile, Undo writes nothing, the removal
+  is dropped and a toast says the item can no longer be put back (`undoConflict`). Discard and Restore forget the
+  removals of their document. A value that failed to save, or was still queued, inside the removed item has nowhere
+  left to go: it is dropped, and the toast says so (`removedDroppedToast`).
 - Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
   that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
   restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
@@ -359,7 +370,7 @@ The number and date widgets added `invalidValue` (Enter on a half-typed date or 
 (leaving one). Lists added `listTag`, `listTagNoMax`, `listAdd`, `listEmpty`, `listFull`, `listAtMin`, `itemFallback`,
 `itemChip`, `itemChipOpen`, `itemToolbar`, `itemActions`, `itemMoveUp`, `itemMoveDown`, `itemDuplicate`, `itemRemove`,
 `itemIsFirst`, `itemIsLast`, `itemMoved`, `itemAdded`, `itemDuplicated`, `itemRemoved`, `itemRestored`, `removedToast`,
-`undo`, `listReload`, `reload`, `removedDroppedToast` and `listBusy`.
+`undo`, `listReload`, `reload`, `removedDroppedToast`, `listBusy` and `undoConflict`.
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.

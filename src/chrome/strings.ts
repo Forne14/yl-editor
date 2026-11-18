@@ -143,6 +143,8 @@ export const defaultStrings = {
   removedToast: "Removed {item}.",
   removedDroppedToast: "Removed {item}. Its unsaved change was dropped.",
   listBusy: "Updating the list…",
+  undoConflict:
+    "Undo did nothing: {key} has changed since this page loaded. The page now shows the latest version, so {item} can no longer be put back.",
   undo: "Undo",
   listReload: "The list changed, but this page couldn’t show it. Reload to see it.",
   reload: "Reload",

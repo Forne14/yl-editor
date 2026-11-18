@@ -18,7 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the list's markup from the page, so the page must render the draft for editors. New exports: `Editable`,
   `EditableListAttrs` (from `@yl/editor` and `@yl/editor/chrome`) and `ListOptions` (chrome). New `chrome.css`
   tokens `--cms-list-pad`, `--cms-list-line`, `--cms-list-tint`, and new `defaultStrings` keys listed in
-  `docs/chrome.md` → Strings. Lists need keyed items (`_key`); one addressed by index keeps field editing but gets no list chrome. Move,
+  `docs/chrome.md` → Strings. Items without a `_key` are keyed on the first list change (in one write); a keyed item's fields are saved by key
+  whatever path the page renders; a list rendered twice keeps list chrome on every copy; a nested list's fields are
+  cells of the outer row; each removal has its own 15 s Undo, and an Undo after a conflict is dropped. Move,
   Remove and Undo rearrange the page's own markup; Add and Duplicate swap in the list's new markup from the page, and
   other fields keep their state and any open editor meanwhile.
   See `docs/chrome.md` → Lists.

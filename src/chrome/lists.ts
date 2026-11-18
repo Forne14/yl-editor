@@ -32,6 +32,11 @@ export interface ItemRecord {
 export type ItemAction = "up" | "down" | "duplicate" | "remove";
 
 export interface ListHandlers {
+  /**
+   * False for a list whose items can't be tied to a key: the outline and grid, with no toolbar, Add or Undo. Its fields
+   * still edit in place.
+   */
+  actions: boolean;
   /** Whether Add is offered: the host gave the list a `newItem`. */
   canAdd: boolean;
   add(): void;
@@ -48,6 +53,8 @@ export interface ListRecord {
   id: string;
   items: ItemRecord[];
   detach?: () => void;
+  /** Inside an item of another list: no list chrome of its own; its fields are cells of the outer item's row. */
+  nested: boolean;
   /** Redraws the lines; a no-op until attached. */
   paint: () => void;
   /** The chrome's Add button, while attached and offered. */
@@ -115,6 +122,7 @@ export function scanLists(root: HTMLElement): ListRecord[] {
       info,
       id: `${info.key}:${info.path}`,
       items: scanItems(target, info),
+      nested: target.parentElement?.closest("[data-edit-item]")?.closest("[data-edit-list]") != null,
       paint: () => undefined,
     });
   }
@@ -271,9 +279,20 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   host.prepend(frame);
   added.push(frame);
 
-  const toolbars: HTMLElement[] = [];
+  const toolbars: (HTMLElement | undefined)[] = [];
   const bands: HTMLElement[] = [];
   items.forEach((item, index) => {
+    if (!handlers.actions) {
+      // Still a row of the grid: a band for its line and the tint, but nothing to act with.
+      const band = element("span", { class: "cms-root cms-item__band", "aria-hidden": "true" });
+      itemClasses.push({ node: item.element, hadClass: item.element.hasAttribute("class") });
+      item.element.classList.add("cms-item");
+      item.element.append(band);
+      added.push(band);
+      bands.push(band);
+      toolbars.push(undefined);
+      return;
+    }
     const name = itemName(record, item, strings);
     const position = index + 1;
     const placement = { item: name, position, count: total };
@@ -327,7 +346,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     chip.addEventListener("click", () => {
       const opening = !item.element.hasAttribute("data-cms-open");
       for (const other of items) other.element.removeAttribute("data-cms-open");
-      for (const other of toolbars) other.querySelector(".cms-item__chip")?.setAttribute("aria-expanded", "false");
+      for (const other of toolbars) other?.querySelector(".cms-item__chip")?.setAttribute("aria-expanded", "false");
       if (opening) item.element.setAttribute("data-cms-open", "");
       chip.setAttribute("aria-expanded", String(opening));
     });
@@ -407,16 +426,23 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   record.undoButton = undo;
   addChildren.push(undo);
   const addBand = element("span", { class: "cms-item__band", "aria-hidden": "true" });
-  const addRow = element(childTag, { class: "cms-root cms-list__add" }, [...addChildren, addBand]);
-  host.append(addRow);
-  added.push(addRow);
+  const addRow = handlers.actions
+    ? element(childTag, { class: "cms-root cms-list__add" }, [...addChildren, addBand])
+    : undefined;
+  if (addRow) {
+    host.append(addRow);
+    added.push(addRow);
+  } else {
+    record.addButton = undefined;
+    record.undoButton = undefined;
+  }
 
   const separators: HTMLElement[] = [];
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
     const origin = host.getBoundingClientRect();
     const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
-    const rows = [...items.map((item) => item.element), addRow];
+    const rows = [...items.map((item) => item.element), ...(addRow ? [addRow] : [])];
     const boxes = rows.map((row) => boxOf(row, origin));
     const halves = boxes.slice(0, -1).map((box, index) => Math.max(((boxes[index + 1]?.t ?? box.b) - box.b) / 2, 0));
     const lead = Math.max(halves[0] ?? pad, pad);
@@ -444,7 +470,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       if (index >= items.length) return;
       const itemOrigin = row.getBoundingClientRect();
       const fields = [...row.querySelectorAll("[data-edit-field]")]
-        .filter((node) => node.closest("[data-edit-item]") === row)
+        .filter((node) => node.closest(".cms-item") === row)
         .map((node) => boxOf(node, itemOrigin));
       const lines = cellLines(fields, { left, right: left + width });
       for (const x of lines.vertical) {

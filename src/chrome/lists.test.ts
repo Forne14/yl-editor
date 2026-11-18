@@ -137,6 +137,9 @@ function installFetch(): void {
       if (route === "POST /api/content/field") {
         fieldCalls.push((JSON.parse(String(init.body)) as { path: string }).path);
         if (failFields) return json({ error: { code: "internal", message: "down" } }, 500);
+        const written = JSON.parse(String(init.body)) as { path: string; value: unknown };
+        // A whole-list write (the chrome keying an unkeyed list) is stored, as the store would.
+        if (written.path === "artists" && Array.isArray(written.value)) artists = written.value as Artist[];
         version += 1;
         return json({ document: wireDocument() });
       }
@@ -474,7 +477,8 @@ describe("swapping a list's markup touches nothing else", () => {
     await settle();
     expect(names()).toEqual(["Tobias", "Mara", "Site"]);
     expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Reload");
-    expect(document.querySelectorAll(".cms-list__frame")).toHaveLength(2);
+    // Top-level lists only (ruled 2026-11-18): the nested list's fields are cells of the outer row.
+    expect(document.querySelectorAll(".cms-list__frame")).toHaveLength(1);
   });
 
   test("a failed field outside the list keeps its failed state and its text", async () => {
@@ -625,14 +629,6 @@ describe("the ruling of 2026-11-15", () => {
     return { release: () => release(), requests: () => requests };
   }
 
-  test("a list addressed by index keeps its fields but gets no list chrome", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount();
-    expect(list().querySelector(".cms-root")).toBeNull();
-    expect(items()[0]?.querySelector("h3")?.classList.contains("cms-field")).toBe(true);
-  });
-
   test("Move and Remove change the page's own markup, with no page request", async () => {
     listAttrs = { ...listAttrs, min: 0 };
     document.body.innerHTML = `<main id="page">${renderList()}</main>`;
@@ -688,14 +684,11 @@ describe("the ruling of 2026-11-15", () => {
 
   test("while Add waits for the page, a press in the list says the list is updating", async () => {
     listAttrs = { ...listAttrs, min: 0 };
-    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
     await mount();
     const page = gatePage();
     addButton()?.click();
     await settle();
-    const nested = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:artists[_key=a].links"]`);
-    nested?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    toolButton(1, "up").click();
     await settle();
     expect(liveText()).toBe("Updating the list…");
     expect(arrayCalls.map((call) => call.op.kind)).toEqual(["insert"]);
@@ -836,32 +829,6 @@ describe("eighth review round", () => {
     await settle();
     expect(document.querySelector(".cms-toast")?.textContent).toContain("Its unsaved change was dropped.");
   });
-
-  test("a list holding a list with an Add on its way waits too", async () => {
-    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
-    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
-    await mount({
-      lists: {
-        [LIST]: { newItem: () => ({ name: "New artist" }) },
-        [`${KEY}:artists[_key=a].links`]: { newItem: () => ({ name: "New link" }) },
-      },
-    });
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    const realFetch = globalThis.fetch;
-    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-      if (!String(input).includes("/api/")) await gate;
-      return realFetch(input, init);
-    });
-    const nested = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:artists[_key=a].links"]`);
-    nested?.querySelector<HTMLButtonElement>(".cms-list__add-button")?.click();
-    await settle();
-    addButton()?.click();
-    await settle();
-    expect(liveText()).toBe("Updating the list…");
-    release();
-    await settle();
-  });
 });
 
 describe("ninth review round", () => {
@@ -909,8 +876,130 @@ describe("ninth review round", () => {
       );
     undo()?.click();
     await settle();
-    undo()?.click();
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
     await settle();
     expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+});
+
+describe("the rulings of 2026-11-18", () => {
+  test("a nested list gets no list chrome; its fields are still fields", async () => {
+    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const nested = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:artists[_key=a].links"]`);
+    expect(nested?.querySelector(".cms-root")).toBeNull();
+    expect(nested?.querySelector("h3")?.classList.contains("cms-field")).toBe(true);
+  });
+
+  test("every copy of a list gets list chrome, and a removal shows in both", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    const both = () => `<main id="page">${renderList()}<section id="again">${renderList()}</section></main>`;
+    document.body.innerHTML = both();
+    pageAnswer = () => new Response(`<!doctype html>${both()}`);
+    await mount();
+    const copies = () => [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+    expect(copies().map((copy) => copy.querySelectorAll(".cms-list__frame").length)).toEqual([1, 1]);
+    copies()[1]?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    const namesIn = (copy: HTMLElement | undefined) =>
+      [...(copy?.querySelectorAll("[data-edit-item] h3") ?? [])].map((node) => node.textContent);
+    expect(namesIn(copies()[0])).toEqual(["Tobias"]);
+    expect(namesIn(copies()[1])).toEqual(["Tobias"]);
+    expect(copies().map((copy) => copy.querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden)).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  test("a keyed item's field rendered by position is saved by key", async () => {
+    const edit = editable(KEY);
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+    await mount();
+    expect(toolButton(0, "down")).not.toBeNull();
+    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
+    tobias.click();
+    tobias.textContent = "Tobi";
+    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    expect(fieldCalls).toEqual(["artists[_key=b].name"]);
+  });
+
+  test("an unkeyed list keys every item on its first change, then makes it", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    expect(toolButton(0, "down")).not.toBeNull();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(fieldCalls).toEqual(["artists"]);
+    expect(arrayCalls.map((call) => call.op.kind)).toEqual(["remove"]);
+    expect(names()).toEqual(["Tobias"]);
+    expect(artists[0]?._key).toMatch(/^[a-z0-9]{10}$/);
+  });
+
+  test("when the keys are refused, the list keeps one outline and no list actions, and the console says why", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    failFields = true;
+    toolButton(0, "down").click();
+    await settle();
+    expect(arrayCalls).toEqual([]);
+    expect(list().querySelectorAll(".cms-list__frame")).toHaveLength(1);
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(list().querySelector(".cms-list__add")).toBeNull();
+    expect(warn.mock.calls[0]?.[0]).toContain("has no Add, Remove or Move: its items have no _key");
+    warn.mockRestore();
+  });
+
+  test("Undo that hits a conflict drops the removal and says it can't be put back", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      artists = [{ _key: "z", name: "Zed" }, ...artists];
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Mara can no longer be put back");
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+  });
+
+  test("each removal has its own 15 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      listAttrs = { ...listAttrs, min: 0 };
+      guests = [{ _key: "g1", name: "Gus" }];
+      document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+      await mount();
+      toolButton(0, "remove").click();
+      await settle();
+      vi.advanceTimersByTime(10000);
+      const guestList = () => document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`);
+      guestList()?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+      await settle();
+      vi.advanceTimersByTime(6000);
+      expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+      expect(guestList()?.querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
