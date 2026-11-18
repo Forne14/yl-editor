@@ -227,18 +227,19 @@ node, class, attribute and listener the chrome added and leaves the host's marku
 ### Lists
 
 A keyed array (a roster, a list of events) can be edited as a list: add, remove, move up and down, and duplicate. Mark
-the list element with `edit.list(path, attrs)` and each item with `edit.item(path, item, index)`. The item's fields
-are ordinary fields, addressed with `itemPath` so a save lands on the right item after a concurrent reorder.
+the list element with `edit.list(path, attrs)`, each item with `edit.item(path, item, index)`, and the item's fields
+with `edit.itemFields(path, item, index)`, which addresses them through the item (`artists[_key=i3].name`), so an
+edit stays with its item after an add, remove or move.
 
 ```astro
 ---
-import { editable, itemPath } from "@yl/editor";
+import { editable } from "@yl/editor";
 const edit = editable(editor ? "artist/list" : undefined);
 ---
 <ul {...edit.list("artists", { label: "Artists", noun: "artist", plural: "artists", min: 1, max: 6, itemLabel: "name" })}>
   {artists.map((artist, index) => (
     <li {...edit.item("artists", artist, index)}>
-      <h3 {...edit(`${itemPath("artists", artist, index)}.name`, "text", { label: "Name" })}>{artist.name}</h3>
+      <h3 {...edit.itemFields("artists", artist, index)("name", "text", { label: "Name" })}>{artist.name}</h3>
     </li>
   ))}
 </ul>
@@ -272,9 +273,37 @@ mountEditor({
 });
 ```
 
-A list with no `newItem` offers no Add but can still move, duplicate and remove. In a keyed list (or an empty one), when
-`newItem` returns no `_key` the chrome adds one (10 characters of `[a-z0-9]`), and Duplicate gives the copy a new one.
-A list addressed by index stays unkeyed: neither adds a `_key` there. These are the only items the
+**How a list is dressed** (rulings on #28, edit lists: add, remove and reorder keyed array items):
+
+- **Keyed items, with fields addressed by key** (`itemFields`) get the full list chrome. A field addressed by position
+  inside a keyed item (`artists.2.name`) would name another item after an add, remove or move, so that list keeps the
+  one outline and grid with every field editable but no toolbar, Add or Undo, and `console.warn` names the field. The
+  chrome never rewrites an address.
+- **Keys are the content's.** The chrome never invents a key for a stored item; only an item it adds gets one.
+  Require them in the schema with `keyedItems(itemSchema)` from `@yl/editor`: the store then refuses an item
+  without a usable, unique `_key`, with an error that says a key must be provided. Key existing content once with
+  `addListKeys(payload, paths)` in the registry entry's `migrate` (bump its `version`): it is pure, keying by place
+  (`k0`, `k1`, …), so every read sees the same keys until the next save stores them.
+
+  ```ts
+  const entry: RegistryEntry = {
+    type: "page",
+    collection: "pages",
+    version: 2,
+    schema: z.object({ artists: keyedItems(z.object({ name: z.string() })) }),
+    migrate: (from, payload) => (from < 2 ? addListKeys(payload, ["artists"]) : payload),
+  };
+  ```
+
+  A list with an item rendered without a key keeps the one outline and grid, every field editable, but no toolbar,
+  Add or Undo, and `console.warn` tells the site's developer to give each item a `_key`.
+
+- **A list inside another list's item** gets no list chrome of its own: its fields are cells of the outer item's row.
+- **A list rendered more than once** gets list chrome on every copy. A change in one is one write, and every copy shows
+  it. Add and Duplicate match the page's copies to these in page order.
+
+A list with no `newItem` offers no Add but can still move, duplicate and remove. When `newItem` returns no `_key`, the
+chrome adds one (10 characters of `[a-z0-9]`), and Duplicate gives the copy a new one. These are the only items the
 chrome creates (see docs/paths.md).
 
 **How it behaves.**
@@ -293,10 +322,14 @@ chrome creates (see docs/paths.md).
   same way.
 - An inert button (the first item's Move up, Add at `max`, Remove at `min`) stays focusable with
   `aria-disabled="true"` and announces why when pressed. Add's reason is also on screen beside it.
-- Remove takes effect at once. For 15 seconds a toast offers Undo, and so does a button in the list's last row, right
-  after the items, so Tab from the list reaches it (`.cms-list__undo`). Ctrl+Z or ⌘Z with focus in the list (not in a
-  field being edited) undoes that list's last removal at any time; the list's own Undo also undoes that list's. Undo inserts the same item, `_key` and all, where it was. Discard and
-  Restore forget the removals of their document.
+- Remove takes effect at once. Each removal can be undone for its own 15 seconds: a toast offers Undo, and so does a
+  button in the list's last row, right after the items, so Tab from the list reaches it (`.cms-list__undo`). In that
+  time Ctrl+Z or ⌘Z with focus in the list (not in a field being edited) undoes that list's last removal. Nothing
+  pauses or extends another removal's window. Undo inserts the same item, `_key` and all, where it was, and puts its
+  own element back in every copy. If another editor changed the document meanwhile, Undo writes nothing, the removal
+  is dropped and a toast says the item can no longer be put back (`undoConflict`). Discard and Restore forget the
+  removals of their document. A value that failed to save, or was still queued, inside the removed item has nowhere
+  left to go: it is dropped, and the toast says so (`removedDroppedToast`).
 - Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
   that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
   restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
@@ -304,13 +337,20 @@ chrome creates (see docs/paths.md).
 - Every operation is an `array` write (`insert`, `move` or `remove`) on the document's write chain, after the saves
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
-- **The chrome can write the data but not your markup**, so after each write it requests the page again
-  (`GET location.href`, same-origin credentials, `cache: "no-store"`), finds every element with the same
-  `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a conflict
-  replaces the document's content. A field value still saving or failed, and its state, are put back on the new
-  markup.
-  Your page must therefore render the draft for an editor, as it already does on a reload. If the response has no such
-  list, a toast (`listReload`) offers Reload.
+- **Move, Remove and Undo use the page's own markup**: after the write the chrome puts the items' elements in the stored
+  order (and takes a removed one out), with no request to the page. When the items don't share one parent (each is
+  wrapped in markup of yours, an `<li>` around a card), or an item has no element, the chrome asks the page instead,
+  as for Add.
+- **Add and Duplicate need markup the page hasn't rendered**, so after the write the chrome requests the page again
+  (`GET location.href`, same-origin credentials, `cache: "no-store"`, given up after 15 seconds), finds every element
+  with the same `data-edit-list` as the document's lists and swaps them in. It does the same when Discard, Restore or a
+  conflict replaces the document's content. Only the lists are swapped (a list nested in another comes with it); every
+  other field keeps its state and any open editor, and swaps run one at a time. A field value still saving or failed,
+  and its state, are put back on the new markup. Your page must therefore render the draft for an editor, as it already
+  does on a reload. If the response has no such list, or doesn't come, a toast (`listReload`) offers Reload.
+- While a swap is on its way, nothing inside the document's lists (nested lists included) acts or opens; a press
+  announces `listBusy` ("Updating the list…"). Focus moves after an operation only if the editor hasn't opened
+  something else meanwhile.
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.
 - The chrome adds `.cms-list` to the list and `.cms-item` to each item, and its own `.cms-root` children:
   `.cms-list__frame` (the outline and `.cms-list__tag`), `.cms-list__add`, and in each item `.cms-item__tools`,
@@ -346,7 +386,7 @@ The number and date widgets added `invalidValue` (Enter on a half-typed date or 
 (leaving one). Lists added `listTag`, `listTagNoMax`, `listAdd`, `listEmpty`, `listFull`, `listAtMin`, `itemFallback`,
 `itemChip`, `itemChipOpen`, `itemToolbar`, `itemActions`, `itemMoveUp`, `itemMoveDown`, `itemDuplicate`, `itemRemove`,
 `itemIsFirst`, `itemIsLast`, `itemMoved`, `itemAdded`, `itemDuplicated`, `itemRemoved`, `itemRestored`, `removedToast`,
-`undo`, `listReload` and `reload`.
+`undo`, `listReload`, `reload`, `removedDroppedToast`, `listBusy` and `undoConflict`.
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
 A custom store that keeps them should override it.

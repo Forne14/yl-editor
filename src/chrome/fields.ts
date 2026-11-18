@@ -48,15 +48,15 @@ export function parseField(target: HTMLElement): FieldInfo | null {
   return info;
 }
 
-/** Every `[data-edit-field]` under `root`, outside the chrome's own surfaces. */
-export function scanFields(root: HTMLElement): FieldRecord[] {
+/** Every `[data-edit-field]` under `root`, outside the chrome's own surfaces, that `wanted` accepts. */
+export function scanFields(root: HTMLElement, wanted: (element: HTMLElement) => boolean = () => true): FieldRecord[] {
   const records: FieldRecord[] = [];
   const candidates = [
     ...(root.matches("[data-edit-field]") ? [root] : []),
     ...root.querySelectorAll<HTMLElement>("[data-edit-field]"),
   ];
   for (const target of candidates) {
-    if (target.closest(".cms-root")) continue;
+    if (target.closest(".cms-root") || !wanted(target)) continue;
     const info = parseField(target);
     if (!info) continue;
     records.push({

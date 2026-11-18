@@ -24,6 +24,11 @@ function plainSegment(part: string, path: string): PathSegment {
   return /^\d+$/.test(part) ? Number(part) : part;
 }
 
+/** Whether `id` is a `_key` the paths accept: the id alphabet, and not a forbidden name. */
+export function isKeyId(id: unknown): id is string {
+  return typeof id === "string" && KEY_ID.test(id) && !FORBIDDEN.has(id);
+}
+
 function keySegment(id: string): KeySegment {
   if (!KEY_ID.test(id)) throw new PathError(`Invalid _key ${JSON.stringify(id)}`);
   if (FORBIDDEN.has(id)) throw new PathError(`Forbidden _key ${id}`);

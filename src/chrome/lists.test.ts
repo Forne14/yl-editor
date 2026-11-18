@@ -9,6 +9,8 @@ import type { EditorHandle, EditorOptions } from "./types.ts";
 interface Artist {
   _key?: string;
   name: string;
+  /** Rendered as a list nested in the item when present. */
+  links?: Artist[];
 }
 
 const KEY = "artist/list";
@@ -19,6 +21,11 @@ let crew: Artist[] | undefined;
 /** What Discard leaves; the stub answers a field save with 500 while `failFields` is set. */
 let published: Artist[];
 let failFields: boolean;
+/** A second document, `other/list`, with one list, rendered when set. */
+const OTHER = "other/list";
+let guests: Artist[] | undefined;
+let otherVersion: number;
+let fieldCalls: string[];
 let version: number;
 let canEdit: boolean;
 let listAttrs: EditableListAttrs;
@@ -27,8 +34,8 @@ let arrayAnswer: (() => Response) | undefined;
 let pageAnswer: (() => Response) | undefined;
 let handle: EditorHandle | undefined;
 
-function renderOne(path: string, entries: Artist[]): string {
-  const edit = editable(KEY);
+function renderOne(path: string, entries: Artist[], docKey = KEY): string {
+  const edit = editable(docKey);
   const attrs = (record: Record<string, string>) =>
     Object.entries(record)
       .map(([name, value]) => ` ${name}="${value}"`)
@@ -36,14 +43,22 @@ function renderOne(path: string, entries: Artist[]): string {
   const items = entries
     .map(
       (artist, index) =>
-        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3></li>`,
+        `<li${attrs(edit.item(path, artist, index))}><h3${attrs(edit(`${itemPath(path, artist, index)}.name`, "text"))}>${artist.name}</h3>${artist.links ? renderOne(`${itemPath(path, artist, index)}.links`, artist.links, docKey) : ""}</li>`,
     )
     .join("");
   return `<ul${attrs(edit.list(path, listAttrs))}>${items}</ul>`;
 }
 
 function renderList(): string {
-  return renderOne("artists", artists) + (crew ? renderOne("crew", crew) : "");
+  return (
+    renderOne("artists", artists) +
+    (crew ? renderOne("crew", crew) : "") +
+    (guests ? renderOne("guests", guests, OTHER) : "")
+  );
+}
+
+function otherDocument() {
+  return { ...wireDocument(), id: 2, key: OTHER, payload: { guests }, version: otherVersion };
 }
 
 function wireDocument() {
@@ -74,6 +89,19 @@ function installFetch(): void {
       if (route === "GET /api/content/documents") {
         return json({
           documents: {
+            ...(guests
+              ? {
+                  [OTHER]: {
+                    key: OTHER,
+                    type: "page",
+                    version: otherVersion,
+                    isDraft: true,
+                    draftUpdatedAt: null,
+                    publishedAt: null,
+                    access: { edit: true, publish: true },
+                  },
+                }
+              : {}),
             [KEY]: {
               key: KEY,
               type: "page",
@@ -86,12 +114,20 @@ function installFetch(): void {
           },
         });
       }
-      if (route === "GET /api/content/document") return json({ document: wireDocument(), publishedPayload: null });
+      if (route === "GET /api/content/document") {
+        const doc = url.searchParams.get("key") === OTHER ? otherDocument() : wireDocument();
+        return json({ document: doc, publishedPayload: null });
+      }
       if (route === "POST /api/content/array") {
         const body = JSON.parse(String(init.body)) as { op: ArrayOp; expectedVersion: unknown };
         arrayCalls.push({ op: body.op, expectedVersion: body.expectedVersion });
         if (arrayAnswer) return arrayAnswer();
-        const body2 = JSON.parse(String(init.body)) as { path: string };
+        const body2 = JSON.parse(String(init.body)) as { path: string; key: string };
+        if (body2.key === OTHER) {
+          guests = applyArrayOp({ guests }, parsePath(body2.path), body.op).guests;
+          otherVersion += 1;
+          return json({ document: otherDocument() });
+        }
         const next = applyArrayOp({ artists, crew }, parsePath(body2.path), body.op);
         artists = next.artists;
         crew = next.crew;
@@ -99,11 +135,20 @@ function installFetch(): void {
         return json({ document: wireDocument() });
       }
       if (route === "POST /api/content/field") {
+        fieldCalls.push((JSON.parse(String(init.body)) as { path: string }).path);
         if (failFields) return json({ error: { code: "internal", message: "down" } }, 500);
+        const written = JSON.parse(String(init.body)) as { path: string; value: unknown };
+        // A whole-list write (the chrome keying an unkeyed list) is stored, as the store would.
+        if (written.path === "artists" && Array.isArray(written.value)) artists = written.value as Artist[];
         version += 1;
         return json({ document: wireDocument() });
       }
       if (route === "POST /api/content/discard") {
+        if ((JSON.parse(String(init.body)) as { key: string }).key === OTHER) {
+          guests = [{ _key: "g1", name: "Gus" }];
+          otherVersion += 1;
+          return json({ document: otherDocument() });
+        }
         artists = published.map((artist) => ({ ...artist }));
         version += 1;
         return json({ document: wireDocument() });
@@ -144,6 +189,9 @@ beforeEach(() => {
   ];
   version = 4;
   crew = undefined;
+  guests = undefined;
+  otherVersion = 2;
+  fieldCalls = [];
   published = artists.map((artist) => ({ ...artist }));
   failFields = false;
   canEdit = true;
@@ -329,15 +377,6 @@ describe("list operations", () => {
     expect(names()).toEqual(["Mara", "Mara", "Tobias"]);
   });
 
-  test("a page that doesn't show the list after the write asks for a reload", async () => {
-    await mount();
-    pageAnswer = () => new Response("<!doctype html><p>elsewhere</p>");
-    toolButton(0, "down").click();
-    await settle();
-    expect(arrayCalls).toHaveLength(1);
-    expect(document.querySelector(".cms-toast")?.textContent).toContain("Reload to see it.");
-  });
-
   test("a conflict writes nothing, says so and shows the latest list", async () => {
     await mount();
     arrayAnswer = () => {
@@ -401,16 +440,678 @@ describe("after review", () => {
     expect(moved?.textContent).toBe("Tobi");
     expect(moved?.classList.contains("cms-field--failed")).toBe(true);
   });
+});
 
-  test("a list addressed by index stays unkeyed: Duplicate adds no _key", async () => {
-    artists = [{ name: "Mara" }, { name: "Tobias" }];
-    listAttrs = { ...listAttrs, duplicate: true };
+describe("swapping a list's markup touches nothing else", () => {
+  const footer = () => document.querySelector<HTMLElement>("#footer") as HTMLElement;
+  const page = () =>
+    `<main id="page">${renderList()}<p id="footer" data-edit-field="${KEY}:title" data-edit-type="text">Title</p></main>`;
+
+  test("lists of two documents changed back to back both show their change, with no reload toast", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    guests = [
+      { _key: "g1", name: "Gus" },
+      { _key: "g2", name: "Hal" },
+    ];
+    document.body.innerHTML = page();
+    await mount();
+    toolButton(0, "remove").click();
+    const guestList = document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`) as HTMLElement;
+    guestList.querySelector<HTMLButtonElement>('[data-action="down"]')?.click();
+    await settle();
+    await settle();
+    expect(names()).toEqual(["Tobias"]);
+    const guestNames = [...document.querySelectorAll(`[data-edit-list="${OTHER}:guests"] [data-edit-item] h3`)].map(
+      (node) => node.textContent,
+    );
+    expect(guestNames).toEqual(["Hal", "Gus"]);
+    expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Reload");
+  });
+
+  test("a list nested in an item swaps with its parent, with no reload toast", async () => {
+    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
+    document.body.innerHTML = page();
+    await mount();
+    const tobias = items().find((item) => item.querySelector("h3")?.textContent === "Tobias") as HTMLElement;
+    tobias.querySelector<HTMLButtonElement>(':scope > .cms-item__tools [data-action="up"]')?.click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara", "Site"]);
+    expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Reload");
+    // Top-level lists only (ruled 2026-11-18): the nested list's fields are cells of the outer row.
+    expect(document.querySelectorAll(".cms-list__frame")).toHaveLength(1);
+  });
+
+  test("a failed field outside the list keeps its failed state and its text", async () => {
+    document.body.innerHTML = page();
+    await mount();
+    failFields = true;
+    footer().click();
+    footer().textContent = "Unsaved";
+    footer().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    expect(footer().classList.contains("cms-field--failed")).toBe(true);
+    failFields = false;
+    toolButton(0, "down").click();
+    await settle();
+    expect(footer().classList.contains("cms-field--failed")).toBe(true);
+    expect(footer().textContent).toBe("Unsaved");
+  });
+
+  test("a field being edited elsewhere stays open while the list swaps", async () => {
+    document.body.innerHTML = page();
+    await mount();
+    toolButton(0, "down").click();
+    footer().click();
+    expect(footer().classList.contains("cms-field--editing")).toBe(true);
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(footer().classList.contains("cms-field--editing")).toBe(true);
+  });
+
+  test("Discard within the Undo window takes the Undo away", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = page();
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(false);
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent ?? "").not.toContain("Undo");
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+  });
+});
+
+describe("third review round", () => {
+  test("discarding one document keeps the other's Undo, and it restores the other's item", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    guests = [{ _key: "g1", name: "Gus" }];
     document.body.innerHTML = `<main id="page">${renderList()}</main>`;
     await mount();
-    toolButton(0, "duplicate").click();
+    const guestList = () => document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`) as HTMLElement;
+    guestList().querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Removed Mara.");
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+    const undo = guestList().querySelector<HTMLButtonElement>(".cms-list__undo");
+    expect(undo?.hidden).toBe(false);
+    undo?.click();
+    await settle();
+    expect(guests?.map((guest) => guest.name)).toEqual(["Gus"]);
+    expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+});
+
+describe("fifth review round", () => {
+  /** Holds every page fetch until `release` is called. */
+  function gatePage(): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!String(input).includes("/api/")) await gate;
+      return realFetch(input, init);
+    });
+    return () => release();
+  }
+
+  test("after a conflict the list stays locked until the page shows the other editor's change", async () => {
+    await mount();
+    const release = gatePage();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      artists = [{ _key: "z", name: "Zed" }, ...artists];
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    toolButton(0, "down").click();
+    await settle();
+    toolButton(0, "down").click();
+    await settle();
+    expect(arrayCalls).toHaveLength(1);
+    release();
+    await settle();
+    expect(names()).toEqual(["Zed", "Mara", "Tobias"]);
+  });
+
+  test("while Discard's swap is on its way the list doesn't act", async () => {
+    await mount();
+    const release = gatePage();
+    await handle?.api.discard(KEY);
+    toolButton(0, "down").click();
+    await settle();
+    expect(arrayCalls).toEqual([]);
+    release();
+    await settle();
+  });
+
+  test("focus moved to another list meanwhile stays there", async () => {
+    guests = [
+      { _key: "g1", name: "Gus" },
+      { _key: "g2", name: "Hal" },
+    ];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const release = gatePage();
+    toolButton(0, "down").click();
+    await settle();
+    const guestButton = document.querySelector<HTMLButtonElement>(
+      `[data-edit-list="${OTHER}:guests"] [data-action="remove"]`,
+    ) as HTMLButtonElement;
+    guestButton.focus();
+    release();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(document.activeElement).toBe(guestButton);
+  });
+});
+
+describe("the ruling of 2026-11-15", () => {
+  /** Holds every page fetch until `release` is called; counts them. */
+  function gatePage(): { release: () => void; requests: () => number } {
+    let release: () => void = () => undefined;
+    let requests = 0;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!String(input).includes("/api/")) {
+        requests += 1;
+        await gate;
+      }
+      return realFetch(input, init);
+    });
+    return { release: () => release(), requests: () => requests };
+  }
+
+  test("Move and Remove change the page's own markup, with no page request", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const page = gatePage();
+    const maraElement = items()[0];
+    toolButton(0, "down").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(items()[1]).toBe(maraElement);
+    toolButton(0, "remove").click();
+    await settle();
+    expect(names()).toEqual(["Mara"]);
+    expect(page.requests()).toBe(0);
+    page.release();
+  });
+
+  test("Undo puts the removed item's own element back where it was", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const maraElement = items()[0];
+    toolButton(0, "remove").click();
+    await settle();
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(items()[0]).toBe(maraElement);
+    expect(names()).toEqual(["Mara", "Tobias"]);
+    expect(toolButton(0, "down")).not.toBeNull();
+  });
+
+  test("removing an item whose save failed drops that value and says so", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
+    tobias.click();
+    tobias.textContent = "Tobi";
+    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    toolButton(1, "remove").click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain(
+      "Removed Tobi. Its unsaved change was dropped.",
+    );
+    fieldCalls = [];
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(fieldCalls).toEqual([]);
+  });
+
+  test("while Add waits for the page, a press in the list says the list is updating", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    await mount();
+    const page = gatePage();
+    addButton()?.click();
+    await settle();
+    toolButton(1, "up").click();
+    await settle();
+    expect(liveText()).toBe("Updating the list…");
+    expect(arrayCalls.map((call) => call.op.kind)).toEqual(["insert"]);
+    page.release();
+    await settle();
+  });
+
+  test("a page that doesn't show the list after Add asks for a reload, and the next Add still works", async () => {
+    listAttrs = { ...listAttrs, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    pageAnswer = () => {
+      pageAnswer = undefined;
+      return new Response("<!doctype html><p>elsewhere</p>");
+    };
+    addButton()?.click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Reload to see it.");
+    addButton()?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias", "New artist", "New artist"]);
+  });
+});
+
+describe("rearranging the page's own markup", () => {
+  const attrs = (record: Record<string, string>) =>
+    Object.entries(record)
+      .map(([name, value]) => ` ${name}="${value}"`)
+      .join("");
+  /** The list element wraps a heading and a <ul>, with a separator between the items. */
+  function wrapped(): string {
+    const edit = editable(KEY);
+    const item = (artist: Artist, index: number) =>
+      `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></li>`;
+    const lis = artists.map(item);
+    return `<main id="page"><section${attrs(edit.list("artists", listAttrs))}><h2>Team</h2><ul id="team-ul">${lis.join('<li class="sep">·</li>')}</ul></section></main>`;
+  }
+
+  test("a separator between items stays between them after a move", async () => {
+    document.body.innerHTML = wrapped();
+    await mount();
+    toolButton(0, "down").click();
+    await settle();
+    const children = [...(document.querySelector("#team-ul")?.children ?? [])].map(
+      (node) => node.querySelector("h3")?.textContent ?? node.textContent,
+    );
+    expect(children).toEqual(["Tobias", "·", "Mara"]);
+  });
+
+  test("Undo of the only item puts it back inside its own parent", async () => {
+    artists = [{ _key: "a", name: "Mara" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = wrapped();
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.querySelectorAll("#team-ul [data-edit-item]")).toHaveLength(0);
+    document.querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(document.querySelectorAll("#team-ul [data-edit-item]")).toHaveLength(1);
+  });
+
+  test("Undo leaves another document's field inside the item as it was", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    const foreign = document.createElement("p");
+    foreign.dataset.editField = `${OTHER}:note`;
+    foreign.textContent = "Theirs";
+    items()[0]?.append(foreign);
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(foreign.isConnected).toBe(true);
+    expect(foreign.textContent).toBe("Theirs");
+  });
+
+  test("an Undo that fails to write can be tried again", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      return json({ error: { code: "internal", message: "down" } }, 500);
+    };
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Tobias"]);
+    const undo = list().querySelector<HTMLButtonElement>(".cms-list__undo");
+    expect(undo?.hidden).toBe(false);
+    undo?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+
+  test("a stored item the page has no element for makes the chrome ask the page", async () => {
+    await mount();
+    artists.push({ _key: "c", name: "Ines" });
+    toolButton(0, "down").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
+  });
+});
+
+describe("eighth review round", () => {
+  test("a write answer with no array at the list's path asks the page instead of emptying the list", async () => {
+    await mount();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      artists = [artists[1] as Artist, artists[0] as Artist];
+      version += 1;
+      return json({ document: { ...wireDocument(), payload: {} } });
+    };
+    toolButton(0, "down").click();
+    await settle();
+    expect(names()).toEqual(["Tobias", "Mara"]);
+  });
+
+  test("a failed value on the removed item's own path is dropped too", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    const whole = document.createElement("span");
+    whole.dataset.editField = `${KEY}:artists[_key=b]`;
+    whole.dataset.editType = "text";
+    whole.textContent = "whole";
+    items()[1]?.append(whole);
+    await mount();
+    failFields = true;
+    whole.click();
+    whole.textContent = "changed";
+    whole.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    toolButton(1, "remove").click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Its unsaved change was dropped.");
+  });
+});
+
+describe("ninth review round", () => {
+  const attrs = (record: Record<string, string>) =>
+    Object.entries(record)
+      .map(([name, value]) => ` ${name}="${value}"`)
+      .join("");
+  /** Each item wrapped in an <li class="card"> of the host's. */
+  function wrappedItems(): string {
+    const edit = editable(KEY);
+    const cards = artists
+      .map(
+        (artist, index) =>
+          `<li class="card"><div${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></div></li>`,
+      )
+      .join("");
+    return `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${cards}</ul></main>`;
+  }
+
+  test("items wrapped in markup of the host's are redrawn by the page, leaving no empty wrapper", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = wrappedItems();
+    pageAnswer = () => new Response(`<!doctype html>${wrappedItems()}`);
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.querySelectorAll("li.card")).toHaveLength(1);
+    expect(names()).toEqual(["Tobias"]);
+  });
+
+  test("Undo moves past a removal whose list has left the page", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    guests = [{ _key: "g1", name: "Gus" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    const guestList = () => document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`);
+    guestList()?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    guestList()?.remove();
+    const undo = () =>
+      [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")].find(
+        (node) => node.textContent === "Undo",
+      );
+    undo()?.click();
+    await settle();
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias"]);
+  });
+});
+
+describe("the rulings of 2026-11-18", () => {
+  test("a nested list gets no list chrome; its fields are still fields", async () => {
+    artists[0] = { _key: "a", name: "Mara", links: [{ _key: "l1", name: "Site" }] };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    const nested = document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:artists[_key=a].links"]`);
+    expect(nested?.querySelector(".cms-root")).toBeNull();
+    expect(nested?.querySelector("h3")?.classList.contains("cms-field")).toBe(true);
+  });
+
+  test("every copy of a list gets list chrome, and a removal shows in both", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    const both = () => `<main id="page">${renderList()}<section id="again">${renderList()}</section></main>`;
+    document.body.innerHTML = both();
+    pageAnswer = () => new Response(`<!doctype html>${both()}`);
+    await mount();
+    const copies = () => [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+    expect(copies().map((copy) => copy.querySelectorAll(".cms-list__frame").length)).toEqual([1, 1]);
+    copies()[1]?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    const namesIn = (copy: HTMLElement | undefined) =>
+      [...(copy?.querySelectorAll("[data-edit-item] h3") ?? [])].map((node) => node.textContent);
+    expect(namesIn(copies()[0])).toEqual(["Tobias"]);
+    expect(namesIn(copies()[1])).toEqual(["Tobias"]);
+    expect(copies().map((copy) => copy.querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden)).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  test("Undo that hits a conflict drops the removal and says it can't be put back", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      artists = [{ _key: "z", name: "Zed" }, ...artists];
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(document.querySelector(".cms-toast")?.textContent).toContain("Mara can no longer be put back");
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+  });
+
+  test("each removal has its own 15 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      listAttrs = { ...listAttrs, min: 0 };
+      guests = [{ _key: "g1", name: "Gus" }];
+      document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+      await mount();
+      toolButton(0, "remove").click();
+      await settle();
+      vi.advanceTimersByTime(10000);
+      const guestList = () => document.querySelector<HTMLElement>(`[data-edit-list="${OTHER}:guests"]`);
+      guestList()?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+      await settle();
+      vi.advanceTimersByTime(6000);
+      expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+      expect(guestList()?.querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("eleventh review round", () => {
+  test("an Undo that fails after its window has closed doesn't bring the removal back", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      listAttrs = { ...listAttrs, min: 0 };
+      document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+      await mount();
+      toolButton(0, "remove").click();
+      await settle();
+      arrayAnswer = () => {
+        arrayAnswer = undefined;
+        vi.advanceTimersByTime(16000);
+        return json({ error: { code: "internal", message: "down" } }, 500);
+      };
+      list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+      await settle();
+      expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("twelfth review round", () => {
+  test("Undo puts an item back after its old neighbour, even after another change", async () => {
+    artists.push({ _key: "c", name: "Ines" });
+    listAttrs = { ...listAttrs, min: 0, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(1, "remove").click();
+    await settle();
+    toolButton(1, "up").click();
+    await settle();
+    expect(names()).toEqual(["Ines", "Mara"]);
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Ines", "Mara", "Tobias"]);
+  });
+
+  test("Undo pressed in the second copy keeps focus in that copy", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    const both = () => `<main id="page">${renderList()}<section id="again">${renderList()}</section></main>`;
+    document.body.innerHTML = both();
+    await mount();
+    const copies = () => [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+    copies()[1]?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    copies()[1]?.querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(copies()[1]?.contains(document.activeElement)).toBe(true);
+  });
+});
+
+describe("fourteenth review round", () => {
+  test("after Add, each copy of a list keeps its own markup", async () => {
+    listAttrs = { ...listAttrs, max: 5 };
+    const page = () =>
+      `<main id="page">${renderList()}<aside id="compact">${renderList().replaceAll("<h3", '<h3 class="compact"')}</aside></main>`;
+    document.body.innerHTML = page();
+    pageAnswer = () => new Response(`<!doctype html>${page()}`);
+    await mount();
+    addButton()?.click();
+    await settle();
+    const copies = [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+    expect(copies[0]?.querySelector("h3.compact")).toBeNull();
+    expect(copies[1]?.querySelector("h3.compact")).not.toBeNull();
+    expect(copies[1]?.closest("#compact")).not.toBeNull();
+  });
+
+  test("an Undo that hits a conflict drops every removal of that document", async () => {
+    artists.push({ _key: "c", name: "Ines" });
+    listAttrs = { ...listAttrs, min: 0, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(0, "remove").click();
+    await settle();
+    toolButton(0, "remove").click();
+    await settle();
+    arrayAnswer = () => {
+      arrayAnswer = undefined;
+      version += 1;
+      return json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409);
+    };
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(list().querySelector<HTMLButtonElement>(".cms-list__undo")?.hidden).toBe(true);
+  });
+});
+
+describe("keys are the content's (ruled 2026-11-18)", () => {
+  test("a list whose items have no _key keeps one outline with no list actions, writes nothing, and the console says why", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mount();
+    expect(list().querySelectorAll(".cms-list__frame")).toHaveLength(1);
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(list().querySelector(".cms-list__add")).toBeNull();
+    expect(items()[0]?.querySelector("h3")?.classList.contains("cms-field")).toBe(true);
+    expect(warn.mock.calls[0]?.[0]).toContain("has no Add, Remove or Move: its items have no _key");
+    expect(fieldCalls).toEqual([]);
+    expect(arrayCalls).toEqual([]);
+    warn.mockRestore();
+  });
+});
+
+describe("fields by key are the site's (ruled 2026-11-18)", () => {
+  test("a keyed item's field addressed by position leaves the list with one outline, no list actions, and a console note", async () => {
+    const edit = editable(KEY);
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await mount();
+    expect(list().querySelectorAll(".cms-list__frame")).toHaveLength(1);
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(warn.mock.calls[0]?.[0]).toContain("its field artists.0.name is addressed by position inside a keyed item");
+    warn.mockRestore();
+  });
+
+  test("fields rendered with itemFields keep the full list chrome", async () => {
+    const edit = editable(KEY);
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit.itemFields("artists", artist, index)("name", "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+    await mount();
+    expect(toolButton(0, "down")).not.toBeNull();
+  });
+});
+
+describe("seventeenth review round", () => {
+  test("removing the last item of a list with no Add leaves focus on the list's Undo", async () => {
+    artists = [{ _key: "a", name: "Mara" }];
+    listAttrs = { ...listAttrs, min: 0 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount({ lists: {} });
+    toolButton(0, "remove").click();
+    await settle();
+    expect(document.activeElement).toBe(list().querySelector(".cms-list__undo"));
+  });
+
+  test("a newItem that returns a _key already in the list gets a fresh one", async () => {
+    listAttrs = { ...listAttrs, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount({ lists: { [LIST]: { newItem: () => ({ _key: "a", name: "New artist" }) } } });
+    addButton()?.click();
     await settle();
     const op = arrayCalls[0]?.op as Extract<ArrayOp, { kind: "insert" }>;
-    expect(op).toEqual({ kind: "insert", index: 1, value: { name: "Mara" } });
-    expect(items()[1]?.querySelector("h3")?.classList.contains("cms-field--editing")).toBe(true);
+    expect((op.value as Artist)._key).not.toBe("a");
   });
 });

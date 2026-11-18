@@ -93,3 +93,11 @@ test("list refuses a malformed path and a bad limit", () => {
   expect(() => editable("artist/list").list("artists", { min: 3, max: 2 })).toThrow();
   expect(() => editable("artist/list").list("artists", { max: -1 })).toThrow();
 });
+
+test("itemFields addresses an item's fields through the item, and renders nothing outside edit mode", () => {
+  expect(editable("artist/list").itemFields("artists", { _key: "i3" }, 2)("name", "text")).toEqual({
+    "data-edit-field": "artist/list:artists[_key=i3].name",
+    "data-edit-type": "text",
+  });
+  expect(editable(undefined).itemFields("artists", { _key: "i3" }, 2)("name", "text")).toEqual({});
+});

@@ -1,0 +1,1217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>List decisions</title>
+    <style>
+      /* ==========================================================================================================
+         1. COPIED FROM src/chrome/chrome.css (tokens, fields, buttons, focus ring, bar, toast, popover). Unchanged
+            except that the zero-specificity :where() wrapper is kept and position:fixed surfaces are placed inside
+            the demo frames by section 3. This file is self-contained so it still opens when the repo moves.
+         ========================================================================================================== */
+      :where(.cms-root, .cms-field, .cms-listedit, .cms-item) {
+        --cms-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --cms-size-sm: 0.8125rem;
+        --cms-size-md: 0.9375rem;
+        --cms-line: 1.4;
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-success: #1f7a45;
+        --cms-warning: #a15c07;
+        --cms-outline: 2px dashed #2557d6;
+        --cms-radius: 6px;
+        --cms-space-1: 4px;
+        --cms-space-2: 8px;
+        --cms-space-3: 12px;
+        --cms-space-4: 16px;
+        --cms-space-5: 24px;
+        --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+        --cms-z: 1000;
+        --cms-control-h: 44px;
+        --cms-sheet-max-h: 70vh;
+      }
+      :where(.cms-field) {
+        outline: var(--cms-outline);
+        outline-offset: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        cursor: text;
+      }
+      :where(.cms-field:hover, .cms-field:focus-visible) {
+        outline-color: var(--cms-fg);
+      }
+      :where(.cms-field--editing) {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+      }
+      :where(.cms-root) {
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        line-height: var(--cms-line);
+        color: var(--cms-fg);
+      }
+      .cms-root [hidden] {
+        display: none;
+      }
+      :where(.cms-root *, .cms-root *::before, .cms-root *::after) {
+        box-sizing: border-box;
+      }
+      :where(.cms-btn) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--cms-space-1);
+        min-height: var(--cms-control-h);
+        min-width: var(--cms-control-h);
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        color: var(--cms-fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      :where(.cms-btn--primary) {
+        border-color: var(--cms-accent);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+      }
+      :where(.cms-btn--danger) {
+        border-color: var(--cms-danger);
+        color: var(--cms-danger);
+      }
+      :where(.cms-btn--ghost) {
+        background: transparent;
+      }
+      :where(.cms-btn:disabled) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      :where(.cms-root :focus-visible, .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      :where(.cms-muted) {
+        color: var(--cms-muted);
+      }
+      :where(.cms-visually-hidden, .cms-live) {
+        position: absolute;
+        inline-size: 1em;
+        block-size: 1em;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      :where(.cms-bar) {
+        position: fixed;
+        inset-inline: var(--cms-space-4);
+        bottom: var(--cms-space-4);
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-4);
+        padding: var(--cms-space-2) var(--cms-space-4);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-bar__state) {
+        display: grid;
+        flex: 1 1 18em;
+        min-width: 0;
+      }
+      :where(.cms-bar__changes) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-bar__actions, .cms-toast__actions, .cms-popover__actions) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--cms-space-2);
+      }
+      :where(.cms-toast) {
+        position: fixed;
+        top: var(--cms-space-4);
+        left: 50%;
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        max-width: calc(100vw - 2 * var(--cms-space-4));
+        padding: var(--cms-space-2) var(--cms-space-4);
+        transform: translateX(-50%);
+        border-radius: var(--cms-radius);
+        border-inline-start: medium solid var(--cms-accent);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-toast__message) {
+        margin: 0;
+      }
+      :where(.cms-popover) {
+        position: absolute;
+        top: calc(var(--cms-popover-top, 0) + var(--cms-space-2));
+        left: var(--cms-popover-left, 0);
+        z-index: var(--cms-z);
+        display: grid;
+        gap: var(--cms-space-2);
+        width: min(22em, calc(100vw - 2 * var(--cms-space-4)));
+        padding: var(--cms-space-3);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-popover__title) {
+        margin: 0;
+        font-size: var(--cms-size-sm);
+        font-weight: 600;
+      }
+      :where(.cms-popover--note) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-toast, .cms-popover) {
+        transition:
+          opacity 160ms ease,
+          transform 200ms ease;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :where(.cms-toast, .cms-popover) {
+          transition: opacity 120ms linear;
+        }
+      }
+
+      /* ==========================================================================================================
+         2. PROPOSED: list editing. These are the only new chrome rules. Same tokens, same :where() zero
+            specificity, no raw colours or sizes. Hosts restyle them from their own stylesheet like everything else.
+         ========================================================================================================== */
+
+      /* The rule (Yassine, 2026-11-11): no dashed outline sits inside or across another. A list is ONE dashed
+         outline. Inside it, a single dashed line separates one item from the next, and one field from the next
+         inside an item. Every line ends where it meets another; none overlaps. States inside the grid (hover,
+         editing, keyboard focus) are solid and drawn inside the cell, so they never touch a dashed line either. */
+      :where(.cms-listedit) {
+        --cms-list-gap: calc(var(--cms-control-h) + var(--cms-space-4)); /* room for a 44px toolbar on a line */
+        --cms-list-pad: var(--cms-space-3); /* outline to content, left and right */
+        --cms-list-line: thin dashed var(--cms-accent); /* the separators */
+        --cms-list-tint: color-mix(in srgb, var(--cms-accent) 7%, transparent);
+        position: relative;
+      }
+      /* The one outline. Its top edge sits half a gap above the first row, so the first item's top edge is the
+         same height as every other item's separator, and its toolbar sits on it the same way. */
+      :where(.cms-listedit__frame) {
+        position: absolute;
+        inset: calc(-0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad)) calc(-1 * var(--cms-list-pad));
+        border: var(--cms-outline);
+        border-radius: var(--cms-radius);
+        pointer-events: none;
+      }
+      /* The list's name and count sit ON the outline's top edge, like a fieldset legend: no box of its own. */
+      :where(.cms-listedit__tag) {
+        position: absolute;
+        top: calc(-0.5 * var(--cms-list-gap));
+        left: 0;
+        z-index: 1;
+        transform: translateY(-50%);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-sm);
+        line-height: var(--cms-line);
+        white-space: nowrap;
+      }
+      :where(.cms-listedit__items) {
+        display: grid;
+        gap: var(--cms-list-gap);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      /* Chrome-owned rows (empty message, Add) get the same separator as an item. */
+      :where(.cms-listedit__empty) {
+        margin: 0;
+        padding: var(--cms-space-3) 0;
+        color: var(--cms-muted);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        text-align: center;
+      }
+      :where(.cms-listedit__add) {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        margin: calc(0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad) + 2px) 0;
+        padding: calc(0.5 * var(--cms-list-gap)) calc(var(--cms-list-pad) - 2px) 0;
+        border-top: var(--cms-list-line);
+        font-family: var(--cms-font);
+      }
+      :where(.cms-listedit__empty + .cms-listedit__add) {
+        margin-top: var(--cms-space-3);
+        padding-top: var(--cms-space-3);
+      }
+      :where(.cms-listedit__reason) {
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-btn[aria-disabled="true"]) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      /* Add is an ordinary solid button: a dashed button would be a dashed box inside the outline. */
+      :where(.cms-btn--add) {
+        color: var(--cms-accent);
+      }
+
+      /* The item. Its band runs from the line above it to the line below it, the full width of the outline. */
+      :where(.cms-item) {
+        position: relative;
+        isolation: isolate;
+      }
+      :where(.cms-item__band) {
+        position: absolute;
+        inset: calc(-0.5 * var(--cms-list-gap)) calc(-1 * var(--cms-list-pad) + 2px);
+        z-index: -1;
+        pointer-events: none;
+      }
+      :where(.cms-item + .cms-item > .cms-item__band) {
+        border-top: var(--cms-list-line);
+      }
+      /* Hover, focus inside, or open (touch): the band fills with a faint tint. No outline. */
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) > .cms-item__band {
+        background: var(--cms-list-tint);
+      }
+      :where(.cms-item--dragging) {
+        opacity: 0.6;
+      }
+      :where(.cms-item--dragging) > .cms-item__band {
+        background: color-mix(in srgb, var(--cms-accent) 16%, transparent);
+      }
+      /* Lines between an item's fields. Placed by the chrome from the fields' boxes, through custom properties
+         (style.setProperty, CSP-safe): --cms-sep-x for a vertical line, --cms-sep-y/-x/-w for a horizontal one. */
+      :where(.cms-item__sep) {
+        position: absolute;
+        pointer-events: none;
+      }
+      :where(.cms-item__sep--v) {
+        top: calc(-0.5 * var(--cms-list-gap) + 2px);
+        bottom: calc(-0.5 * var(--cms-list-gap));
+        left: var(--cms-sep-x);
+        border-left: var(--cms-list-line);
+      }
+      :where(.cms-item__sep--h) {
+        top: var(--cms-sep-y);
+        left: var(--cms-sep-x);
+        width: var(--cms-sep-w);
+        border-top: var(--cms-list-line);
+      }
+      :where([data-cells="off"] .cms-item__sep) {
+        display: none;
+      }
+      /* Fields inside a list have no outline of their own: the lines mark them. Their states are solid and
+         inset, inside the cell. */
+      :where(.cms-item .cms-field) {
+        outline: none;
+      }
+      :where(.cms-item .cms-field:hover) {
+        outline: thin solid var(--cms-fg);
+        outline-offset: -1px;
+      }
+      :where(.cms-item .cms-field--editing, .cms-item .cms-field--editing:hover) {
+        outline: 2px solid var(--cms-accent);
+        outline-offset: -2px;
+      }
+      :where(.cms-item .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: -3px;
+      }
+
+      /* The toolbar sits ON the item's top line, at the right: centred on it, like the tag on the outline. */
+      :where(.cms-item__tools) {
+        position: absolute;
+        inset-inline-end: 0;
+        bottom: calc(100% + 0.5 * var(--cms-list-gap) - 0.5 * var(--cms-control-h));
+        z-index: 1;
+        display: flex;
+        gap: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms linear;
+      }
+      :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-open]) > .cms-item__tools {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      :where(.cms-item__tools .cms-btn) {
+        padding: 0;
+        border: 0;
+      }
+      :where(.cms-item__danger) {
+        color: var(--cms-danger);
+      }
+      :where(.cms-item__grip) {
+        cursor: grab;
+        touch-action: none;
+      }
+      :where(.cms-item__chip) {
+        display: none;
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-item__chip-open) {
+        display: none;
+      }
+      /* Touch: tools collapse to one chip per item, on the same line (a tap target clear of the fields). */
+      :where([data-input="touch"] .cms-item__tools) {
+        opacity: 1;
+        pointer-events: auto;
+        background: transparent;
+        box-shadow: none;
+      }
+      :where([data-input="touch"] .cms-item__chip) {
+        display: inline-flex;
+        background: var(--cms-bg);
+      }
+      :where([data-input="touch"] .cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+        display: none;
+      }
+      :where([data-input="touch"] .cms-item[data-open] > .cms-item__tools) {
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where([data-input="touch"] .cms-item[data-open] > .cms-item__tools > .cms-btn:not(.cms-item__chip)) {
+        display: inline-flex;
+      }
+      :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-closed) {
+        display: none;
+      }
+      :where([data-input="touch"] .cms-item[data-open] .cms-item__chip-open) {
+        display: inline;
+      }
+      :where([data-input="touch"] .cms-item:hover:not([data-open], :focus-within)) > .cms-item__band {
+        background: none;
+      }
+
+      /* ==========================================================================================================
+         3. PROTOTYPE PAGE ONLY: this document's layout, the stand-in host sites, and the frames.
+         ========================================================================================================== */
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1280px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 64px 0 4px;
+      }
+      p.lead,
+      p.note {
+        color: #5b6170;
+        max-width: 78ch;
+        margin: 4px 0 16px;
+      }
+      code {
+        font-size: 0.85em;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+      }
+      .tag.rec {
+        background: #dcf3e6;
+        color: #1f7a45;
+      }
+      .tag.now {
+        background: #fde8e6;
+        color: #b42318;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        align-items: start;
+        margin: 16px 0;
+      }
+      @media (max-width: 900px) {
+        .pair {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      figure {
+        margin: 0;
+        min-width: 0;
+      }
+      figcaption {
+        margin: 0 0 6px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .frame {
+        position: relative;
+        overflow: hidden;
+        border-radius: 10px;
+        border: 1px solid #e3e5eb;
+        background: #faf8f3;
+        color-scheme: light;
+      }
+      .host {
+        padding: 24px 28px 40px;
+        font-family: Georgia, "Times New Roman", serif;
+        color: #2a2622;
+      }
+      .host h1 {
+        margin: 0 0 8px;
+        font-size: 1.1rem;
+        letter-spacing: 0.02em;
+      }
+      .host h2 {
+        margin: 32px 0 56px;
+        font-size: 1.3rem;
+      }
+      .host h4 {
+        margin: 0;
+        font-size: 1.05rem;
+      }
+      .host p {
+        margin: 2px 0 0;
+        color: #5a534a;
+      }
+      .host .plain {
+        display: grid;
+        gap: 14px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .host .plain-row {
+        display: flex;
+        gap: 16px;
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .host .plain-row > li {
+        flex: 0 0 9.5rem;
+        padding: 10px;
+        border-radius: 8px;
+        background: #efe9dd;
+      }
+      .host .cms-field {
+        display: block;
+      }
+      .host .dish {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 2px 12px;
+        margin-top: 6px;
+        font-size: 0.95rem;
+      }
+      .host .dish + .dish {
+        margin-top: 2px;
+      }
+      .host .price {
+        color: #5a534a;
+      }
+      .frame .cms-bar {
+        position: static;
+        margin: 0 var(--cms-space-4) var(--cms-space-4);
+        border: thin solid var(--cms-border);
+      }
+      .frame .cms-toast {
+        position: absolute;
+        top: var(--cms-space-4);
+      }
+      .frame .cms-listedit__undo {
+        margin-inline-start: var(--cms-space-2);
+      }
+      .callout {
+        margin: 8px 0 0;
+        padding: 10px 14px;
+        border-radius: 8px;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+        font-size: 0.88rem;
+        color: #3a3e4a;
+      }
+      .callout b {
+        color: #16181d;
+      }
+      .callout.bad {
+        border-color: #f3c4bf;
+        background: #fff7f6;
+      }
+      .console {
+        margin: 0;
+        border-top: 1px solid #2b2f38;
+        background: #1e2027;
+        color: #d7dae2;
+        font:
+          12px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .console__bar {
+        display: flex;
+        gap: 16px;
+        padding: 6px 12px;
+        border-bottom: 1px solid #2b2f38;
+        color: #9aa0ad;
+      }
+      .console__bar b {
+        color: #e9ebf2;
+        font-weight: 600;
+      }
+      .console__row {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 6px;
+        padding: 8px 12px;
+        background: #332b00;
+        color: #f2d96b;
+        border-bottom: 1px solid #4a3f00;
+      }
+      .console__row span {
+        overflow-wrap: anywhere;
+      }
+      .timeline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 12px 0 0;
+      }
+      .tick {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #fff;
+        border: 1px solid #e3e5eb;
+        font-size: 0.85rem;
+      }
+      .tick h4 {
+        margin: 0 0 6px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .tick .state {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 0;
+        border-top: 1px dashed #e3e5eb;
+      }
+      .tick .on {
+        color: #1f7a45;
+        font-weight: 600;
+      }
+      .tick .off {
+        color: #8a8f9c;
+      }
+      .tick .warn {
+        color: #b42318;
+        font-weight: 600;
+      }
+      @media (max-width: 900px) {
+        .timeline {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Lists: product decisions</h1>
+      <p class="lead">
+        Issue #28 (edit lists: add, remove and reorder keyed array items), PR #47 (the list fixes). Ten review rounds
+        keep finding edge cases in list setups #28 never asked for. Each section below shows one decision in situ: on
+        the left, what the chrome does today; on the right, the recommendation. The look is the chrome's own (<code
+          >--cms-*</code
+        >
+        tokens, the approved grid outline from <code>2026-11-list-editing.html</code>); the host sites are neutral
+        stand-ins. Frames are stills of a desktop page in edit mode.
+      </p>
+
+      <!-- ===================================== 1. Nested lists ===================================== -->
+      <h2>1. A list inside another list's item <span class="tag rec">Ruled 2026-11-18: top-level lists only</span></h2>
+      <p class="note">
+        A menu with sections; each section has its own list of dishes. Today the inner list is a list too: its own
+        outline, tag, toolbars and Add, inside a row of the outer grid. Keeping both in step needs a lock in both
+        directions, and a write to one can bring back the other's older markup. Recommended: only the outer list gets
+        list chrome. The dishes are still editable in place: they are fields of the section's row, separated by the same
+        dashed lines. Adding or removing a dish is done by whatever the site offers for that (or not at all).
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Today <span class="tag now">nested list chrome</span></figcaption>
+          <div class="frame" data-demo="nested-now"></div>
+        </figure>
+        <figure>
+          <figcaption>Recommended <span class="tag rec">outer list only</span></figcaption>
+          <div class="frame" data-demo="nested-rec"></div>
+        </figure>
+      </div>
+
+      <!-- ===================================== 2. Rendered twice ===================================== -->
+      <h2>2. One list rendered twice on a page <span class="tag rec">Proposed: both copies keep list chrome</span></h2>
+      <p class="note">
+        Revised after your question. The same artists appear in the main list and again, lower down, in a shorter list
+        (names only, different markup). Both copies keep full list chrome. A change made in either copy is one write,
+        and then both copies show it: Move, Remove and Undo rearrange each copy from its own elements; Add and Duplicate
+        take each copy's new markup from the page, matched by order (first copy to first copy). Undo shows in both
+        copies, because it is one removal from one list.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Proposed, at rest <span class="tag rec">both copies</span></figcaption>
+          <div class="frame" data-demo="twice-now"></div>
+        </figure>
+        <figure>
+          <figcaption>
+            Proposed, after removing Tobias in the main list <span class="tag rec">both follow</span>
+          </figcaption>
+          <div class="frame" data-demo="twice-after"></div>
+        </figure>
+      </div>
+
+      <!-- ===================================== 3. Lists edited safely ===================================== -->
+      <h2>3. Making every list safe to edit <span class="tag rec">Proposed: the chrome works by key</span></h2>
+      <p class="note">
+        Revised after your note: no fallback to one outline per field. Two cases. <b>3a.</b> The site keys its items but
+        addresses their fields by position (<code>artists.2.name</code>). The chrome knows each item's key, so it saves
+        those fields by key (<code>artists[_key=i3].name</code>). The list is safe as it stands: full list chrome, no
+        warning. <b>3b.</b> The items have no <code>_key</code> at all, so nothing ties an edit to an item. Two ways to
+        handle it, both drawn below.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>
+            3a · keyed items, fields by position <span class="tag rec">full list chrome, saved by key</span>
+          </figcaption>
+          <div class="frame" data-demo="contract-keyed"></div>
+          <p class="callout">
+            <b>Under the hood:</b> Ines's name is rendered with <code>artists.2.name</code>, but the chrome saves it to
+            <code>artists[_key=i3].name</code>. A remove or move can no longer put that edit into another artist.
+          </p>
+        </figure>
+        <figure>
+          <figcaption>Today, for comparison <span class="tag now">same look, unsafe</span></figcaption>
+          <div class="frame" data-demo="contract-now"></div>
+          <p class="callout bad">
+            <b>What goes wrong today:</b> Ines's change fails to save, the editor removes Tobias, and Retry writes it
+            into Kofi, who is now at place 2.
+          </p>
+        </figure>
+      </div>
+      <div class="pair">
+        <figure>
+          <figcaption>3b · no <code>_key</code>, option 1 <span class="tag">fields only, one outline</span></figcaption>
+          <div class="frame" data-demo="unkeyed-fields"></div>
+          <p class="callout">
+            The same single outline and grid; every field edits in place. No list toolbar, no Add: those need a key. The
+            console tells the site's developer how to turn them on.
+          </p>
+        </figure>
+        <figure>
+          <figcaption>3b · no <code>_key</code>, option 2 <span class="tag">the chrome adds keys</span></figcaption>
+          <div class="frame" data-demo="unkeyed-keys"></div>
+          <p class="callout">
+            Full list chrome. The first Add, Remove or Move writes a <code>_key</code> into every item, in one write,
+            before it does anything else: <code>{ name: "Mara Okoye" }</code> becomes
+            <code>{ _key: "k7f2a9", name: "Mara Okoye" }</code>. Needs the site's schema to allow <code>_key</code>; if
+            it doesn't, the write is refused and the list behaves as option 1.
+          </p>
+        </figure>
+      </div>
+
+      <!-- ===================================== 4. Undo after a conflict ===================================== -->
+      <h2>
+        4. Undo after another editor changed the list
+        <span class="tag rec">Ruled 2026-11-18: the removal is dropped</span>
+      </h2>
+      <p class="note">
+        Ines Duarte was removed. Before Undo, another editor reordered the roster and added Kofi Mensah. Undo hits the
+        conflict: nothing is written and the page catches up to their version. Today the removal goes back on the stack
+        and the Undo toast reappears, so a second press would insert Ines into their list at her old place. Recommended:
+        the removal is dropped, the conflict toast says so, and the list's Undo button goes.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Today <span class="tag now">Undo offered again</span></figcaption>
+          <div class="frame" data-demo="conflict-now"></div>
+        </figure>
+        <figure>
+          <figcaption>Recommended <span class="tag rec">removal dropped</span></figcaption>
+          <div class="frame" data-demo="conflict-rec"></div>
+        </figure>
+      </div>
+
+      <!-- ===================================== 5. Undo windows ===================================== -->
+      <h2>5. How long each removal can be undone <span class="tag rec">Ruled 2026-11-18: 15 seconds each</span></h2>
+      <p class="note">
+        Two lists on one page, Artists and Events. The editor removes an artist at 0 s and an event at 10 s. Today one
+        timer serves both: each removal restarts it, so the artist's Undo lasts until 25 s, and while an Undo is being
+        written the other list's Ctrl/⌘+Z is ignored although its button still shows. Recommended: every removal has its
+        own 15 seconds, and nothing pauses or extends another's. The stills show each list's Undo button and what
+        Ctrl/⌘+Z does at four moments.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Today <span class="tag now">one shared timer</span></figcaption>
+          <div class="timeline" data-timeline="now"></div>
+        </figure>
+        <figure>
+          <figcaption>Recommended <span class="tag rec">a timer per removal</span></figcaption>
+          <div class="timeline" data-timeline="rec"></div>
+        </figure>
+      </div>
+      <div class="pair">
+        <figure>
+          <figcaption>Recommended, at 12 s: both Undo buttons, each list undoes its own</figcaption>
+          <div class="frame" data-demo="windows-12"></div>
+        </figure>
+        <figure>
+          <figcaption>Recommended, at 17 s: the artist's window is over, the event's runs to 25 s</figcaption>
+          <div class="frame" data-demo="windows-17"></div>
+        </figure>
+      </div>
+    </main>
+
+    <script>
+      (() => {
+        const ICONS = {
+          up: '<path d="m6 15 6-6 6 6"/>',
+          down: '<path d="m6 9 6 6 6-6"/>',
+          remove: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+          plus: '<path d="M12 5v14M5 12h14"/>',
+        };
+        const icon = (name) =>
+          `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+        const esc = (text) =>
+          String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+        const tools = (name, index, count, open) =>
+          `<div class="cms-root cms-item__tools" role="toolbar" aria-label="${esc(name)}, ${index + 1} of ${count}: actions" ${open ? "data-pinned" : ""}>` +
+          `<button type="button" class="cms-btn cms-btn--ghost" aria-label="Move ${esc(name)} up" ${index === 0 ? 'aria-disabled="true"' : ""}>${icon("up")}</button>` +
+          `<button type="button" class="cms-btn cms-btn--ghost" aria-label="Move ${esc(name)} down" ${index === count - 1 ? 'aria-disabled="true"' : ""}>${icon("down")}</button>` +
+          `<button type="button" class="cms-btn cms-btn--ghost cms-item__danger" aria-label="Remove ${esc(name)}">${icon("remove")}</button></div>`;
+
+        /** A list with the chrome's grid marking. `body(item)` returns the item's fields. */
+        function chromeList({
+          label,
+          noun,
+          max,
+          items,
+          body,
+          open = -1,
+          undo = false,
+          tagless = false,
+          actions = true,
+        }) {
+          const rows = items
+            .map(
+              (item, index) =>
+                `<li class="cms-item" ${index === open ? "data-open" : ""}>${actions ? tools(item.name, index, items.length, index === open) : ""}<span class="cms-root cms-item__band" aria-hidden="true"></span>${body(item)}</li>`,
+            )
+            .join("");
+          const tag = max ? `${label} · ${items.length} of ${max}` : `${label} · ${items.length}`;
+          return `<section class="cms-listedit" aria-label="${esc(tag)}"><span class="cms-root cms-listedit__frame" aria-hidden="true"></span>${tagless ? "" : `<span class="cms-listedit__tag cms-root" aria-hidden="true">${esc(tag)}</span>`}<ul class="cms-listedit__items">${rows}</ul>${actions ? "" : "<!--"}<div class="cms-listedit__add cms-root"><button type="button" class="cms-btn cms-btn--add">${icon("plus")} Add ${esc(noun)}</button>${undo ? '<button type="button" class="cms-btn cms-listedit__undo">Undo</button>' : ""}</div>${actions ? "" : "-->"}</section>`;
+        }
+
+        const field = (tag, text, extra = "") => `<${tag} class="cms-field" ${extra}>${esc(text)}</${tag}>`;
+        const artistBody = (artist) => `<div>${field("h4", artist.name)}${field("p", artist.line)}</div>`;
+
+        const ROSTER = [
+          { name: "Mara Okoye", line: "Field recordings and slow synths" },
+          { name: "Tobias Lindqvist", line: "Tape loops, one lamp" },
+          { name: "Ines Duarte", line: "Cello, pedals, a small choir" },
+        ];
+        const SECTIONS = [
+          {
+            name: "Starters",
+            dishes: [
+              ["Charred leeks", "£7"],
+              ["Smoked eel", "£9"],
+            ],
+          },
+          {
+            name: "Mains",
+            dishes: [
+              ["Hake, brown butter", "£19"],
+              ["Barley, wild garlic", "£15"],
+            ],
+          },
+        ];
+
+        const bar = (changes = "drafts save as you go") =>
+          `<div class="cms-root cms-bar" role="region" aria-label="Editing"><div class="cms-bar__state"><span>Editing as Maya (Editor)</span><span class="cms-bar__changes">${esc(changes)}</span></div><div class="cms-bar__actions"><button type="button" class="cms-btn cms-btn--ghost">Revisions</button><button type="button" class="cms-btn cms-btn--ghost">Done</button><button type="button" class="cms-btn cms-btn--primary">Publish</button></div></div>`;
+        const toast = (message, buttons, kind = "info") =>
+          `<div class="cms-root cms-toast" data-kind="${kind}"><p class="cms-toast__message">${esc(message)}</p><div class="cms-toast__actions">${buttons
+            .map(
+              (b) =>
+                `<button type="button" class="cms-btn ${b.primary ? "cms-btn--primary" : "cms-btn--ghost"}">${esc(b.label)}</button>`,
+            )
+            .join("")}</div></div>`;
+
+        const DEMOS = {
+          "nested-now": () =>
+            `<div class="host"><h1>The Harbour Kitchen</h1><h2>Menu</h2>${chromeList({
+              label: "Sections",
+              noun: "section",
+              items: SECTIONS,
+              open: 1,
+              body: (section) =>
+                `<div>${field("h4", section.name)}<div class="nested">${chromeList({
+                  label: "Dishes",
+                  noun: "dish",
+                  items: section.dishes.map(([name, price]) => ({ name, price })),
+                  body: (dish) =>
+                    `<div class="dish">${field("span", dish.name)}${field("span", dish.price, 'class="cms-field price"')}</div>`,
+                })}</div></div>`,
+            })}</div>${bar()}`,
+          "nested-rec": () =>
+            `<div class="host"><h1>The Harbour Kitchen</h1><h2>Menu</h2>${chromeList({
+              label: "Sections",
+              noun: "section",
+              items: SECTIONS,
+              open: 1,
+              body: (section) =>
+                `<div>${field("h4", section.name)}${section.dishes
+                  .map(
+                    ([name, price]) =>
+                      `<div class="dish">${field("span", name)}<span class="cms-field price">${esc(price)}</span></div>`,
+                  )
+                  .join("")}</div>`,
+            })}</div>${bar()}`,
+          "twice-now": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: ROSTER,
+              body: artistBody,
+            })}<h2>Also playing</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: ROSTER,
+              body: (artist) => `<div>${field("h4", artist.name)}</div>`,
+            })}</div>${bar()}`,
+          "twice-after": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [ROSTER[0], ROSTER[2]],
+              body: artistBody,
+              undo: true,
+            })}<h2>Also playing</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [ROSTER[0], ROSTER[2]],
+              body: (artist) => `<div>${field("h4", artist.name)}</div>`,
+              undo: true,
+            })}</div>${toast("Removed Tobias Lindqvist.", [{ label: "Undo", primary: true }])}${bar("1 change on this page")}`,
+          "contract-keyed": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              open: 2,
+              body: artistBody,
+            })}</div>${bar()}`,
+          "unkeyed-fields": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              body: artistBody,
+              actions: false,
+            })}</div>${bar()}<div class="console" aria-label="Browser console (the site developer's view)"><div class="console__bar"><b>Console</b><span>Elements</span><span>Network</span></div><div class="console__row"><span>⚠</span><span>[yl-editor] artist/list:artists has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.</span></div></div>`,
+          "unkeyed-keys": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              open: 1,
+              body: artistBody,
+            })}</div>${bar()}`,
+          "twice-rec": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: ROSTER,
+              body: artistBody,
+            })}<h2 style="margin-bottom:16px">Also playing</h2><ul class="plain">${ROSTER.map(
+              (artist) => `<li>${field("h4", artist.name)}</li>`,
+            ).join("")}</ul></div>${bar()}`,
+          "contract-now": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [...ROSTER, { name: "Kofi Mensah", line: "Drum machines and dub" }],
+              open: 1,
+              body: artistBody,
+            })}</div>${bar()}`,
+          "contract-rec": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2 style="margin-bottom:16px">Artists</h2><ul class="plain">${[
+              ...ROSTER,
+              { name: "Kofi Mensah", line: "Drum machines and dub" },
+            ]
+              .map((artist) => `<li>${artistBody(artist)}</li>`)
+              .join(
+                "",
+              )}</ul></div>${bar()}<div class="console" aria-label="Browser console (the site developer's view)"><div class="console__bar"><b>Console</b><span>Elements</span><span>Network</span></div><div class="console__row"><span>⚠</span><span>[yl-editor] artist/list:artists gets no list chrome: its field artists.2.name is addressed by position. Address an item's fields by its key (artists[_key=…].name) so Add, Remove and Move can't put an edit into another item. See docs/chrome.md → Lists.</span></div></div>`,
+          "conflict-now": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [ROSTER[1], { name: "Kofi Mensah", line: "Drum machines and dub" }, ROSTER[0]],
+              body: artistBody,
+              undo: true,
+            })}</div>${toast("Removed Ines Duarte.", [{ label: "Undo", primary: true }])}${bar("3 changes on this page")}`,
+          "conflict-rec": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: [ROSTER[1], { name: "Kofi Mensah", line: "Drum machines and dub" }, ROSTER[0]],
+              body: artistBody,
+            })}</div>${toast(
+              "Undo did nothing: artist/list has changed since this page loaded. The page now shows the latest version, so Ines Duarte can no longer be put back.",
+              [{ label: "Close" }],
+              "error",
+            )}${bar("3 changes on this page")}`,
+          "windows-12": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: ROSTER.slice(0, 2),
+              body: artistBody,
+              undo: true,
+            })}<h2>Events</h2>${chromeList({
+              label: "Events",
+              noun: "event",
+              max: 8,
+              items: [
+                { name: "Winter Warehouse", line: "5 Dec 2026 · Dock Road Arches" },
+                { name: "New Year Drift", line: "9 Jan 2027 · The Boathouse" },
+              ],
+              body: artistBody,
+              undo: true,
+            })}</div>${toast("Removed Listening Room.", [{ label: "Undo", primary: true }])}${bar("2 changes on this page")}`,
+          "windows-17": () =>
+            `<div class="host"><h1>Harbour Collective</h1><h2>Artists</h2>${chromeList({
+              label: "Artists",
+              noun: "artist",
+              max: 6,
+              items: ROSTER.slice(0, 2),
+              body: artistBody,
+            })}<h2>Events</h2>${chromeList({
+              label: "Events",
+              noun: "event",
+              max: 8,
+              items: [
+                { name: "Winter Warehouse", line: "5 Dec 2026 · Dock Road Arches" },
+                { name: "New Year Drift", line: "9 Jan 2027 · The Boathouse" },
+              ],
+              body: artistBody,
+              undo: true,
+            })}</div>${toast("Removed Listening Room.", [{ label: "Undo", primary: true }])}${bar("2 changes on this page")}`,
+        };
+
+        const TIMELINES = {
+          now: [
+            [
+              "0 s · remove artist",
+              [
+                ["Artists Undo", "on", "until 15 s"],
+                ["Events Undo", "off", "—"],
+                ["Ctrl/⌘+Z in Artists", "on", "undoes the artist"],
+              ],
+            ],
+            [
+              "10 s · remove event",
+              [
+                ["Artists Undo", "warn", "restarted: now until 25 s"],
+                ["Events Undo", "on", "until 25 s"],
+                ["Ctrl/⌘+Z in Events", "on", "undoes the event"],
+              ],
+            ],
+            [
+              "11 s · Undo event, slow write",
+              [
+                ["Artists Undo", "warn", "still shown"],
+                ["Ctrl/⌘+Z in Artists", "warn", "ignored while writing"],
+                ["Events Undo", "off", "writing…"],
+              ],
+            ],
+            [
+              "23 s",
+              [
+                ["Artists Undo", "warn", "restarted again: until 26 s"],
+                ["Events Undo", "off", "restored"],
+                ["Artist window", "warn", "26 s, not 15"],
+              ],
+            ],
+          ],
+          rec: [
+            [
+              "0 s · remove artist",
+              [
+                ["Artists Undo", "on", "until 15 s"],
+                ["Events Undo", "off", "—"],
+                ["Ctrl/⌘+Z in Artists", "on", "undoes the artist"],
+              ],
+            ],
+            [
+              "10 s · remove event",
+              [
+                ["Artists Undo", "on", "until 15 s"],
+                ["Events Undo", "on", "until 25 s"],
+                ["Ctrl/⌘+Z in Events", "on", "undoes the event"],
+              ],
+            ],
+            [
+              "11 s · Undo event, slow write",
+              [
+                ["Artists Undo", "on", "until 15 s"],
+                ["Ctrl/⌘+Z in Artists", "on", "undoes the artist"],
+                ["Events Undo", "off", "writing…"],
+              ],
+            ],
+            [
+              "16 s",
+              [
+                ["Artists Undo", "off", "over at 15 s"],
+                ["Events Undo", "off", "restored"],
+                ["Artist window", "on", "15 s"],
+              ],
+            ],
+          ],
+        };
+
+        for (const node of document.querySelectorAll("[data-demo]")) node.innerHTML = DEMOS[node.dataset.demo]();
+        for (const node of document.querySelectorAll("[data-timeline]")) {
+          node.innerHTML = TIMELINES[node.dataset.timeline]
+            .map(
+              ([title, rows]) =>
+                `<div class="tick"><h4>${esc(title)}</h4>${rows
+                  .map(
+                    ([what, kind, detail]) =>
+                      `<div class="state"><span>${esc(what)}</span><span class="${kind}">${esc(detail)}</span></div>`,
+                  )
+                  .join("")}</div>`,
+            )
+            .join("");
+        }
+
+        // Lines between an item's own fields (a nested item's fields belong to its own row), as the chrome draws them.
+        function paintItem(li) {
+          li.querySelectorAll(":scope > .cms-item__sep").forEach((node) => node.remove());
+          const box = li.getBoundingClientRect();
+          const pad =
+            parseFloat(getComputedStyle(li.closest(".cms-listedit")).getPropertyValue("--cms-list-pad")) || 12;
+          const fields = [...li.querySelectorAll(".cms-field")]
+            .filter((node) => node.closest(".cms-item") === li)
+            .map((node) => {
+              const r = node.getBoundingClientRect();
+              return { l: r.left - box.left, r: r.right - box.left, t: r.top - box.top, b: r.bottom - box.top };
+            });
+          const overlapY = (a, b) => Math.min(a.b, b.b) - Math.max(a.t, b.t) > 1;
+          const overlapX = (a, b) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 1;
+          const xs = [];
+          const hs = [];
+          for (const a of fields)
+            for (const b of fields) {
+              if (a === b) continue;
+              if (a.r <= b.l && overlapY(a, b)) {
+                const between = fields.some((c) => c !== a && c !== b && c.l >= a.r && c.r <= b.l && overlapY(c, a));
+                const x = (a.r + b.l) / 2;
+                if (!between && !xs.some((other) => Math.abs(other - x) < 2)) xs.push(x);
+              }
+              if (a.b <= b.t && overlapX(a, b)) {
+                const between = fields.some((c) => c !== a && c !== b && c.t >= a.b && c.b <= b.t && overlapX(c, a));
+                if (!between) hs.push({ y: (a.b + b.t) / 2, l: Math.min(a.l, b.l), r: Math.max(a.r, b.r) });
+              }
+            }
+          const edgeL = -pad + 2;
+          const edgeR = box.width + pad - 2;
+          for (const x of xs) {
+            const line = document.createElement("span");
+            line.className = "cms-root cms-item__sep cms-item__sep--v";
+            line.setAttribute("aria-hidden", "true");
+            line.style.setProperty("--cms-sep-x", `${x}px`);
+            li.append(line);
+          }
+          const drawn = [];
+          for (const h of hs) {
+            const left = Math.max(edgeL, ...xs.filter((x) => x <= h.l + 1));
+            const right = Math.min(edgeR, ...xs.filter((x) => x >= h.r - 1));
+            if (drawn.some((d) => Math.abs(d.y - h.y) < 2 && Math.abs(d.left - left) < 2)) continue;
+            drawn.push({ y: h.y, left });
+            const line = document.createElement("span");
+            line.className = "cms-root cms-item__sep cms-item__sep--h";
+            line.setAttribute("aria-hidden", "true");
+            const touchesV = xs.some((x) => Math.abs(x - left) < 2);
+            line.style.setProperty("--cms-sep-x", `${left + (touchesV ? 1 : 0)}px`);
+            line.style.setProperty("--cms-sep-y", `${h.y}px`);
+            line.style.setProperty("--cms-sep-w", `${right - left - (touchesV ? 1 : 0)}px`);
+            li.append(line);
+          }
+        }
+        const paintAll = () => document.querySelectorAll(".cms-item").forEach(paintItem);
+        paintAll();
+        new ResizeObserver(paintAll).observe(document.body);
+      })();
+    </script>
+  </body>
+</html>

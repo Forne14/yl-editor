@@ -1,4 +1,4 @@
-import { parsePath } from "./path.ts";
+import { isKeyId, parsePath } from "./path.ts";
 
 /** The one place the field-type union lives. */
 export type EditFieldType = "text" | "richtext" | "media" | "select" | "number" | "url" | "date" | "tags" | "toggle";
@@ -13,9 +13,6 @@ export interface EditableAttrs {
   headings?: readonly (2 | 3)[];
 }
 
-const KEY_ID = /^[A-Za-z0-9_-]+$/;
-const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
-
 /**
  * The path of one item of the array at `base`: `base[_key=<id>]` when `item` is an object with an own string
  * `_key` that is a valid id (`[A-Za-z0-9_-]+`, not a forbidden name), else `base.<index>`. Prefer it when
@@ -24,7 +21,7 @@ const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
 export function itemPath(base: string, item: unknown, index: number): string {
   if (typeof item === "object" && item !== null && !Array.isArray(item) && Object.hasOwn(item, "_key")) {
     const key: unknown = (item as Record<string, unknown>)["_key"];
-    if (typeof key === "string" && KEY_ID.test(key) && !FORBIDDEN.has(key)) return `${base}[_key=${key}]`;
+    if (isKeyId(key)) return `${base}[_key=${key}]`;
   }
   return `${base}.${index}`;
 }
@@ -53,6 +50,16 @@ export interface Editable {
   list(path: string, attrs?: EditableListAttrs): Record<string, string>;
   /** One item's attributes, addressed with `itemPath` so a keyed item survives a concurrent reorder. */
   item(listPath: string, item: unknown, index: number): Record<string, string>;
+  /**
+   * The field attributes for one item's fields, addressed through the item (`artists[_key=i3].name`), so an edit stays
+   * with its item after an add, remove or move. A keyed item's field addressed by position leaves the list without
+   * list actions.
+   */
+  itemFields(
+    listPath: string,
+    item: unknown,
+    index: number,
+  ): (name: string, type: EditFieldType, attrs?: EditableAttrs) => Record<string, string>;
 }
 
 function limit(value: number | undefined, name: string): string | undefined {
@@ -101,5 +108,9 @@ export function editable(docKey: string | undefined): Editable {
     parsePath(path);
     return { "data-edit-item": `${docKey}:${path}` };
   };
-  return Object.assign(field, { list, item });
+  const itemFields = (listPath: string, value: unknown, index: number) => {
+    const base = itemPath(listPath, value, index);
+    return (name: string, type: EditFieldType, attrs?: EditableAttrs) => field(`${base}.${name}`, type, attrs);
+  };
+  return Object.assign(field, { list, item, itemFields });
 }

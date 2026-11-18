@@ -3,7 +3,7 @@
 // crosses (docs/specs/artefacts/2026-11-list-editing.html). The host's elements are borrowed: the chrome adds
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
-import { element, uniqueId } from "./dom.ts";
+import { KEY_ID, element, isItemKey, uniqueId } from "./dom.ts";
 import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
@@ -32,6 +32,11 @@ export interface ItemRecord {
 export type ItemAction = "up" | "down" | "duplicate" | "remove";
 
 export interface ListHandlers {
+  /**
+   * False for a list whose items can't be tied to a key: the outline and grid, with no toolbar, Add or Undo. Its fields
+   * still edit in place.
+   */
+  actions: boolean;
   /** Whether Add is offered: the host gave the list a `newItem`. */
   canAdd: boolean;
   add(): void;
@@ -48,6 +53,10 @@ export interface ListRecord {
   id: string;
   items: ItemRecord[];
   detach?: () => void;
+  /** Inside an item of another list, as scanned. Whether that keeps it from list chrome depends on the outer list. */
+  insideItem: boolean;
+  /** Inside an item of a list the chrome dresses: no list chrome of its own; its fields are cells of that row. */
+  nested: boolean;
   /** Redraws the lines; a no-op until attached. */
   paint: () => void;
   /** The chrome's Add button, while attached and offered. */
@@ -56,7 +65,9 @@ export interface ListRecord {
   undoButton?: HTMLButtonElement;
 }
 
-const KEYED_ITEM = /\[_key=([A-Za-z0-9_-]+)\]$/;
+/** What follows the list's path in an item's path: a key, or an index (which leaves the list without list chrome). */
+const ITEM_REST = new RegExp(`^(\\[_key=${KEY_ID}\\]|\\.\\d+)$`);
+const KEYED_ITEM = new RegExp(`\\[_key=(${KEY_ID})\\]$`);
 
 function count(value: string | undefined, fallback: number): number {
   const parsed = value === undefined ? Number.NaN : Number(value);
@@ -91,8 +102,10 @@ function scanItems(list: HTMLElement, info: ListInfo): ItemRecord[] {
     const address = splitAddress(target.dataset.editItem ?? "");
     if (!address || address.key !== info.key) continue;
     const rest = address.path.slice(info.path.length);
-    if (!address.path.startsWith(info.path) || !/^(\[_key=[A-Za-z0-9_-]+\]|\.\d+)$/.test(rest)) continue;
-    items.push({ element: target, path: address.path, itemKey: KEYED_ITEM.exec(address.path)?.[1] });
+    if (!address.path.startsWith(info.path) || !ITEM_REST.test(rest)) continue;
+    // A forbidden id is no key at all: the item counts as unkeyed, so the list gets no list actions.
+    const itemKey = KEYED_ITEM.exec(address.path)?.[1];
+    items.push({ element: target, path: address.path, itemKey: isItemKey(itemKey) ? itemKey : undefined });
   }
   return items;
 }
@@ -113,6 +126,9 @@ export function scanLists(root: HTMLElement): ListRecord[] {
       info,
       id: `${info.key}:${info.path}`,
       items: scanItems(target, info),
+      insideItem: target.parentElement?.closest("[data-edit-item]")?.closest("[data-edit-list]") != null,
+      // Decided when the list is dressed, from the outer list's access.
+      nested: false,
       paint: () => undefined,
     });
   }
@@ -144,16 +160,16 @@ export function newItemKey(): string {
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
 }
 
-/** The item's index in the stored array: by `_key` when keyed, else the index its path names. -1 when gone. */
+/** A stored item's `_key`, when it has one the paths accept. */
+export function itemKeyOf(entry: unknown): string | undefined {
+  const value = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["_key"] : undefined;
+  return isItemKey(value) ? value : undefined;
+}
+
+/** The item's index in the stored array, by its `_key` (only keyed lists get list chrome). -1 when gone. */
 export function storedIndex(items: readonly unknown[], item: ItemRecord): number {
-  if (item.itemKey !== undefined) {
-    return items.findIndex(
-      (entry) =>
-        typeof entry === "object" && entry !== null && (entry as Record<string, unknown>)["_key"] === item.itemKey,
-    );
-  }
-  const index = Number(/\.(\d+)$/.exec(item.path)?.[1] ?? Number.NaN);
-  return Number.isInteger(index) && index < items.length ? index : -1;
+  if (item.itemKey === undefined) return -1;
+  return items.findIndex((entry) => itemKeyOf(entry) === item.itemKey);
 }
 
 const SVG = "http://www.w3.org/2000/svg";
@@ -269,9 +285,20 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   host.prepend(frame);
   added.push(frame);
 
-  const toolbars: HTMLElement[] = [];
+  const toolbars: (HTMLElement | undefined)[] = [];
   const bands: HTMLElement[] = [];
   items.forEach((item, index) => {
+    if (!handlers.actions) {
+      // Still a row of the grid: a band for its line and the tint, but nothing to act with.
+      const band = element("span", { class: "cms-root cms-item__band", "aria-hidden": "true" });
+      itemClasses.push({ node: item.element, hadClass: item.element.hasAttribute("class") });
+      item.element.classList.add("cms-item");
+      item.element.append(band);
+      added.push(band);
+      bands.push(band);
+      toolbars.push(undefined);
+      return;
+    }
     const name = itemName(record, item, strings);
     const position = index + 1;
     const placement = { item: name, position, count: total };
@@ -325,7 +352,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     chip.addEventListener("click", () => {
       const opening = !item.element.hasAttribute("data-cms-open");
       for (const other of items) other.element.removeAttribute("data-cms-open");
-      for (const other of toolbars) other.querySelector(".cms-item__chip")?.setAttribute("aria-expanded", "false");
+      for (const other of toolbars) other?.querySelector(".cms-item__chip")?.setAttribute("aria-expanded", "false");
       if (opening) item.element.setAttribute("data-cms-open", "");
       chip.setAttribute("aria-expanded", String(opening));
     });
@@ -382,10 +409,11 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     full && handlers.canAdd ? fullReason : "",
   ]);
   record.addButton = undefined;
+  record.undoButton = undefined;
   const addChildren: (Node | null)[] = [];
   if (total === 0)
     addChildren.push(element("p", { class: "cms-list__empty" }, [format(strings.listEmpty, { plural: info.plural })]));
-  if (handlers.canAdd) {
+  if (handlers.actions && handlers.canAdd) {
     const add = element("button", {
       type: "button",
       class: "cms-btn cms-list__add-button",
@@ -398,23 +426,29 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     record.addButton = add;
     addChildren.push(element("div", { class: "cms-list__add-line" }, [add, reason, tagCopy]));
   }
-  const undo = element("button", { type: "button", class: "cms-btn cms-list__undo", hidden: !handlers.canUndo }, [
-    strings.undo,
-  ]);
-  undo.addEventListener("click", () => handlers.undo());
-  record.undoButton = undo;
-  addChildren.push(undo);
+  if (handlers.actions) {
+    const undo = element("button", { type: "button", class: "cms-btn cms-list__undo", hidden: !handlers.canUndo }, [
+      strings.undo,
+    ]);
+    undo.addEventListener("click", () => handlers.undo());
+    record.undoButton = undo;
+    addChildren.push(undo);
+  }
   const addBand = element("span", { class: "cms-item__band", "aria-hidden": "true" });
-  const addRow = element(childTag, { class: "cms-root cms-list__add" }, [...addChildren, addBand]);
-  host.append(addRow);
-  added.push(addRow);
+  const addRow = handlers.actions
+    ? element(childTag, { class: "cms-root cms-list__add" }, [...addChildren, addBand])
+    : undefined;
+  if (addRow) {
+    host.append(addRow);
+    added.push(addRow);
+  }
 
   const separators: HTMLElement[] = [];
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
     const origin = host.getBoundingClientRect();
     const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
-    const rows = [...items.map((item) => item.element), addRow];
+    const rows = [...items.map((item) => item.element), ...(addRow ? [addRow] : [])];
     const boxes = rows.map((row) => boxOf(row, origin));
     const halves = boxes.slice(0, -1).map((box, index) => Math.max(((boxes[index + 1]?.t ?? box.b) - box.b) / 2, 0));
     const lead = Math.max(halves[0] ?? pad, pad);
@@ -442,7 +476,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       if (index >= items.length) return;
       const itemOrigin = row.getBoundingClientRect();
       const fields = [...row.querySelectorAll("[data-edit-field]")]
-        .filter((node) => node.closest("[data-edit-item]") === row)
+        .filter((node) => node.closest(".cms-item") === row)
         .map((node) => boxOf(node, itemOrigin));
       const lines = cellLines(fields, { left, right: left + width });
       for (const x of lines.vertical) {
@@ -464,6 +498,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     });
   };
   let frameRequest: number | undefined;
+  // Coalesced into one paint per frame. The observer's first report still counts: boxes can change between the paint
+  // below and its delivery (a nested list dressed after this one, a web font arriving).
   const schedule = () => {
     if (frameRequest !== undefined) return;
     frameRequest = requestAnimationFrame(() => {
@@ -479,6 +515,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       for (const node of item.element.querySelectorAll("[data-edit-field]")) observer.observe(node);
     }
   }
+  // A viewport change can move `--cms-list-pad` through a media query without resizing any observed box.
   window.addEventListener("resize", schedule);
   record.paint = paint;
   paint();

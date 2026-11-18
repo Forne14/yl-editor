@@ -52,6 +52,11 @@ export class Toast {
     return this.shown;
   }
 
+  /** Whether the toast `show` returned `token` for is the one showing. */
+  isShowing(token: number): boolean {
+    return token === this.shown && !this.node.hidden;
+  }
+
   /** Hides the toast `show` returned `token` for, if it is still the one showing. */
   hideIf(token: number): void {
     if (token === this.shown && !this.node.hidden) this.hide();

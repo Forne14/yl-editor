@@ -4,3 +4,4 @@ export { editable, itemPath, type Editable, type EditableListAttrs, type EditFie
 export { diffPayloads, type DiffEntry } from "./diff.ts";
 export { sanitizeRichText, isAllowedHref, type RichTextHeading, type RichTextOptions } from "./richtext/sanitize.ts";
 export { richText } from "./richtext/schema.ts";
+export { keyedItems, addListKeys, MISSING_KEY_MESSAGE } from "./keys.ts";

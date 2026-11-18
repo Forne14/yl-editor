@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `keyedItems(itemSchema)` and `addListKeys(payload, paths)` from `@yl/editor` (#28, edit lists: add, remove and
+  reorder keyed array items). `keyedItems` requires a usable, unique `_key` on every item, so the store refuses an
+  unkeyed one with `MISSING_KEY_MESSAGE` (also exported). `addListKeys` keys existing content by place, purely, for a
+  registry entry's `migrate`. See `docs/chrome.md` → Lists.
 - Chrome: keyed lists can be edited in place (#28). Mark a list with `editable(docKey).list(path, attrs)` and its items
   with `.item(path, item, index)` (`data-edit-list`, `data-edit-list-*`, `data-edit-item`); give `mountEditor` a
   `lists` option with each list's `newItem`. The list gets one dashed outline with a tag, single dashed lines between
@@ -18,7 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the list's markup from the page, so the page must render the draft for editors. New exports: `Editable`,
   `EditableListAttrs` (from `@yl/editor` and `@yl/editor/chrome`) and `ListOptions` (chrome). New `chrome.css`
   tokens `--cms-list-pad`, `--cms-list-line`, `--cms-list-tint`, and new `defaultStrings` keys listed in
-  `docs/chrome.md` → Strings. See `docs/chrome.md` → Lists.
+  `docs/chrome.md` → Strings. Items must have a `_key` for list actions; a list without keys keeps its outline with no list actions and a
+  console note, and so does a keyed item whose fields are addressed by position (render them with the new
+  `editable(docKey).itemFields(path, item, index)`); a list rendered twice keeps list chrome on every copy; a nested list's fields are
+  cells of the outer row; each removal has its own 15 s Undo, and an Undo after a conflict is dropped. Move,
+  Remove and Undo rearrange the page's own markup; Add and Duplicate swap in the list's new markup from the page, and
+  other fields keep their state and any open editor meanwhile.
+  See `docs/chrome.md` → Lists.
 - `@yl/editor/richtext`: a rich text widget built on TipTap. Register `richTextWidget` (or `createRichTextWidget({
   strings })`) for `richtext`. It edits the host element in place with a toolbar above it: bold, italic, link, bulleted
   and numbered lists, H2 and H3 when the field allows them, then Cancel and Done. It has keyboard shortcuts, the ARIA
