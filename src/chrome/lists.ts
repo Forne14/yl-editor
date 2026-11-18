@@ -127,7 +127,8 @@ export function scanLists(root: HTMLElement): ListRecord[] {
       id: `${info.key}:${info.path}`,
       items: scanItems(target, info),
       insideItem: target.parentElement?.closest("[data-edit-item]")?.closest("[data-edit-list]") != null,
-      nested: target.parentElement?.closest("[data-edit-item]")?.closest("[data-edit-list]") != null,
+      // Decided when the list is dressed, from the outer list's access.
+      nested: false,
       paint: () => undefined,
     });
   }

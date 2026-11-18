@@ -466,7 +466,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (list.insideItem) {
       const outer = list.element.parentElement?.closest("[data-edit-item]")?.closest<HTMLElement>("[data-edit-list]");
       const outerRecord = lists.find((other) => other.element === outer);
-      list.nested = outerRecord === undefined || session.documents.get(outerRecord.info.key)?.access.edit === true;
+      list.nested = outerRecord !== undefined && session.documents.get(outerRecord.info.key)?.access.edit === true;
     }
     if (list.nested || session.documents.get(list.info.key)?.access.edit !== true) return;
     const unkeyed = list.items.some((item) => item.itemKey === undefined);
@@ -594,6 +594,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (restore) parents.add(restore.parent);
     if (parents.size > 1) return false;
     if (restore && !(restore.parent.isConnected && list.element.contains(restore.parent))) return false;
+    // The element it sat before has gone too: only the page knows where it belongs among the host's own markup.
+    if (restore && restore.next !== null && restore.next.parentNode !== restore.parent) return false;
     const nested = lists.filter((other) => other !== list && list.element.contains(other.element));
     for (const other of nested) other.detach?.();
     list.detach?.();
@@ -607,7 +609,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     if (restore) {
       const place = document.createComment("");
-      restore.parent.insertBefore(place, restore.next?.parentNode === restore.parent ? restore.next : null);
+      restore.parent.insertBefore(place, restore.next);
       const after = places.findIndex(
         (other) => place.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING,
       );
@@ -643,7 +645,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     restores?: Map<HTMLElement, Restore>,
   ) {
     let needsPage = stored === null;
-    if (!needsPage && stored !== null) {
+    if (stored !== null) {
       for (const copy of copiesOf(id)) {
         if (!arrangeList(copy, stored, restores?.get(copy.element))) needsPage = true;
       }

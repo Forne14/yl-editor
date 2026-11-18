@@ -39,7 +39,8 @@ export function keyedItems<Shape extends z.ZodRawShape>(item: z.ZodObject<Shape>
  * entry's `version` and return `addListKeys(payload, [...])` for older versions. It is pure, as `migrate` must be:
  * the keys come from the item's place (`k0`, `k1`, …, skipping any already used), so every read before the first save
  * sees the same keys, and that save stores them. Items that already have a key, and items that aren't objects, are left
- * as they are. Paths are plain dotted paths (`artists`, `sections.menu`).
+ * as they are. Paths are plain dotted paths to one array (`artists`, `sections.menu`): a list
+ * inside each item of another gets no list chrome (ruled on #28), so it needs no keys of its own.
  */
 export function addListKeys(payload: unknown, paths: readonly string[]): unknown {
   let result = payload;
@@ -71,17 +72,18 @@ function keyItems(list: unknown): unknown {
   const isItem = (entry: unknown): entry is Record<string, unknown> =>
     entry !== null && typeof entry === "object" && !Array.isArray(entry);
   // The first item with a usable key keeps it; a later one with the same key gets a new one, as an unkeyed item does.
-  const keep = new Set<unknown>();
+  // By place, not by object: the same object twice in the array is two items.
+  const keep = new Set<number>();
   const used = new Set<string>();
-  for (const entry of list) {
-    if (!isItem(entry) || !isKey(entry["_key"]) || used.has(entry["_key"])) continue;
+  list.forEach((entry, index) => {
+    if (!isItem(entry) || !isKey(entry["_key"]) || used.has(entry["_key"])) return;
     used.add(entry["_key"]);
-    keep.add(entry);
-  }
-  if (list.every((entry) => !isItem(entry) || keep.has(entry))) return list;
+    keep.add(index);
+  });
+  if (list.every((entry, index) => !isItem(entry) || keep.has(index))) return list;
   let next = 0;
-  return list.map((entry: unknown) => {
-    if (!isItem(entry) || keep.has(entry)) return entry;
+  return list.map((entry: unknown, index) => {
+    if (!isItem(entry) || keep.has(index)) return entry;
     while (used.has(`k${next}`)) next += 1;
     const key = `k${next}`;
     used.add(key);
