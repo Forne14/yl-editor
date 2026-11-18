@@ -262,6 +262,27 @@ export class Session {
   }
 
   /**
+   * Moves failed values and saves queued but not yet sent to the path `to` returns for them (undefined keeps a path):
+   * the same item, addressed by key now instead of by index. One on the wire is left alone.
+   */
+  moveSaves(key: string, to: (path: string) => string | undefined): void {
+    for (const slot of [...this.slots.values()]) {
+      if (slot.key !== key || slot.sending || (slot.state !== "failed" && !slot.pending)) continue;
+      const path = to(slot.path);
+      if (path === undefined || path === slot.path) continue;
+      // Its own flush: the old slot's, if any, finds nothing left to send.
+      const moved: SaveSlot = { ...slot, id: `${key}:${path}`, path, scheduled: undefined };
+      this.slots.delete(slot.id);
+      this.slots.set(moved.id, moved);
+      if (moved.pending && !moved.scheduled) moved.scheduled = this.enqueue(key, () => this.flush(moved));
+      // The old slot stops: anything still scheduled for it finds nothing to send.
+      slot.pending = undefined;
+      slot.state = "idle";
+      this.events.stateChanged(moved);
+    }
+  }
+
+  /**
    * Drops the values at the paths `only` accepts, because each path now names something else: a failed value, and a
    * save queued but not yet sent (one already on the wire went out before the change and is left alone).
    */

@@ -1057,3 +1057,106 @@ describe("eleventh review round", () => {
     }
   });
 });
+
+describe("twelfth review round", () => {
+  const attrs = (record: Record<string, string>) =>
+    Object.entries(record)
+      .map(([name, value]) => ` ${name}="${value}"`)
+      .join("");
+  /** Items and fields rendered by position, whatever the data holds. */
+  function byIndex(): string {
+    const edit = editable(KEY);
+    return `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li data-edit-item="${KEY}:artists.${index}"><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3></li>`,
+      )
+      .join("")}</ul></main>`;
+  }
+
+  test("keying a list moves a failed value to its item's key, so Retry writes into the same item", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    failFields = true;
+    const tobias = items()[1]?.querySelector("h3") as HTMLElement;
+    tobias.click();
+    tobias.textContent = "Tobi";
+    tobias.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    failFields = false;
+    toolButton(1, "up").click();
+    await settle();
+    expect(names()).toEqual(["Tobi", "Mara"]);
+    fieldCalls = [];
+    [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")]
+      .find((node) => node.textContent === "Retry")
+      ?.click();
+    const moved = items()[0]?.querySelector("h3") as HTMLElement;
+    expect(moved.classList.contains("cms-field--failed")).toBe(true);
+    moved.click();
+    moved.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    // Tobias moved to the top: the value goes to his key, wherever he is now.
+    const tobiasKey = artists.find((artist) => artist.name === "Tobias")?._key;
+    expect(fieldCalls).toEqual([`artists[_key=${tobiasKey}].name`]);
+  });
+
+  test("a page that still renders items by position after keying drops to one outline and says why", async () => {
+    artists = [{ name: "Mara" }, { name: "Tobias" }];
+    document.body.innerHTML = byIndex();
+    pageAnswer = () => new Response(`<!doctype html>${byIndex()}`);
+    await mount();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    toolButton(0, "down").click();
+    await settle();
+    expect(list().querySelector(".cms-item__tools")).toBeNull();
+    expect(warn.mock.calls[0]?.[0]).toContain("the page renders them by position");
+    warn.mockRestore();
+  });
+
+  test("a field inside an item that names another entry keeps its own path", async () => {
+    const edit = editable(KEY);
+    document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists
+      .map(
+        (artist, index) =>
+          `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`artists.${index}.name`, "text"))}>${artist.name}</h3><small${attrs(edit(`artists.${(index + 1) % 2}.name`, "text"))}>next</small></li>`,
+      )
+      .join("")}</ul></main>`;
+    await mount();
+    const teaser = items()[0]?.querySelector("small") as HTMLElement;
+    teaser.click();
+    teaser.textContent = "Tobi";
+    teaser.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    expect(fieldCalls).toEqual(["artists.1.name"]);
+  });
+
+  test("Undo puts an item back after its old neighbour, even after another change", async () => {
+    artists.push({ _key: "c", name: "Ines" });
+    listAttrs = { ...listAttrs, min: 0, max: 5 };
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    toolButton(1, "remove").click();
+    await settle();
+    toolButton(1, "up").click();
+    await settle();
+    expect(names()).toEqual(["Ines", "Mara"]);
+    list().querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(names()).toEqual(["Ines", "Mara", "Tobias"]);
+  });
+
+  test("Undo pressed in the second copy keeps focus in that copy", async () => {
+    listAttrs = { ...listAttrs, min: 0 };
+    const both = () => `<main id="page">${renderList()}<section id="again">${renderList()}</section></main>`;
+    document.body.innerHTML = both();
+    await mount();
+    const copies = () => [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+    copies()[1]?.querySelector<HTMLButtonElement>('[data-action="remove"]')?.click();
+    await settle();
+    copies()[1]?.querySelector<HTMLButtonElement>(".cms-list__undo")?.click();
+    await settle();
+    expect(copies()[1]?.contains(document.activeElement)).toBe(true);
+  });
+});

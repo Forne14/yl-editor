@@ -185,6 +185,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     name: string;
     /** Per copy of the list (by its element): the item's own element, and where it was. Its markup is the host's. */
     places: Map<HTMLElement, { key: string; element: HTMLElement; parent: Node; next: Node | null }>;
+    /** The keys either side of it when it went, so Undo puts it back between them. */
+    before: string | undefined;
+    after: string | undefined;
     /** Its own 15-second window. */
     timer: ReturnType<typeof setTimeout> | undefined;
     /** The toast that offers its Undo, while that one is showing. */
@@ -454,15 +457,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (unkeyed && !keyless.has(list.id)) {
       const stored = valueAtPath(session.documents.get(list.info.key)?.payload, list.info.path);
       if (Array.isArray(stored) && stored.some((entry) => typeof entry !== "object" || entry === null)) {
-        keyless.add(list.id);
+        keyless.set(list.id, NO_KEY(list.id));
       }
     }
     if (unkeyed && keyless.has(list.id)) {
       if (!warned.has(list.id)) {
         warned.add(list.id);
-        console.warn(
-          `[yl-editor] ${list.id} has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.`,
-        );
+        console.warn(keyless.get(list.id));
       }
       attachList(list, strings, { actions: false, canAdd: false, canUndo: false, add() {}, undo() {}, act() {} });
       return;
@@ -471,7 +472,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       actions: true,
       canAdd: options.lists?.[list.id]?.newItem !== undefined,
       canUndo: removals.some((removal) => removal.listId === list.id),
-      undo: () => void undoRemoval(list.id),
+      undo: () => void undoRemoval(list.id, undefined, list),
       add: () => {
         if (!unkeyed) {
           void addItem(list);
@@ -507,8 +508,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     });
   }
 
-  /** Lists whose items can't be given a `_key`: one outline, no list actions. By `data-edit-list` address. */
-  const keyless = new Set<string>();
+  /**
+   * Lists the chrome can't tie to keys: one outline, no list actions. By `data-edit-list` address, with what the
+   * console tells the site's developer.
+   */
+  const keyless = new Map<string, string>();
+  const NO_KEY = (id: string) =>
+    `[yl-editor] ${id} has no Add, Remove or Move: its items have no _key, so an edit can't be tied to an item. Give each item a _key to turn them on. See docs/chrome.md → Lists.`;
+  const RENDERED_BY_INDEX = (id: string) =>
+    `[yl-editor] ${id} has no Add, Remove or Move: its items have a _key, but the page renders them by position. Render each item with editable(docKey).item(path, item, index) to turn them on. See docs/chrome.md → Lists.`;
   /** Lists the console has already warned about. */
   const warned = new Set<string>();
 
@@ -545,6 +553,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             const document = await client.field(key, path, value, expectedVersion);
             session.applyWrite(expectedVersion, document);
             session.touch(key, [path]);
+            // A failed or queued value at an index path belongs to the item at that index: it follows the item's key.
+            session.moveSaves(key, (slotPath) => {
+              const match = /^\.(\d+)(\..*)?$/.exec(slotPath.startsWith(path) ? slotPath.slice(path.length) : "");
+              const itemKey = match ? itemKeyOf(value[Number(match[1])]) : undefined;
+              return itemKey === undefined ? undefined : `${path}[_key=${itemKey}]${match?.[2] ?? ""}`;
+            });
             updateBar();
             keyed = true;
           }),
@@ -557,12 +571,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       if (keyed) await swapLists(key);
     });
     if (notObjects) {
-      keyless.add(list.id);
+      keyless.set(list.id, NO_KEY(list.id));
       for (const each of copiesOf(list.id)) attachListRecord(each);
       return;
     }
     const fresh = copiesOf(list.id)[copy];
-    if (keyed && fresh && fresh.items.every((item) => item.itemKey !== undefined)) await then(fresh);
+    if (!keyed || !fresh) return;
+    if (fresh.items.some((item) => item.itemKey === undefined)) {
+      // The items are keyed now, but the page still renders them by position: nothing ties a press to an item.
+      keyless.set(list.id, RENDERED_BY_INDEX(list.id));
+      for (const each of copiesOf(list.id)) attachListRecord(each);
+      return;
+    }
+    await then(fresh);
   }
 
   /**
@@ -573,22 +594,21 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const byElement = new Map(records.map((record) => [record.element, record]));
     for (const list of lists) {
       if (list.nested) continue;
-      const byIndex = new RegExp(`^${escapeRegExp(list.info.path)}\\.\\d+(?=\\.|$)`);
-      for (const item of list.items) {
-        if (item.itemKey === undefined) continue;
+      const prefix = `${list.info.path}.`;
+      list.items.forEach((item, position) => {
+        if (item.itemKey === undefined) return;
         for (const node of item.element.querySelectorAll<HTMLElement>("[data-edit-field]")) {
           const record = byElement.get(node);
-          if (!record || record.info.key !== list.info.key) continue;
-          const match = byIndex.exec(record.info.path);
-          if (!match) continue;
-          record.info.path = item.path + record.info.path.slice(match[0].length);
+          if (!record || record.info.key !== list.info.key || !record.info.path.startsWith(prefix)) continue;
+          // Only the item's own index: a field naming another entry (a teaser of the next artist) keeps its path.
+          const index = /^(\d+)(?=\.|$)/.exec(record.info.path.slice(prefix.length))?.[1];
+          if (index === undefined || Number(index) !== position) continue;
+          record.info.path = item.path + record.info.path.slice(prefix.length + index.length);
           record.id = `${record.info.key}:${record.info.path}`;
         }
-      }
+      });
     }
   }
-
-  const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   /** Every copy of a list on the page, in page order. */
   function copiesOf(id: string): ListRecord[] {
@@ -604,8 +624,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return Array.isArray(items) ? items : [];
   }
 
-  /** Set by the last `listWrite` that wrote nothing: whether it was a conflict. */
-  let lastWriteConflicted = false;
+  /** What a list write came to: the stored array (null when the answer holds none), or why nothing was written. */
+  type WriteOutcome = { written: true; stored: unknown[] | null } | { written: false; conflict: boolean };
 
   /**
    * One array operation on the document's write chain. `build` sees the stored array at the moment the write goes out,
@@ -619,10 +639,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     build: (items: unknown[]) => WireArrayOp | undefined,
     /** Runs on the document's write chain right after the write, before any save queued behind it starts. */
     onWritten?: () => void,
-  ): Promise<unknown[] | null | undefined> {
+  ): Promise<WriteOutcome> {
     const { key, path } = list.info;
     closeActive(false, true);
-    lastWriteConflicted = false;
     let after: unknown[] | null | undefined;
     try {
       await lifecycle(
@@ -642,10 +661,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       );
     } catch (error) {
       // Shown by `lifecycle`.
-      lastWriteConflicted = isConflict(error);
-      return undefined;
+      return { written: false, conflict: isConflict(error) };
     }
-    return after;
+    return after === undefined ? { written: false, conflict: false } : { written: true, stored: after };
   }
 
   /** An element Undo puts back in one copy of a list, and where it was: its markup is the host's. */
@@ -748,7 +766,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     build: (items: unknown[]) => WireArrayOp | undefined,
   ): Promise<boolean> {
     return withLock(list.info.key, async () => {
-      if ((await listWrite(list, action, build)) === undefined) return false;
+      if (!(await listWrite(list, action, build)).written) return false;
       await swapLists(list.info.key);
       return true;
     });
@@ -761,12 +779,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     build: (items: unknown[]) => WireArrayOp | undefined,
     onWritten?: () => void,
     restores?: Map<HTMLElement, Restore>,
-  ): Promise<boolean> {
+  ): Promise<WriteOutcome> {
     return withLock(list.info.key, async () => {
-      const stored = await listWrite(list, action, build, onWritten);
-      if (stored === undefined) return false;
-      await settleCopies(list.id, list.info.key, stored, restores);
-      return true;
+      const outcome = await listWrite(list, action, build, onWritten);
+      if (outcome.written) await settleCopies(list.id, list.info.key, outcome.stored, restores);
+      return outcome;
     });
   }
 
@@ -903,13 +920,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       const state = session.slot(record.info.key, record.info.path).state;
       if (state !== "idle") showState(record, state);
     }
-    if (editing) {
-      for (const list of addedLists) attachListRecord(list);
-      // A list (of another document) holding a swapped one observes boxes that are gone: dress it again.
-      for (const list of lists) {
-        if (!addedLists.includes(list) && nodes.some((node) => list.element.contains(node))) attachListRecord(list);
-      }
-    }
+    // Swaps take outermost lists, and a rearranged list holds none with chrome, so only the new records need dressing.
+    if (editing) for (const list of addedLists) attachListRecord(list);
     updateBar();
   }
 
@@ -1035,12 +1047,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (action === "up" || action === "down") {
       const step = action === "up" ? -1 : 1;
       // Held until the page shows the move: a swap or another press meanwhile would act on the old order.
-      const written = await listWriteAndSettle(list, label, (items) => {
+      const outcome = await listWriteAndSettle(list, label, (items) => {
         const from = storedIndex(items, item);
         const to = from + step;
         return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
       });
-      if (!written) return;
+      if (!outcome.written) return;
       const fresh = copiesOf(list.id)[copy];
       const moved = itemByKey(fresh, item.itemKey);
       if (!fresh || !moved) return;
@@ -1073,7 +1085,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       return;
     }
     const position = list.items.indexOf(item);
-    let removed: { value: unknown; index: number } | undefined;
+    let removed: { value: unknown; index: number; before: string | undefined; after: string | undefined } | undefined;
     // In every copy, where Undo puts the item back: before the next markup that is the host's (the chrome's own rows
     // come and go).
     const places = new Map<HTMLElement, Restore>();
@@ -1085,13 +1097,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       places.set(each.element, { key: item.itemKey, element, parent: element.parentNode, next });
     }
     let dropped: string[] = [];
-    const written = await listWriteAndSettle(
+    const outcome = await listWriteAndSettle(
       list,
       label,
       (items) => {
         const index = storedIndex(items, item);
         if (index < 0) return undefined;
-        removed = { value: items[index], index };
+        // Its neighbours, so Undo puts it back between them even after other changes in this session.
+        removed = {
+          value: items[index],
+          index,
+          before: itemKeyOf(items[index - 1]),
+          after: itemKeyOf(items[index + 1]),
+        };
         return { kind: "remove", index };
       },
       () => {
@@ -1100,7 +1118,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         dropped = session.dropSaves(list.info.key, (path) => path === item.path || path.startsWith(`${item.path}.`));
       },
     );
-    if (!written || !removed) return;
+    if (!outcome.written || !removed) return;
     const entry: Removal = {
       listId: list.id,
       key: list.info.key,
@@ -1154,11 +1172,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * Undoes `entry`, else the newest removal from `listId`, else the newest of all. The removal's own window keeps
    * running; another removal's is untouched.
    */
-  async function undoRemoval(listId?: string, entry?: Removal): Promise<void> {
+  async function undoRemoval(listId?: string, entry?: Removal, pressedIn?: ListRecord): Promise<void> {
     const last =
       entry ?? (listId === undefined ? removals.at(-1) : removals.findLast((removal) => removal.listId === listId));
     if (!last || !removals.includes(last)) return;
-    const list = copiesOf(last.listId)[0];
+    // The copy the editor pressed in: focus and the announcement stay there.
+    const copies = copiesOf(last.listId);
+    const copy = pressedIn && copies.includes(pressedIn) ? copies.indexOf(pressedIn) : 0;
+    const list = copies[copy];
     const itemKey = itemKeyOf(last.value);
     if (!list || itemKey === undefined) {
       // Its list has left the page (or it can't be matched): it can't come back here, and mustn't block older ones.
@@ -1170,15 +1191,20 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     removals.splice(at, 1);
     if (last.toast !== undefined) toast.hideIf(last.toast);
     syncUndoButtons();
-    const written = await listWriteAndSettle(
+    const outcome = await listWriteAndSettle(
       list,
       strings.undo,
-      (items) => ({ kind: "insert", index: Math.min(last.index, items.length), value: last.value }),
+      (items) => {
+        const before = last.before === undefined ? -1 : items.findIndex((entry) => itemKeyOf(entry) === last.before);
+        const after = last.after === undefined ? -1 : items.findIndex((entry) => itemKeyOf(entry) === last.after);
+        const index = before >= 0 ? before + 1 : after >= 0 ? after : Math.min(last.index, items.length);
+        return { kind: "insert", index, value: last.value };
+      },
       undefined,
       last.places,
     );
-    if (!written) {
-      if (lastWriteConflicted) {
+    if (!outcome.written) {
+      if (outcome.conflict) {
         // Another editor changed the list: putting the item back at its old place would land in their content.
         clearTimeout(last.timer);
         toast.show(format(strings.undoConflict, { key: last.key, item: last.name }), "error");
@@ -1191,7 +1217,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       return;
     }
     clearTimeout(last.timer);
-    const fresh = copiesOf(last.listId)[0];
+    const fresh = copiesOf(last.listId)[copy];
     const restored = itemByKey(fresh, itemKey);
     if (fresh && restored) {
       toast.announce(
@@ -1255,7 +1281,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const list = lists.find((entry) => entry.element === inList);
     if (!list || !removals.some((removal) => removal.listId === list.id)) return;
     event.preventDefault();
-    void undoRemoval(list.id);
+    void undoRemoval(list.id, undefined, list);
   });
   disposer.listen(scanRoot, "mouseover", (event) => {
     const record = fieldFrom(event);
