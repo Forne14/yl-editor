@@ -1017,18 +1017,77 @@ await addListKeys(store, "artist/list", "artists");
         editable.
       </p>
 
-      <h2>5. What I'd like you to decide</h2>
+      <h2>5. Ruled 2026-11-18 <span class="tag rec">D, and the store refuses unkeyed items</span></h2>
+      <p class="note">
+        Built: <code>keyedItems</code> requires a key and the store refuses an item without one, saying a key must be
+        provided. Existing content is keyed by <code>addListKeys</code> inside the schema's <code>migrate</code> rather
+        than a one-off script: a page with two keyed lists can't be filled one list at a time, because every save is
+        checked against the whole schema. The migration keys by place (<code>k0</code>, <code>k1</code>, …), so every
+        read sees the same keys until the next save stores them.
+      </p>
+
+      <!-- ===================================== 6. Fields by position ===================================== -->
+      <h2>6. Next decision: fields addressed by position inside keyed items</h2>
+      <p class="note">
+        The items have keys, but the page renders their fields by position: the item is
+        <code>artists[_key=i3]</code> while its name is <code>artists.2.name</code>. Ruling 3a says the chrome saves
+        such a field by its item's key. To do that, the chrome has to guess which item a position means, and it guesses
+        from page order. The guess is wrong whenever the page doesn't show every stored item (a hidden artist, a filter,
+        a sort), and then an edit lands on the wrong artist: the same bug keys were meant to end. Review keeps finding
+        cases of it.
+      </p>
+      <div class="pair">
+        <figure>
+          <figcaption>Today, ruling 3a <span class="tag now">the chrome guesses from page order</span></figcaption>
+          <div class="frame" data-demo="pos-hidden"></div>
+          <p class="callout bad">
+            <b>What goes wrong:</b> the store holds Mara, Sol (hidden, not shown), Ines and Kofi. The page shows three.
+            Ines's name is rendered as <code>artists.2.name</code>, but she is 2nd on the page, so the chrome can't tell
+            whose field it is and leaves it by position. The editor changes her name while a Remove of Mara is on its
+            way: after the remove, place 2 is Kofi, and Kofi gets her name.
+          </p>
+        </figure>
+        <figure>
+          <figcaption>
+            Proposed <span class="tag rec">the site renders fields by key; the chrome stops guessing</span>
+          </figcaption>
+          <div class="devcode">
+            <p class="devcode__label">The site renders an item's fields through the item (new helper)</p>
+            <pre><code>const item = edit.itemFields("artists", artist, index);
+
+&lt;li {...edit.item("artists", artist, index)}&gt;
+  &lt;h3 {...item("name", "text")}&gt;{artist.name}&lt;/h3&gt;
+&lt;/li&gt;
+// → data-edit-field="artist/list:artists[_key=i3].name"</code></pre>
+            <p class="devcode__label">
+              A field left by position inside a keyed item: that list only, and the console says why
+            </p>
+            <div class="console__row">
+              <span>⚠</span
+              ><span
+                >[yl-editor] artist/list:artists has no Add, Remove or Move: its field artists.2.name is addressed by
+                position inside a keyed item. Render an item's fields with editable(docKey).itemFields(path, item,
+                index). See docs/chrome.md → Lists.</span
+              >
+            </div>
+          </div>
+          <p class="callout">
+            The editor sees full list chrome when the site renders fields by key, and the approved one-outline look (no
+            list buttons) when it doesn't. The chrome never rewrites an address, never guesses from page order, and
+            Move, Remove and Undo always rearrange the page's own markup.
+          </p>
+        </figure>
+      </div>
+
+      <h2>7. What I'd like you to decide</h2>
       <ol class="asks">
         <li>
-          <b>Where keys come from: A, B, C or D.</b> I recommend D: the content owns its keys, the editor never invents
-          them, and nothing surprising happens at runtime. It replaces ruling 3b (the editor keying on the first
-          change).
+          <b>Fields by position inside keyed items: keep ruling 3a (the chrome guesses), or move it to the site?</b> I
+          recommend moving it to the site: a new <code>edit.itemFields(path, item, index)</code> helper renders an
+          item's fields by key, and a field left by position makes that list keep the one outline with no list buttons
+          and a console note. This replaces ruling 3a.
         </li>
-        <li>
-          <b>If D: does the store refuse unkeyed items?</b> With <code>keyedItems</code> in the schema it would, so a
-          script or another tool that writes items without keys fails loudly instead of creating unkeyed content. I
-          recommend yes.
-        </li>
+        <li><b>The console note's wording</b>, as shown above, for the site's developer (editors never see it).</li>
       </ol>
     </main>
 
@@ -1167,6 +1226,16 @@ await addListKeys(store, "artist/list", "artists");
               chromeList({ label: "Events", noun: "event", max: 8, items: EVENTS, body: artistBody, actions: false }),
             ),
           "d-editor": () => page("Artists", artists([ROSTER[0], ROSTER[1], ROSTER[2]], { open: 1 })),
+          "pos-hidden": () =>
+            page(
+              "Artists",
+              artists([ROSTER[0], ROSTER[2], { ...KOFI, name: "Ines D." }], {
+                body: (artist) =>
+                  `<div><h4 class="cms-field ${artist.name === "Ines D." ? "wrong" : ""}">${esc(artist.name)}</h4>${field("p", artist.line)}</div>`,
+              }),
+              "",
+              "2 changes on this page",
+            ),
         };
         const TIMELINES = {};
 
