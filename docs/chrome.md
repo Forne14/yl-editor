@@ -196,7 +196,11 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   `api.publish` rejects and its toast has a **Review changes** button.
 - Unpublish, Restore and Discard send the session's known version. On a conflict a toast says the document changed, the
   session takes the server's copy and repaints the fields from it, and nothing else happens. A field with a save on its
-  way or an open widget keeps what the editor has.
+  way or an open widget keeps what the editor has. When the server's copy changed the field under an open widget, what
+  the editor commits from that widget is not sent: whether they leave it or a list swap replaces it, it is held as a
+  field `conflict` (failed outline, **Keep mine (overwrite)** / **Take theirs (reload field)**), because sent on the
+  copy just taken it would overwrite the other editor's change unseen. Esc, or leaving it unchanged, shows their value.
+  If their copy left that field as the widget found it, the commit saves as usual.
 - `api.publish(key, { at })` schedules whatever `scheduling` says, and refuses nothing: a host panel checks its own time.
 - An existing `scheduledAt` always shows in the bar as "<key> scheduled for <time>" with **Publish now**, which
   publishes the draft immediately and clears the schedule, by the rule above.
