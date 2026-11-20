@@ -1930,6 +1930,92 @@ describe("a widget left open through a conflict catch-up (#48)", () => {
     expect(title.textContent).toBe("Theirs");
     expect(title.classList.contains("cms-field--failed")).toBe(false);
   });
+
+  test("a second catch-up that changed only another field keeps the first one's conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // v4
+    server.theirWrite("pages/home", { lede: "Later" }); // v5: the session now knows v4's payload
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs", lede: "Later" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("a richtext field opened with no payload loaded saves when they changed only another field", async () => {
+    // The page shows the stored HTML as text: the widget starts from "Lede", never equal to "<p>Lede</p>".
+    const server = serve({ "pages/home": { ...live, payload: { title: "Hello", lede: "<p>Lede</p>" } } });
+    const { api } = await mount();
+    const lede = field("pages/home:lede");
+    lede.click();
+    lede.textContent = "Mine";
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(lede, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(posts("field")[0]?.body).toMatchObject({ path: "lede", value: "Mine", expectedVersion: 4 });
+    expect(lede.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("a field reopened on a failed save resends normally when the catch-up left it alone", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    const { api } = await mount();
+    await editText("pages/home:title", "Mine"); // fails: the page now shows the unsaved "Mine"
+    const title = field("pages/home:title");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    title.click();
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([3, 4]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Theirs" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("Keep mine after a later catch-up that changed the field again gets a fresh conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // holds v4
+    press(title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // v5
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale"); // adopts v5
+    keepMine.click();
+    await settle();
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs again" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(visibleToast().textContent).toContain("Someone else changed this field");
+  });
+
+  test("Keep mine after a refresh that moved the version sends the held version and conflicts", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // holds v4
+    press(title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // v5
+    await handle?.api.refresh(); // the session takes version 5 with no payload
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs again" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("Take theirs after a refresh that moved the version takes the held document, as before", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // holds v4
+    press(title, "Enter");
+    await settle();
+    const takeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    server.theirWrite("pages/home", { lede: "Later" }); // v5
+    await handle?.api.refresh();
+    takeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(4);
+  });
 });
 
 describe("a bulk publish with a failure", () => {

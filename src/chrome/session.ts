@@ -4,6 +4,7 @@
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
+import { valueAtPath } from "./dom.ts";
 import type { DocumentForPublishResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
@@ -320,22 +321,39 @@ export class Session {
     this.events.conflicted(slot, current);
   }
 
-  /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
+  /**
+   * Overwrite: adopt the server's version so the next write is accepted, then resend our value. When the session already
+   * holds a newer payload with the held value at this path (its own save of another field since), it sends on that
+   * instead: adopting the held one would move the version back and conflict again for nothing. Any other newer version
+   * may carry a change to this field the editor never saw, so the held one is adopted and the resend conflicts afresh.
+   */
   keepMine(slot: SaveSlot): Promise<void> {
     if (slot.state !== "failed") return Promise.resolve();
-    if (slot.conflict) this.adoptUnlessOlder(slot.conflict);
+    const held = slot.conflict;
+    if (held) {
+      const newer = this.newerPayload(held);
+      const unchanged =
+        newer !== undefined &&
+        JSON.stringify(valueAtPath(newer.payload, slot.path)) === JSON.stringify(valueAtPath(held.payload, slot.path));
+      if (!unchanged) this.adopt(held);
+    }
     return this.retry(slot);
   }
 
-  /** Accept the other edit. Returns the server's payload so the caller can repaint the field. */
+  /**
+   * Accept the other edit. Returns the server's payload so the caller can repaint the field: the session's own when it
+   * is newer than the held document and known (it is at least as recent), else the held one, which it adopts.
+   */
   takeTheirs(slot: SaveSlot): unknown {
     const current = slot.conflict;
     slot.conflict = undefined;
     slot.failedValue = undefined;
     this.setState(slot, "idle");
     if (!current) return undefined;
-    this.adoptUnlessOlder(current);
-    return this.documents.get(current.key)?.payload ?? current.payload;
+    const newer = this.newerPayload(current);
+    if (newer) return newer.payload;
+    this.adopt(current);
+    return current.payload;
   }
 
   /** Publish or discard finished: the document is no longer this session's change. */
@@ -393,13 +411,13 @@ export class Session {
   }
 
   /**
-   * A held conflict can be older than what the session took since (a held widget's document, then a save of another
-   * field): taking it would move the version back and the resend would conflict again for nothing.
+   * The session's payload for `document`'s key when the session holds a newer version and knows its payload. A version
+   * moved by `load` alone has no payload, so nothing says what changed since `document`.
    */
-  private adoptUnlessOlder(document: WireDocument): void {
+  private newerPayload(document: WireDocument): { payload: unknown } | undefined {
     const state = this.documents.get(document.key);
-    if (state && state.version > document.version) return;
-    this.adopt(document);
+    if (!state || state.version <= document.version || state.payload === undefined) return undefined;
+    return { payload: state.payload };
   }
 
   private noteWrite(key: string): void {
