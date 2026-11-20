@@ -27,6 +27,7 @@ import type {
   Widget,
   WidgetContext,
   WidgetHandle,
+  WireDocument,
 } from "./types.ts";
 import { Sheet, Toast } from "./ui.ts";
 import { createDefaultWidgets, missingWidget, provideStatus, provideStrings } from "./widgets.ts";
@@ -35,6 +36,11 @@ interface ActiveWidget {
   record: FieldRecord;
   handle: WidgetHandle | undefined;
   closed: boolean;
+  slot: SaveSlot;
+  /** The value it opened with. */
+  initial: unknown;
+  /** The newest document a catch-up took while it was open, when that changed its field (see `repaint`). */
+  theirs?: WireDocument;
 }
 
 const TEXT_TYPES = new Set(["text", "richtext"]);
@@ -341,7 +347,17 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     active = null;
     current.handle?.destroy();
     current.record.element.classList.remove("cms-field--editing");
+    // Closed without its commit or cancel (those take `theirs` first): nothing of the editor's is kept, so show theirs.
+    if (current.theirs) showTheirs(current, current.theirs);
     if (returnFocus && !destroyed) current.record.element.focus();
+  }
+
+  /** A widget that held nothing after a catch-up: its field shows the adopted value, as `repaint` would have. */
+  function showTheirs(opened: ActiveWidget, theirs: WireDocument): void {
+    // A value that failed to save is still the editor's, and the field shows it.
+    if (opened.slot.state === "failed") return;
+    render(opened.record, valueAtPath(theirs.payload, opened.record.info.path), true);
+    showState(opened.record, "idle");
   }
 
   async function openField(record: FieldRecord): Promise<void> {
@@ -387,7 +403,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       }
       updateBar();
     }
-    const opened: ActiveWidget = { record, handle: undefined, closed: false };
+    const opened: ActiveWidget = { record, handle: undefined, closed: false, slot, initial };
     const context: WidgetContext = {
       element: record.element,
       field: { ...info, options: info.options ? [...info.options] : undefined },
@@ -397,14 +413,26 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       },
       async commit(next) {
         if (opened.closed) return;
+        const { theirs } = opened;
+        opened.theirs = undefined;
         if (active === opened) closeActive(true);
         opened.closed = true;
-        if (!sameValue(next, initial) || slot.state === "failed") await session.save(info.key, info.path, next);
+        const changed = !sameValue(next, initial) || slot.state === "failed";
+        if (theirs) {
+          // Sent now it would go out on their version and overwrite their change unseen: held as a 409'd save is.
+          if (changed) session.holdConflict(info.key, info.path, next, theirs);
+          else showTheirs(opened, theirs);
+          return;
+        }
+        if (changed) await session.save(info.key, info.path, next);
       },
       cancel() {
         if (opened.closed) return;
+        const { theirs } = opened;
+        opened.theirs = undefined;
         if (active === opened) closeActive(true);
         opened.closed = true;
+        if (theirs) showTheirs(opened, theirs);
       },
       announce: (message) => toast.announce(message),
     };
@@ -1807,18 +1835,34 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
   }
 
+  // Catch-up invariants (#48). A catch-up is `guarded` adopting the server's copy on a conflict, or a publish adopting a
+  // version the page hadn't shown; either repaints with `closeOpen` false.
+  // - After it, a write on the adopted version is accepted, so no value the editor chose before seeing theirs may ride
+  //   on it unasked. A save already queued or on the wire is the exception: it went onto the chain first (docs/chrome.md).
+  // - An open widget stays open. It keeps `theirs`, the newest adopted document, only while that document's value at its
+  //   path differs from the one it opened with; a later catch-up that agrees with it clears it.
+  // - It closes once. Its commit or cancel takes `theirs` before closing, so exactly one of these happens: a changed (or
+  //   failed) value is held through `Session.holdConflict`, never sent; anything else shows theirs (`showTheirs`).
+  // - The session's version never goes back: Keep mine and Take theirs skip adopting a held document older than it.
   /**
-   * Repaints the document's fields from a payload the session just took. A field with a save on its way keeps what the
-   * editor committed. `closeOpen` is for writes that replace the content under an open widget.
+   * Repaints the document's fields from `adopted`, which the session just took. A field with a save on its way keeps
+   * what the editor committed. `closeOpen` is for writes that replace the content under an open widget.
    */
-  function repaint(key: string, payload: unknown, closeOpen: boolean): void {
+  function repaint(key: string, adopted: WireDocument, closeOpen: boolean): void {
     for (const record of fields) {
-      if (record.info.key !== key || session.committedValue(key, record.info.path)) continue;
-      if (active?.record === record) {
-        if (!closeOpen) continue;
-        closeActive(false);
+      if (record.info.key !== key) continue;
+      if (active?.record === record && !closeOpen) {
+        const open = active;
+        // A save on its way goes out whatever this widget does, and the widget started from it.
+        if (!open.slot.pending && !open.slot.sending) {
+          const changed = !sameValue(valueAtPath(adopted.payload, record.info.path), open.initial);
+          open.theirs = changed ? adopted : undefined;
+        }
+        continue;
       }
-      render(record, valueAtPath(payload, record.info.path), true);
+      if (session.committedValue(key, record.info.path)) continue;
+      if (active?.record === record) closeActive(false);
+      render(record, valueAtPath(adopted.payload, record.info.path), true);
       showState(record, "idle");
     }
     // A list's items may have come or gone with the content: only the page can draw them.
@@ -1836,7 +1880,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       } catch (error) {
         if (isConflict(error) && error.current) {
           session.adopt(error.current);
-          repaint(key, error.current.payload, false);
+          repaint(key, error.current, false);
           updateBar();
         }
         throw error;
@@ -1856,7 +1900,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (at !== undefined) session.applyWrite(expectedVersion, written);
         else session.settle(key, written);
         // The sheet showed a change this page hasn't: the session is at that version now, so the page must be too.
-        if (expectedVersion !== known) repaint(key, written.payload, false);
+        if (expectedVersion !== known) repaint(key, written, false);
         updateBar();
         return written;
       },
@@ -1884,7 +1928,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         session.clearFailed(key);
         forgetRemovals(key);
         session.settle(key, written);
-        if (written) repaint(key, written.payload, true);
+        if (written) repaint(key, written, true);
         else {
           // Never published: the store deleted it, so there is nothing left to edit.
           for (const list of lists) if (list.info.key === key) list.detach?.();
@@ -1937,7 +1981,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           key,
           diffPayloads(before, written.payload).map((entry) => entry.path),
         );
-        repaint(key, written.payload, true);
+        repaint(key, written, true);
         updateBar();
       }),
     );

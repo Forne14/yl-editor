@@ -1115,3 +1115,52 @@ describe("seventeenth review round", () => {
     expect((op.value as Artist)._key).not.toBe("a");
   });
 });
+
+describe("a field open in a list when a conflict swaps it (#48)", () => {
+  const typeInto = (index: number, text: string) => {
+    const name = items()[index]?.querySelector("h3") as HTMLElement;
+    name.click();
+    name.textContent = text;
+    return name;
+  };
+  const toastText = () => document.querySelector(".cms-toast")?.textContent ?? "";
+
+  test("the swap holds it as a conflict instead of saving it over the other editor's change", async () => {
+    await mount();
+    typeInto(0, "Mine");
+    // Another editor renames the same item; this page's Unpublish then conflicts and catches up.
+    artists = [{ _key: "a", name: "Theirs" }, ...artists.slice(1)];
+    version += 1;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) =>
+      String(input).includes("/api/content/unpublish")
+        ? Promise.resolve(
+            json({ error: { code: "conflict", message: "Version mismatch", current: wireDocument() } }, 409),
+          )
+        : realFetch(input, init),
+    );
+    await expect(handle?.api.unpublish(KEY)).rejects.toThrow("Version mismatch");
+    await settle();
+    expect(fieldCalls).toEqual([]);
+    const fresh = items()[0]?.querySelector("h3");
+    expect(fresh?.textContent).toBe("Mine");
+    expect(fresh?.classList.contains("cms-field--failed")).toBe(true);
+    expect(toastText()).toContain("Someone else changed this field");
+    const keepMine = [...document.querySelectorAll<HTMLButtonElement>(".cms-toast button")].find(
+      (button) => button.textContent === "Keep mine (overwrite)",
+    );
+    keepMine?.click();
+    await settle();
+    expect(fieldCalls).toEqual(["artists[_key=a].name"]);
+  });
+
+  test("Add still commits a field left open, with no conflict", async () => {
+    await mount();
+    typeInto(0, "Mine");
+    addButton()?.click();
+    await settle();
+    expect(fieldCalls).toEqual(["artists[_key=a].name"]);
+    expect(toastText()).not.toContain("Someone else changed this field");
+    expect(names()).toEqual(["Mara", "Tobias", "New artist"]);
+  });
+});

@@ -1840,6 +1840,98 @@ describe("Unpublish, Restore and Discard send the known version", () => {
   });
 });
 
+describe("a widget left open through a conflict catch-up (#48)", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+
+  /** Opens Title, types `typed` (if any), lets another editor write `change`, then an Unpublish conflicts. */
+  async function catchUpWhileOpen(change: Record<string, unknown>, typed?: string) {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    const title = field("pages/home:title");
+    title.click();
+    if (typed !== undefined) title.textContent = typed;
+    server.theirWrite("pages/home", change);
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    return { server, title };
+  }
+
+  test("leaving it after they changed that field sends nothing and holds it as a conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+    expect(title.textContent).toBe("Mine");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(visibleToast().textContent).toContain("Someone else changed this field");
+    expect(buttonNamed("Take theirs (reload field)", visibleToast())).toBeTruthy();
+  });
+
+  test("Keep mine then sends it on the adopted version", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(posts("field")[0]?.body).toMatchObject({ path: "title", value: "Mine", expectedVersion: 4 });
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("Keep mine after a later save of another field sends the newer version, not the held one", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    // The save's own toast replaces the conflict's; its button still acts on the held slot.
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    await editText("pages/home:lede", "Other"); // writes 4 -> 5
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4, 5]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Other" });
+  });
+
+  test("Take theirs shows theirs and sends nothing", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("when they changed another field, leaving it saves as before", async () => {
+    const { server, title } = await catchUpWhileOpen({ lede: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(posts("field")[0]?.body).toMatchObject({ path: "title", value: "Mine", expectedVersion: 4 });
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Theirs" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("Esc holds nothing and the field shows theirs", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Escape");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("leaving it unchanged holds nothing and the field shows theirs", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" });
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+});
+
 describe("a bulk publish with a failure", () => {
   const two = () =>
     serve({
