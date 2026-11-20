@@ -307,22 +307,35 @@ export class Session {
     return this.save(slot.key, slot.path, slot.failedValue);
   }
 
+  /**
+   * Holds `value` as a conflict with `current` without sending it, as a save answered with a 409 would be: the editor
+   * changed the field in a widget opened before the session took `current`, another editor's version that changed the
+   * field too. Keep mine and Take theirs then resolve it.
+   */
+  holdConflict(key: string, path: string, value: unknown, current: WireDocument): void {
+    const slot = this.slot(key, path);
+    slot.failedValue = value;
+    slot.conflict = current;
+    this.setState(slot, "failed");
+    this.events.conflicted(slot, current);
+  }
+
   /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
   keepMine(slot: SaveSlot): Promise<void> {
     if (slot.state !== "failed") return Promise.resolve();
-    if (slot.conflict) this.adopt(slot.conflict);
+    if (slot.conflict) this.adoptUnlessOlder(slot.conflict);
     return this.retry(slot);
   }
 
-  /** Accept the other edit. Returns the server's value for the field so the caller can repaint it. */
+  /** Accept the other edit. Returns the server's payload so the caller can repaint the field. */
   takeTheirs(slot: SaveSlot): unknown {
     const current = slot.conflict;
     slot.conflict = undefined;
     slot.failedValue = undefined;
     this.setState(slot, "idle");
     if (!current) return undefined;
-    this.adopt(current);
-    return current.payload;
+    this.adoptUnlessOlder(current);
+    return this.documents.get(current.key)?.payload ?? current.payload;
   }
 
   /** Publish or discard finished: the document is no longer this session's change. */
@@ -377,6 +390,16 @@ export class Session {
   /** Resolves once every write queued so far for the document has finished. */
   pending(key: string): Promise<void> {
     return this.chains.get(key) ?? Promise.resolve();
+  }
+
+  /**
+   * A held conflict can be older than what the session took since (a held widget's document, then a save of another
+   * field): taking it would move the version back and the resend would conflict again for nothing.
+   */
+  private adoptUnlessOlder(document: WireDocument): void {
+    const state = this.documents.get(document.key);
+    if (state && state.version > document.version) return;
+    this.adopt(document);
   }
 
   private noteWrite(key: string): void {
