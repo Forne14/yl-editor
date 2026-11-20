@@ -37,16 +37,60 @@ interface ActiveWidget {
   handle: WidgetHandle | undefined;
   closed: boolean;
   slot: SaveSlot;
-  /** The value it opened with. */
-  initial: unknown;
   /** The newest document a catch-up took while it was open, when that changed its field (see `repaint`). */
   theirs?: WireDocument;
+  /**
+   * The stored value at its path that it started from, once known: the session's payload when it opened, else what the
+   * session held when a catch-up came. A catch-up changed its field when the adopted value differs from this.
+   */
+  stored?: { value: unknown };
+  /** Its start in the page's terms, for a catch-up when no stored value is known (see `PageBase`). */
+  base?: PageBase;
+}
+
+/**
+ * What a field started from on the page when the session had no payload: `data-edit-value`, which stands for the stored
+ * value, or for text types the text shown (`shown`), which a catch-up compares with the adopted value as the page
+ * would render it. Never a value that failed to save: the page shows that one, so a reopened field keeps the base of
+ * the widget that committed it.
+ */
+interface PageBase {
+  value: unknown;
+  shown: boolean;
 }
 
 const TEXT_TYPES = new Set(["text", "richtext"]);
 
 function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Text as a comparison sees it: the page's markup can wrap or indent what the stored value doesn't. */
+function normalText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** The text plain `render` puts on the page for a value. */
+function plainShown(value: unknown): string {
+  return Array.isArray(value) ? value.join(", ") : value === null || typeof value === "object" ? "" : String(value);
+}
+
+/** The text the page would show for `value` at this field, as a text widget started from the page reads it. */
+function shownText(record: FieldRecord, value: unknown): string {
+  if (value === undefined) return "";
+  if (record.info.type !== "richtext") return normalText(plainShown(value));
+  // A detached copy, so its allowed headings apply and the page itself is untouched.
+  const probe = record.element.cloneNode(false) as HTMLElement;
+  renderRichText(probe, typeof value === "string" ? value : "");
+  return normalText(probe.textContent ?? "");
+}
+
+/** The field's `PageBase` when a widget opens on it with nothing committed. */
+function pageBase(record: FieldRecord): PageBase | undefined {
+  const attribute = editValueAttribute(record);
+  if (attribute !== undefined) return { value: attribute, shown: false };
+  if (!TEXT_TYPES.has(record.info.type)) return undefined;
+  return { value: normalText(record.element.textContent ?? ""), shown: true };
 }
 
 function isConflict(error: unknown): error is ContentRequestError {
@@ -213,6 +257,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /** Removals that Undo puts back, newest last. */
   const removals: Removal[] = [];
   let active: ActiveWidget | null = null;
+  /** Per save slot, the `PageBase` of the widget that last committed a change to it: at most one entry per slot. */
+  const failedBases = new Map<string, PageBase>();
   let editing = true;
   let destroyed = false;
   let openTicket = 0;
@@ -276,11 +322,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       record.cleared ??= { editValue: target.dataset.editValue };
       target.textContent = "";
     } else if (plain && value !== undefined) {
-      target.textContent = Array.isArray(value)
-        ? value.join(", ")
-        : value === null || typeof value === "object"
-          ? ""
-          : String(value);
+      target.textContent = plainShown(value);
     }
     target.dispatchEvent(
       new CustomEvent("cms:change", { bubbles: true, detail: { key: record.info.key, path: record.info.path, value } }),
@@ -403,7 +445,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       }
       updateBar();
     }
-    const opened: ActiveWidget = { record, handle: undefined, closed: false, slot, initial };
+    const known = session.documents.get(info.key)?.payload;
+    const opened: ActiveWidget = {
+      record,
+      handle: undefined,
+      closed: false,
+      slot,
+      stored: known === undefined ? undefined : { value: valueAtPath(known, info.path) },
+      base: committed ? failedBases.get(slot.id) : pageBase(record),
+    };
     const context: WidgetContext = {
       element: record.element,
       field: { ...info, options: info.options ? [...info.options] : undefined },
@@ -418,6 +468,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (active === opened) closeActive(true);
         opened.closed = true;
         const changed = !sameValue(next, initial) || slot.state === "failed";
+        // Whatever it commits may fail; a widget reopened on that value takes this one's base (see `PageBase`).
+        if (changed && opened.base) failedBases.set(slot.id, opened.base);
+        else if (changed) failedBases.delete(slot.id);
         if (theirs) {
           // Sent now it would go out on their version and overwrite their change unseen: held as a 409'd save is.
           if (changed) session.holdConflict(info.key, info.path, next, theirs);
@@ -1840,23 +1893,30 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   // - After it, a write on the adopted version is accepted, so no value the editor chose before seeing theirs may ride
   //   on it unasked. A save already queued or on the wire is the exception: it went onto the chain first (docs/chrome.md).
   // - An open widget stays open. It keeps `theirs`, the newest adopted document, only while that document's value at its
-  //   path differs from the one it opened with; a later catch-up that agrees with it clears it.
+  //   path differs from the stored value the widget started from (`ActiveWidget.stored`), never from the widget's own
+  //   starting value, which can be page text or a value that failed to save. `stored` is fixed once known: the session's
+  //   payload when the widget opened, else `before` (the session's payload just before the catch-up's adopt), so a
+  //   later catch-up that agrees with it clears `theirs` and one that changed only other fields keeps it. With neither
+  //   known, it compares in the page's terms (`PageBase`); a change found that way stays until the widget closes, and
+  //   with no base at all it counts as changed: holding a value the editor can resend beats overwriting theirs unseen.
   // - It closes once. Its commit or cancel takes `theirs` before closing, so exactly one of these happens: a changed (or
   //   failed) value is held through `Session.holdConflict`, never sent; anything else shows theirs (`showTheirs`).
-  // - The session's version never goes back: Keep mine and Take theirs skip adopting a held document older than it.
+  // - Keep mine and Take theirs adopt the held document, except when the session already holds a newer payload (its own
+  //   save of another field since): Keep mine then sends on it only if its value at the path is still the held one, so
+  //   it never overwrites a change the editor wasn't shown; Take theirs shows it. A newer version with no payload (a
+  //   refresh) tells nothing, so the held document is adopted and a resend conflicts afresh.
   /**
    * Repaints the document's fields from `adopted`, which the session just took. A field with a save on its way keeps
    * what the editor committed. `closeOpen` is for writes that replace the content under an open widget.
    */
-  function repaint(key: string, adopted: WireDocument, closeOpen: boolean): void {
+  function repaint(key: string, adopted: WireDocument, closeOpen: boolean, before?: unknown): void {
     for (const record of fields) {
       if (record.info.key !== key) continue;
       if (active?.record === record && !closeOpen) {
         const open = active;
         // A save on its way goes out whatever this widget does, and the widget started from it.
         if (!open.slot.pending && !open.slot.sending) {
-          const changed = !sameValue(valueAtPath(adopted.payload, record.info.path), open.initial);
-          open.theirs = changed ? adopted : undefined;
+          open.theirs = theyChanged(open, adopted, before) ? adopted : undefined;
         }
         continue;
       }
@@ -1869,6 +1929,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     void swapLists(key);
   }
 
+  /** Whether `adopted` changed the open widget's field since the stored value it started from (see the invariants). */
+  function theyChanged(open: ActiveWidget, adopted: WireDocument, before: unknown): boolean {
+    const { path } = open.record.info;
+    const value = valueAtPath(adopted.payload, path);
+    if (!open.stored) {
+      // Found in the page's terms with nothing stored known since: `before` is now theirs, not what it started from.
+      if (open.theirs) return true;
+      if (before !== undefined) open.stored = { value: valueAtPath(before, path) };
+      else {
+        const { base } = open;
+        if (!base) return true;
+        const same = base.shown ? shownText(open.record, value) === base.value : sameValue(value, base.value);
+        if (same) open.stored = { value };
+        return !same;
+      }
+    }
+    return !sameValue(value, open.stored.value);
+  }
+
   /**
    * The rule for Unpublish, Restore and Discard: send the version this session knows, and on a conflict do nothing but
    * catch up, so the page shows what the editor is deciding about. `task` receives the version to send.
@@ -1879,8 +1958,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         return await task(session.documents.get(key)?.version);
       } catch (error) {
         if (isConflict(error) && error.current) {
+          const before = session.documents.get(key)?.payload;
           session.adopt(error.current);
-          repaint(key, error.current, false);
+          repaint(key, error.current, false, before);
           updateBar();
         }
         throw error;
@@ -1896,11 +1976,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         const expectedVersion = session.publishVersion(key, review);
         const known = session.documents.get(key)?.version;
         const written = await client.publish(key, { ...(at !== undefined ? { at } : {}), expectedVersion });
+        const before = session.documents.get(key)?.payload;
         // Scheduled, not published: the draft is still this session's change until it goes live.
         if (at !== undefined) session.applyWrite(expectedVersion, written);
         else session.settle(key, written);
         // The sheet showed a change this page hasn't: the session is at that version now, so the page must be too.
-        if (expectedVersion !== known) repaint(key, written, false);
+        if (expectedVersion !== known) repaint(key, written, false, before);
         updateBar();
         return written;
       },
