@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Open widget after a conflict</title>
+    <!-- The real chrome stylesheet. Open this file straight from the repo. -->
+    <link rel="stylesheet" href="../../../src/chrome/chrome.css" />
+    <style>
+      /* Prototype page only. No option adds CSS: each reuses the field states and the toast. */
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: #f4f5f8;
+        color: #16181d;
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 48px 0 4px;
+      }
+      p.lead,
+      p.note,
+      ol.story {
+        color: #5b6170;
+        max-width: 72ch;
+        margin: 4px 0 16px;
+      }
+      ol.story li {
+        margin: 4px 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 16px;
+      }
+      .cell {
+        border-radius: 10px;
+        padding: 16px;
+        background: #ffffff;
+        border: 1px solid #e3e5eb;
+      }
+      .cell.dark {
+        background: #0f1116;
+        border-color: #2a2d36;
+        color: #f3f4f8;
+      }
+      .cell.pick {
+        border: 2px solid #2557d6;
+      }
+      .cell h3 {
+        margin: 0 0 12px;
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #5b6170;
+      }
+      .cell.dark h3,
+      .cell.dark .caption {
+        color: #aab0bf;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        background: #e8edfb;
+        color: #2557d6;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .cell.dark .tag {
+        background: #1f2a44;
+        color: #9dbbff;
+      }
+      .cell .cms-toast {
+        position: static;
+        transform: none;
+        max-width: none;
+        margin-bottom: 16px;
+        box-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+      }
+      .cell.dark .cms-root {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        color-scheme: dark;
+      }
+      /* A stand-in for the host page: one team card with an editable name and role. */
+      .card {
+        padding: 12px 14px;
+        border: 1px solid #e3e5eb;
+        border-radius: 8px;
+      }
+      .cell.dark .card {
+        border-color: #2a2d36;
+      }
+      .card h4 {
+        margin: 0 0 4px;
+        font-size: 1.1rem;
+        display: inline-block;
+      }
+      .card p {
+        margin: 0;
+      }
+      .caption {
+        margin: 10px 0 0;
+        font-size: 0.85rem;
+        color: #5b6170;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        max-width: 960px;
+        font-size: 0.9rem;
+        background: #fff;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 8px 10px;
+        border: 1px solid #e3e5eb;
+      }
+      th {
+        background: #eef0f4;
+      }
+      code {
+        font-size: 0.85em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>A field left open when another editor's change arrives</h1>
+      <p class="lead">
+        Issue #48. Today the chrome can save a half-typed value over another editor's change without saying so. This
+        page shows three ways to stop that. Pick one; options A and B need new copy, option C reuses the conflict toast
+        that already ships.
+      </p>
+
+      <h2>What happens today</h2>
+      <ol class="story">
+        <li>Amira is typing a new role for “Sam Lee” on the team page. The field is still open.</li>
+        <li>
+          Meanwhile Ben has changed the same role to “Head of design” and saved. Amira presses Discard (or Restore, or
+          Unpublish) on the team page.
+        </li>
+        <li>
+          Her action conflicts, so the chrome catches up: it takes Ben's version of the page and redraws the team list.
+          Amira's open field is replaced, so the chrome closes it and saves what she had typed.
+        </li>
+        <li>
+          Because the chrome has just taken Ben's version, that save goes through without a conflict. Ben's “Head of
+          design” is gone, and neither of them is told.
+        </li>
+      </ol>
+      <p class="note">
+        The same thing happens without a list. A field that stays open through the catch-up keeps Amira's text, and when
+        she leaves it, it saves over Ben's change. The swap only closes it sooner. Whichever option you choose applies
+        to both cases.
+      </p>
+      <p class="note">
+        Each option applies only if Ben's version changed <em>this field</em>. If his change was elsewhere on the page,
+        Amira's text saves as normal, as it does today.
+      </p>
+
+      <h2>A · Keep her text as a failed save</h2>
+      <p class="note">
+        The field keeps Amira's text with the red “failed” outline. The error toast offers Retry, which sends her text
+        and overwrites Ben's change. Reopening the field starts from her text, as for any failed save. Needs one new
+        string for the reason.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Light <span class="tag">new copy</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="error">
+              <p class="cms-toast__message">Not saved: someone else changed this field while you were editing it.</p>
+              <div class="cms-toast__actions">
+                <button type="button" class="cms-btn cms-btn--primary">Retry</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h4>Sam Lee</h4>
+            <p><span class="cms-field cms-field--failed">Design lead, brand and</span></p>
+          </div>
+          <p class="caption">
+            Retry is the only way out besides typing again. Ben's “Head of design” is not on screen anywhere.
+          </p>
+        </div>
+        <div class="cell dark">
+          <h3>Dark <span class="tag">new copy</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="error">
+              <p class="cms-toast__message">Not saved: someone else changed this field while you were editing it.</p>
+              <div class="cms-toast__actions">
+                <button type="button" class="cms-btn cms-btn--primary">Retry</button>
+              </div>
+            </div>
+            <div class="card">
+              <h4>Sam Lee</h4>
+              <p><span class="cms-field cms-field--failed">Design lead, brand and</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h2>B · Drop her text and say so</h2>
+      <p class="note">
+        The field shows Ben's “Head of design”. An info toast says Amira's text was not saved. It hides itself like
+        every info toast. Nothing to retry; her text is lost unless she remembers it. Needs one new string.
+      </p>
+      <div class="grid">
+        <div class="cell">
+          <h3>Light <span class="tag">new copy</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="info">
+              <p class="cms-toast__message">
+                Your change to this field wasn’t saved: someone else changed it while you were editing.
+              </p>
+              <div class="cms-toast__actions"></div>
+            </div>
+          </div>
+          <div class="card">
+            <h4>Sam Lee</h4>
+            <p><span class="cms-field">Head of design</span></p>
+          </div>
+          <p class="caption">Safest for Ben. Amira loses what she typed.</p>
+        </div>
+        <div class="cell dark">
+          <h3>Dark <span class="tag">new copy</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="info">
+              <p class="cms-toast__message">
+                Your change to this field wasn’t saved: someone else changed it while you were editing.
+              </p>
+              <div class="cms-toast__actions"></div>
+            </div>
+            <div class="card">
+              <h4>Sam Lee</h4>
+              <p><span class="cms-field">Head of design</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h2>C · Treat it as a conflict on that field <span class="tag">recommended</span></h2>
+      <p class="note">
+        Exactly what happens today when a field's save meets another editor's change: the field keeps Amira's text with
+        the red outline, and the conflict toast offers “Keep mine (overwrite)” or “Take theirs (reload field)”. Take
+        theirs shows Ben's “Head of design”. No new copy and no new behaviour to learn.
+      </p>
+      <div class="grid">
+        <div class="cell pick">
+          <h3>Light <span class="tag">existing copy</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="error">
+              <p class="cms-toast__message">Someone else changed this field since you opened the page.</p>
+              <div class="cms-toast__actions">
+                <button type="button" class="cms-btn cms-btn--danger">Keep mine (overwrite)</button>
+                <button type="button" class="cms-btn cms-btn--primary">Take theirs (reload field)</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h4>Sam Lee</h4>
+            <p><span class="cms-field cms-field--failed">Design lead, brand and</span></p>
+          </div>
+          <p class="caption">
+            Both editors' work survives until Amira chooses. The copy says “since you opened the page”, which is still
+            true here.
+          </p>
+        </div>
+        <div class="cell dark pick">
+          <h3>Dark <span class="tag">existing copy</span></h3>
+          <div class="cms-root">
+            <div class="cms-toast" data-kind="error">
+              <p class="cms-toast__message">Someone else changed this field since you opened the page.</p>
+              <div class="cms-toast__actions">
+                <button type="button" class="cms-btn cms-btn--danger">Keep mine (overwrite)</button>
+                <button type="button" class="cms-btn cms-btn--primary">Take theirs (reload field)</button>
+              </div>
+            </div>
+            <div class="card">
+              <h4>Sam Lee</h4>
+              <p><span class="cms-field cms-field--failed">Design lead, brand and</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h2>Side by side</h2>
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>A · failed save</th>
+            <th>B · drop and say so</th>
+            <th>C · field conflict</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Amira's text</th>
+            <td>Kept</td>
+            <td>Lost</td>
+            <td>Kept</td>
+          </tr>
+          <tr>
+            <th>Ben's change</th>
+            <td>Kept, but never shown; one Retry overwrites it</td>
+            <td>Kept and shown</td>
+            <td>Kept; shown by Take theirs</td>
+          </tr>
+          <tr>
+            <th>New copy</th>
+            <td>One string</td>
+            <td>One string</td>
+            <td>None</td>
+          </tr>
+          <tr>
+            <th>For the site developer</th>
+            <td>A new <code>defaultStrings</code> key to translate</td>
+            <td>A new <code>defaultStrings</code> key to translate</td>
+            <td>Nothing new; the <code>conflicted</code> path they already handle</td>
+          </tr>
+          <tr>
+            <th>Recommendation</th>
+            <td></td>
+            <td></td>
+            <td><strong>This one.</strong> It matches what a normal save does in the same situation.</td>
+          </tr>
+        </tbody>
+      </table>
+    </main>
+  </body>
+</html>
