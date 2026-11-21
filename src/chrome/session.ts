@@ -302,9 +302,12 @@ export class Session {
     return slot.scheduled;
   }
 
-  /** Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing. */
+  /**
+   * Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing, and so does
+   * one for a value since held as a conflict: only Keep mine or Take theirs resolve that.
+   */
   retry(slot: SaveSlot): Promise<void> {
-    if (slot.state !== "failed") return Promise.resolve();
+    if (slot.state !== "failed" || slot.conflict) return Promise.resolve();
     return this.save(slot.key, slot.path, slot.failedValue);
   }
 
@@ -337,7 +340,7 @@ export class Session {
         JSON.stringify(valueAtPath(newer.payload, slot.path)) === JSON.stringify(valueAtPath(held.payload, slot.path));
       if (!unchanged) this.adopt(held);
     }
-    return this.retry(slot);
+    return this.save(slot.key, slot.path, slot.failedValue);
   }
 
   /**
