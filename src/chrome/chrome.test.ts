@@ -802,10 +802,11 @@ test("a host richtext widget starts from data-edit-value with its markup intact,
   handle = mountEditor({ widgets: { richtext: widget } });
   await handle.ready;
   field("pages/home:lede").click();
-  // No settle: the widget opened without waiting for a fetch.
+  // No settle: the widget opened without waiting for a fetch. The one it started in the background is for a catch-up.
   expect(seen[0]?.value).toBe(markup);
   await settle();
-  expect(documentFetches()).toHaveLength(0);
+  expect(documentFetches()).toHaveLength(1);
+  expect(seen).toHaveLength(1);
 });
 
 test("a richtext data-edit-value that is not JSON is used as written", async () => {
@@ -1158,13 +1159,14 @@ test("a failed fetch says so for that document only, and Publish stays usable", 
       },
     },
   });
+  await mount();
+  // Their background fetches (for a catch-up) answer 404 here; the sheet's reads are the ones below.
+  await editText("pages/home:title", "One");
+  await editText("artists/finn:name", "Finnegan");
   handlers["GET /api/content/document"] = [
     () => ({ status: 500, json: { error: { code: "internal", message: "Boom" } } }),
     documentResponse(published("artists/finn", 4, { name: "Finnegan" }), { name: "Finn" }),
   ];
-  await mount();
-  await editText("pages/home:title", "One");
-  await editText("artists/finn:name", "Finnegan");
   buttonNamed("Publish").click();
   await settle();
   const sheet = document.querySelector<HTMLElement>(".cms-sheet") as HTMLElement;
@@ -1188,6 +1190,8 @@ test("a failed fetch says so for that document only, and Publish stays usable", 
 test("the sheet fetches afresh on each opening, so another editor's change appears", async () => {
   addToggle("Off");
   handlers["GET /api/content/document"] = [
+    // The background fetch the title's widget starts on opening, for a catch-up.
+    documentResponse(published("pages/home", 3, { title: "Hello", live: false }), { title: "Old", live: false }),
     documentResponse(published("pages/home", 4, { title: "Mine", live: false }), { title: "Old", live: false }),
     documentResponse(published("pages/home", 6, { title: "Theirs", live: true }), { title: "Older", live: false }),
   ];
@@ -1196,12 +1200,12 @@ test("the sheet fetches afresh on each opening, so another editor's change appea
   const opener = buttonNamed("Publish");
   opener.click();
   await settle();
-  expect(documentFetches()).toHaveLength(1);
+  expect(documentFetches()).toHaveLength(2);
   expect(diffLines()).toEqual(['title "Old" → "Mine"']);
   press(document.body, "Escape");
   opener.click();
   await settle();
-  expect(documentFetches()).toHaveLength(2);
+  expect(documentFetches()).toHaveLength(3);
   expect(diffLines()).toEqual(['title "Older" → "Theirs"', "live false → true"]);
 
   // The session's copy moved on, so the next widget opens on it with no further fetch...
@@ -1211,7 +1215,7 @@ test("the sheet fetches afresh on each opening, so another editor's change appea
   field("pages/home:live").click();
   await settle();
   expect(checkbox().checked).toBe(true);
-  expect(documentFetches()).toHaveLength(2);
+  expect(documentFetches()).toHaveLength(3);
 
   // ...but its version did not, so our next write still conflicts with the change we have not seen on the page.
   expect(state?.version).toBe(4);
@@ -1837,6 +1841,416 @@ describe("Unpublish, Restore and Discard send the known version", () => {
     await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
     expect(lede.getAttribute("contenteditable")).not.toBeNull();
     expect(lede.textContent).toBe("Typing");
+  });
+});
+
+describe("a widget left open through a conflict catch-up (#48)", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+
+  /** Opens Title, types `typed` (if any), lets another editor write `change`, then an Unpublish conflicts. */
+  async function catchUpWhileOpen(change: Record<string, unknown>, typed?: string) {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    const title = field("pages/home:title");
+    title.click();
+    if (typed !== undefined) title.textContent = typed;
+    server.theirWrite("pages/home", change);
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    return { server, title };
+  }
+
+  test("leaving it after they changed that field sends nothing and holds it as a conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+    expect(title.textContent).toBe("Mine");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(visibleToast().textContent).toContain("Someone else changed this field");
+    expect(buttonNamed("Take theirs (reload field)", visibleToast())).toBeTruthy();
+  });
+
+  test("Keep mine then sends it on the adopted version", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(posts("field")[0]?.body).toMatchObject({ path: "title", value: "Mine", expectedVersion: 4 });
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("Keep mine after a later save of another field sends the newer version, not the held one", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    // The save's own toast replaces the conflict's; its button still acts on the held slot.
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    await editText("pages/home:lede", "Other"); // writes 4 -> 5
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4, 5]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Other" });
+  });
+
+  test("Take theirs shows theirs and sends nothing", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("when they changed another field, leaving it saves as before", async () => {
+    const { server, title } = await catchUpWhileOpen({ lede: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(posts("field")[0]?.body).toMatchObject({ path: "title", value: "Mine", expectedVersion: 4 });
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Theirs" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("Esc holds nothing and the field shows theirs", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Escape");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("leaving it unchanged holds nothing and the field shows theirs", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" });
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("a second catch-up that changed only another field keeps the first one's conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // v4
+    server.theirWrite("pages/home", { lede: "Later" }); // v5: the session now knows v4's payload
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs", lede: "Later" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("a richtext field opened with no payload loaded saves when they changed only another field", async () => {
+    // The page shows the stored HTML as text: the widget starts from "Lede", never equal to "<p>Lede</p>".
+    const server = serve({ "pages/home": { ...live, payload: { title: "Hello", lede: "<p>Lede</p>" } } });
+    const { api } = await mount();
+    const lede = field("pages/home:lede");
+    lede.click();
+    lede.textContent = "Mine";
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(lede, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(posts("field")[0]?.body).toMatchObject({ path: "lede", value: "Mine", expectedVersion: 4 });
+    expect(lede.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("a field reopened on a failed save resends normally when the catch-up left it alone", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    const { api } = await mount();
+    await editText("pages/home:title", "Mine"); // fails: the page now shows the unsaved "Mine"
+    const title = field("pages/home:title");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    title.click();
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([3, 4]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Theirs" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("Keep mine after a later catch-up that changed the field again gets a fresh conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // holds v4
+    press(title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // v5
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale"); // adopts v5
+    keepMine.click();
+    await settle();
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs again" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(visibleToast().textContent).toContain("Someone else changed this field");
+  });
+
+  test("Keep mine after a refresh that moved the version sends the held version and conflicts", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // holds v4
+    press(title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // v5
+    await handle?.api.refresh(); // the session takes version 5 with no payload
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs again" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("Take theirs after a refresh that moved the version takes the held document, as before", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine"); // holds v4
+    press(title, "Enter");
+    await settle();
+    const takeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    server.theirWrite("pages/home", { lede: "Later" }); // v5
+    await handle?.api.refresh();
+    takeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(4);
+  });
+});
+
+describe("they changed a field: the stored value decides, never the page (#48 rulings)", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+  const conflictToast = "Someone else changed this field";
+
+  async function unpublishConflict(): Promise<void> {
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    await settle();
+  }
+
+  test("a text field whose data-edit-value is the stored text as JSON saves when they changed another field", async () => {
+    const server = serve({ "pages/home": { ...live, payload: { title: "Hello", code: "123" } } });
+    addEditValueField("code", "text", "123");
+    await mount();
+    const code = field("pages/home:code");
+    code.click();
+    code.textContent = "456";
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await unpublishConflict();
+    press(code, "Enter");
+    await settle();
+    expect(posts("field").map((call) => call.body)).toEqual([
+      { key: "pages/home", path: "code", value: "456", expectedVersion: 4 },
+    ]);
+    expect(code.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("host markup inside a text field doesn't make a catch-up of another field a conflict", async () => {
+    const server = serve({ "pages/home": live });
+    field("pages/home:title").innerHTML = `<span class="icon" aria-hidden="true">★</span> Hello`;
+    await mount();
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Mine";
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await unpublishConflict();
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Theirs" });
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("typing exactly their value holds nothing and the field shows theirs", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Theirs";
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict();
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+    expect(toastText()).not.toContain(conflictToast);
+  });
+
+  test("with the stored document's fetch failed, a catch-up holds the open field: the safe side", async () => {
+    const server = serve({ "pages/home": live });
+    const getDocument = handlers["GET /api/content/document"] as Handler;
+    handlers["GET /api/content/document"] = [serverError, getDocument];
+    await mount();
+    const title = field("pages/home:title");
+    title.click();
+    await settle();
+    title.textContent = "Mine";
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await unpublishConflict();
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(toastText()).toContain(conflictToast);
+  });
+
+  test("a failed save, its widget closed, becomes a conflict when a catch-up changed its field", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Mine"); // fails
+    const retry = buttonNamed("Retry", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict();
+    expect(toastText()).toContain(conflictToast);
+    expect(buttonNamed("Keep mine (overwrite)", visibleToast())).toBeTruthy();
+    // The Retry it replaced can't send the value over theirs.
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(field("pages/home:title").textContent).toBe("Mine");
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+  });
+
+  test("a failed save reopened and left with Esc after a catch-up changed its field is held", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Mine"); // fails
+    const title = field("pages/home:title");
+    title.click();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict();
+    press(title, "Escape");
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(title.textContent).toBe("Mine");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(toastText()).toContain(conflictToast);
+  });
+
+  test("a failed save keeps Retry when the catch-up changed another field, and Retry resends", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Mine"); // fails
+    const retry = buttonNamed("Retry", visibleToast());
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await unpublishConflict();
+    expect(toastText()).not.toContain(conflictToast);
+    expect(field("pages/home:title").classList.contains("cms-field--failed")).toBe(true);
+    // The Unpublish failure took the toast's place; its Retry still resends.
+    retry.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([3, 4]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Theirs" });
+  });
+
+  test("destroy with a widget open over their change sends and holds nothing", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Mine";
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict();
+    // Kept past destroy, which takes the chrome off the page, to see that no toast work happens on it.
+    const toastNode = visibleToast();
+    handle?.destroy();
+    handle = undefined;
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(toastNode.textContent).not.toContain(conflictToast);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+  });
+
+  test("a field opened after their unseen save is held, though its fetch already took their payload", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    server.theirWrite("pages/home", { title: "Theirs" }); // v4; the session stays at v3
+    const title = field("pages/home:title");
+    title.click();
+    await settle(); // the background fetch puts v4's payload in the session, which keeps version 3
+    title.textContent = "Mine";
+    await unpublishConflict();
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+    expect(title.textContent).toBe("Mine");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(toastText()).toContain(conflictToast);
+  });
+
+  test("a publish catching up past a sheet-fetched payload holds a failed save of a field they changed", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    await editText("pages/home:lede", "Ours"); // v4: the document is listed in the sheet
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await editText("pages/home:title", "Mine"); // fails
+    const retry = buttonNamed("Retry", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs" }); // v5
+    const sheet = await openPublishSheet(); // the session takes v5's payload, keeping version 4
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish").map((call) => call.body?.expectedVersion)).toEqual([5]);
+    expect(toastText()).toContain(conflictToast);
+    expect(field("pages/home:title").classList.contains("cms-field--failed")).toBe(true);
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(2);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+  });
+
+  test("a failed value equal to theirs is not held: the failure clears and nothing is sent", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Theirs"); // fails
+    const retry = buttonNamed("Retry", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict();
+    const title = field("pages/home:title");
+    expect(toastText()).not.toContain(conflictToast);
+    expect(toastText()).toContain("Unpublish");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+    expect(title.textContent).toBe("Theirs");
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+  });
+
+  test("typing theirs into a held field resolves it without hiding another document's failure toast", async () => {
+    const server = serve({ "pages/home": live, "artists/finn": { publishedPayload: {} } });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Mine"); // fails
+    const title = field("pages/home:title");
+    title.click();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict(); // holds the failed value
+    expect(toastText()).toContain(conflictToast);
+    server.theirWrite("artists/finn", { name: "Theirs" });
+    await expect(handle?.api.unpublish("artists/finn")).rejects.toThrow("Stale");
+    await settle();
+    const finnFailure = toastText();
+    expect(finnFailure).toContain("artists/finn");
+    title.textContent = "Theirs";
+    press(title, "Enter");
+    await settle();
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+    expect(posts("field")).toHaveLength(1);
+    expect(toastText()).toBe(finnFailure);
   });
 });
 
@@ -2958,9 +3372,10 @@ describe("a slow GET documents", () => {
 describe("two reads of one row's diff", () => {
   async function conflictWhileTheFirstReadIsSlow() {
     const server = serve({ "pages/home": { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } } });
-    const reads = gateAnswers("GET /api/content/document");
     await mount();
     await editText("pages/home:title", "One");
+    // Gated after the title's own background fetch (for a catch-up) has answered.
+    const reads = gateAnswers("GET /api/content/document");
     buttonNamed("Publish").click();
     await settle();
     const live = server.stored.get("pages/home") as FakeDocument;

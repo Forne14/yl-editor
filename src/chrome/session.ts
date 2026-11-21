@@ -4,6 +4,7 @@
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
+import { valueAtPath } from "./dom.ts";
 import type { DocumentForPublishResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
@@ -43,6 +44,12 @@ export interface SessionEvents {
 interface MutableDocument extends DocumentState {
   touched: boolean;
   touchedPaths: Set<string>;
+  /**
+   * The version `payload` belongs to. `document` and `documentForPublish` may cache a payload newer than `version` (they
+   * keep our version on purpose), so the payload is the stored value at `version` only when the two are equal. Set
+   * wherever `payload` is, cleared with it.
+   */
+  payloadVersion?: number;
 }
 
 const STORAGE_PREFIX = "yl-editor:touched:";
@@ -101,7 +108,7 @@ export class Session {
       if (existing && existing.version !== summary.version) {
         // Someone wrote since we last looked: what we cached is stale.
         this.fetched.delete(key);
-        existing = { ...existing, payload: undefined, scheduledAt: null };
+        existing = { ...existing, payload: undefined, payloadVersion: undefined, scheduledAt: null };
       }
       const rememberedPaths = summary.isDraft ? remembered[key] : undefined;
       const touchedPaths = new Set([...(existing?.touchedPaths ?? []), ...(rememberedPaths ?? [])]);
@@ -114,6 +121,7 @@ export class Session {
         publishedAt: summary.publishedAt,
         scheduledAt: existing?.scheduledAt ?? null,
         payload: existing?.payload,
+        payloadVersion: existing?.payloadVersion,
         // Not `touchedPaths.size`: an unpublish changes a document without changing a path.
         touched: existing?.touched === true || rememberedPaths !== undefined,
         touchedPaths,
@@ -138,6 +146,7 @@ export class Session {
         if (state) {
           // Keep our version: if the server's is newer, the next write conflicts and the editor chooses.
           state.payload = document.payload;
+          state.payloadVersion = document.version;
           state.publishedAt = document.publishedAt;
           state.scheduledAt = document.scheduledAt;
         }
@@ -182,6 +191,7 @@ export class Session {
         // Keep our version, as `document` does: another editor's change must still conflict with our next write.
         state.isDraft = document.isDraft;
         state.payload = document.payload;
+        state.payloadVersion = document.version;
         state.publishedAt = document.publishedAt;
         state.scheduledAt = document.scheduledAt;
       }
@@ -301,26 +311,59 @@ export class Session {
     return slot.scheduled;
   }
 
-  /** Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing. */
+  /**
+   * Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing, and so does
+   * one for a value since held as a conflict: only Keep mine or Take theirs resolve that.
+   */
   retry(slot: SaveSlot): Promise<void> {
-    if (slot.state !== "failed") return Promise.resolve();
+    if (slot.state !== "failed" || slot.conflict) return Promise.resolve();
     return this.save(slot.key, slot.path, slot.failedValue);
   }
 
-  /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
-  keepMine(slot: SaveSlot): Promise<void> {
-    if (slot.state !== "failed") return Promise.resolve();
-    if (slot.conflict) this.adopt(slot.conflict);
-    return this.retry(slot);
+  /**
+   * Holds `value` as a conflict with `current` without sending it, as a save answered with a 409 would be: the editor
+   * changed the field in a widget opened before the session took `current`, another editor's version that changed the
+   * field too. Keep mine and Take theirs then resolve it.
+   */
+  holdConflict(key: string, path: string, value: unknown, current: WireDocument): void {
+    const slot = this.slot(key, path);
+    slot.failedValue = value;
+    slot.conflict = current;
+    this.setState(slot, "failed");
+    this.events.conflicted(slot, current);
   }
 
-  /** Accept the other edit. Returns the server's value for the field so the caller can repaint it. */
+  /**
+   * Overwrite: adopt the server's version so the next write is accepted, then resend our value. When the session already
+   * holds a newer payload with the held value at this path (its own save of another field since), it sends on that
+   * instead: adopting the held one would move the version back and conflict again for nothing. Any other newer version
+   * may carry a change to this field the editor never saw, so the held one is adopted and the resend conflicts afresh.
+   */
+  keepMine(slot: SaveSlot): Promise<void> {
+    if (slot.state !== "failed") return Promise.resolve();
+    const held = slot.conflict;
+    if (held) {
+      const newer = this.newerPayload(held);
+      const unchanged =
+        newer !== undefined &&
+        JSON.stringify(valueAtPath(newer.payload, slot.path)) === JSON.stringify(valueAtPath(held.payload, slot.path));
+      if (!unchanged) this.adopt(held);
+    }
+    return this.save(slot.key, slot.path, slot.failedValue);
+  }
+
+  /**
+   * Accept the other edit. Returns the server's payload so the caller can repaint the field: the session's own when it
+   * is newer than the held document and known (it is at least as recent), else the held one, which it adopts.
+   */
   takeTheirs(slot: SaveSlot): unknown {
     const current = slot.conflict;
     slot.conflict = undefined;
     slot.failedValue = undefined;
     this.setState(slot, "idle");
     if (!current) return undefined;
+    const newer = this.newerPayload(current);
+    if (newer) return newer.payload;
     this.adopt(current);
     return current.payload;
   }
@@ -334,6 +377,7 @@ export class Session {
     else {
       state.isDraft = false;
       state.payload = undefined;
+      state.payloadVersion = undefined;
       state.publishedAt = null;
       state.scheduledAt = null;
       this.fetched.delete(key);
@@ -353,6 +397,7 @@ export class Session {
     state.version = document.version;
     state.isDraft = document.isDraft;
     state.payload = document.payload;
+    state.payloadVersion = document.version;
     state.publishedAt = document.publishedAt;
     state.scheduledAt = document.scheduledAt;
   }
@@ -368,6 +413,15 @@ export class Session {
     this.adopt(document);
   }
 
+  /**
+   * The stored payload at the version this session knows, or `undefined` when it holds none: never fetched, cleared by
+   * `load`, or fetched at a newer version than it knows (see `payloadVersion`). What a catch-up compares with.
+   */
+  knownPayload(key: string): unknown {
+    const state = this.documents.get(key);
+    return state && state.payloadVersion === state.version ? state.payload : undefined;
+  }
+
   /** Whether a field save of the document is queued or on the wire. Its document may not be `touched` yet. */
   isSaving(key: string): boolean {
     for (const slot of this.slots.values()) if (slot.key === key && (slot.pending || slot.sending)) return true;
@@ -377,6 +431,16 @@ export class Session {
   /** Resolves once every write queued so far for the document has finished. */
   pending(key: string): Promise<void> {
     return this.chains.get(key) ?? Promise.resolve();
+  }
+
+  /**
+   * The session's payload for `document`'s key when the session holds a newer version and knows its payload. A version
+   * moved by `load` alone has no payload, so nothing says what changed since `document`.
+   */
+  private newerPayload(document: WireDocument): { payload: unknown } | undefined {
+    const state = this.documents.get(document.key);
+    if (!state || state.version <= document.version || state.payload === undefined) return undefined;
+    return { payload: state.payload };
   }
 
   private noteWrite(key: string): void {

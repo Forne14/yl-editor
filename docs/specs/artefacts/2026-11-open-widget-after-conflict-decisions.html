@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conflict hold decisions</title>
+    <style>
+      :root {
+        --bg: #f4f5f8;
+        --card: #fff;
+        --fg: #16181d;
+        --muted: #5b6170;
+        --line: #e3e5eb;
+        --pick: #2557d6;
+        --pick-bg: #e8edfb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1116;
+          --card: #1b1d24;
+          --fg: #f3f4f8;
+          --muted: #aab0bf;
+          --line: #2a2d36;
+          --pick: #6b9bff;
+          --pick-bg: #1f2a44;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.55 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 1.15rem;
+        margin: 44px 0 6px;
+      }
+      p,
+      li {
+        max-width: 74ch;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .options {
+        display: grid;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .opt {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+      }
+      .opt.pick {
+        border: 2px solid var(--pick);
+      }
+      .opt h3 {
+        margin: 0 0 6px;
+        font-size: 1rem;
+      }
+      .opt p {
+        margin: 4px 0;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        background: var(--pick-bg);
+        color: var(--pick);
+        font-weight: 600;
+      }
+      .who {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      code {
+        font-size: 0.88em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Three decisions behind #48</h1>
+      <p class="muted">
+        PR #50 (one hold for a field left open through a conflict) implements your ruling C: a field left open while
+        another editor's change arrives is held as a conflict, with Keep mine / Take theirs. Two review rounds then
+        found the same kind of bug, in the same place. The bugs come from three questions the ruling didn't settle. No
+        new copy and no visual change in any option: they all use the conflict toast you approved.
+      </p>
+
+      <h2>1. How does the chrome know the other editor changed <em>this</em> field?</h2>
+      <p>
+        Ruling C holds only when their version changed the open field. To tell, the chrome compares their value with the
+        value it had before. Often it doesn't have that value: a text field opens straight from the page's text, and the
+        document itself is only fetched for popovers. So today the chrome guesses from the page (the visible text, or
+        <code>data-edit-value</code>). Each review round found a page where the guess is wrong: a number in the
+        attribute but a string stored, an icon inside the heading, rich text the site renders differently. Each wrong
+        guess shows Amira “Someone else changed this field” when nobody did.
+      </p>
+      <div class="options">
+        <div class="opt pick">
+          <h3>A · Fetch the stored value whenever a field opens <span class="tag">recommended</span></h3>
+          <p>
+            The field still opens at once from the page's text. In the background the chrome fetches the document once
+            (it already does for popovers, and caches it for the session). The comparison then uses the stored value,
+            never the page. No guessing code.
+          </p>
+          <p class="who">
+            Editor: a conflict toast only when the field really changed. Site developer: nothing new. One extra request
+            per document on the first edit.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>B · Hold whenever a conflict arrives under an open field</h3>
+          <p>
+            Don't compare at all. Any conflict on the document holds the open field, even if Ben changed a different
+            field.
+          </p>
+          <p class="who">
+            Editor: sometimes told “Someone else changed this field” when Ben changed another one. Simplest code.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>C · Keep guessing from the page</h3>
+          <p>What the PR does now. Every site's markup is a new way to get it wrong.</p>
+          <p class="who">Editor: false conflicts on some sites. Not recommended.</p>
+        </div>
+      </div>
+
+      <h2>2. A save that already failed, when their change to that field arrives</h2>
+      <p>
+        Amira's save of the title failed (network error), so it shows Retry. Then Ben's new title arrives through a
+        conflict. Today Retry, or reopening and leaving the field, sends her title on Ben's version and overwrites his
+        unseen. This was here before #48; review round 2 found the open-field form of it.
+      </p>
+      <div class="options">
+        <div class="opt pick">
+          <h3>A · It becomes a conflict <span class="tag">recommended</span></h3>
+          <p>
+            The Retry toast is replaced by the conflict toast: Keep mine (overwrite) / Take theirs (reload field). Same
+            rule as an open field, so one rule covers both.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>B · Leave it as a failed save</h3>
+          <p>Retry overwrites Ben's change. Ruled out by #48's own aim, unless you see a reason to keep it.</p>
+        </div>
+      </div>
+
+      <h2>3. The site closes the editor while a value is held</h2>
+      <p>
+        The site calls <code>destroy()</code> (a single-page site navigating away) while Amira's held value is waiting
+        for Keep mine or Take theirs, or while the field is still open over Ben's change. The toast goes away with the
+        chrome. Before #48 her value was saved over Ben's.
+      </p>
+      <div class="options">
+        <div class="opt pick">
+          <h3>A · Drop it, as an unsaved field in a closed tab is <span class="tag">recommended</span></h3>
+          <p>
+            Nothing is sent. Documented in <code>docs/chrome.md</code>. Ben's change stays. Amira loses her text, as she
+            would by closing the tab.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>B · Save it anyway</h3>
+          <p>The behaviour before #48: Ben's change is overwritten and nobody is told.</p>
+        </div>
+        <div class="opt">
+          <h3>C · Tell the site</h3>
+          <p>
+            A new event carries the held value so the site can keep it or warn. A new public surface to design and
+            document; more than this ticket needs.
+          </p>
+        </div>
+      </div>
+
+      <h2>Fixed meanwhile, no decision needed</h2>
+      <ul>
+        <li>If Amira typed exactly Ben's value, nothing is held: the field just shows it.</li>
+      </ul>
+    </main>
+  </body>
+</html>
