@@ -44,6 +44,12 @@ export interface SessionEvents {
 interface MutableDocument extends DocumentState {
   touched: boolean;
   touchedPaths: Set<string>;
+  /**
+   * The version `payload` belongs to. `document` and `documentForPublish` may cache a payload newer than `version` (they
+   * keep our version on purpose), so the payload is the stored value at `version` only when the two are equal. Set
+   * wherever `payload` is, cleared with it.
+   */
+  payloadVersion?: number;
 }
 
 const STORAGE_PREFIX = "yl-editor:touched:";
@@ -102,7 +108,7 @@ export class Session {
       if (existing && existing.version !== summary.version) {
         // Someone wrote since we last looked: what we cached is stale.
         this.fetched.delete(key);
-        existing = { ...existing, payload: undefined, scheduledAt: null };
+        existing = { ...existing, payload: undefined, payloadVersion: undefined, scheduledAt: null };
       }
       const rememberedPaths = summary.isDraft ? remembered[key] : undefined;
       const touchedPaths = new Set([...(existing?.touchedPaths ?? []), ...(rememberedPaths ?? [])]);
@@ -115,6 +121,7 @@ export class Session {
         publishedAt: summary.publishedAt,
         scheduledAt: existing?.scheduledAt ?? null,
         payload: existing?.payload,
+        payloadVersion: existing?.payloadVersion,
         // Not `touchedPaths.size`: an unpublish changes a document without changing a path.
         touched: existing?.touched === true || rememberedPaths !== undefined,
         touchedPaths,
@@ -139,6 +146,7 @@ export class Session {
         if (state) {
           // Keep our version: if the server's is newer, the next write conflicts and the editor chooses.
           state.payload = document.payload;
+          state.payloadVersion = document.version;
           state.publishedAt = document.publishedAt;
           state.scheduledAt = document.scheduledAt;
         }
@@ -183,6 +191,7 @@ export class Session {
         // Keep our version, as `document` does: another editor's change must still conflict with our next write.
         state.isDraft = document.isDraft;
         state.payload = document.payload;
+        state.payloadVersion = document.version;
         state.publishedAt = document.publishedAt;
         state.scheduledAt = document.scheduledAt;
       }
@@ -368,6 +377,7 @@ export class Session {
     else {
       state.isDraft = false;
       state.payload = undefined;
+      state.payloadVersion = undefined;
       state.publishedAt = null;
       state.scheduledAt = null;
       this.fetched.delete(key);
@@ -387,6 +397,7 @@ export class Session {
     state.version = document.version;
     state.isDraft = document.isDraft;
     state.payload = document.payload;
+    state.payloadVersion = document.version;
     state.publishedAt = document.publishedAt;
     state.scheduledAt = document.scheduledAt;
   }
@@ -400,6 +411,15 @@ export class Session {
     const review = this.reviews.get(document.key);
     if (review && expected !== undefined && review.version === expected) review.version = document.version;
     this.adopt(document);
+  }
+
+  /**
+   * The stored payload at the version this session knows, or `undefined` when it holds none: never fetched, cleared by
+   * `load`, or fetched at a newer version than it knows (see `payloadVersion`). What a catch-up compares with.
+   */
+  knownPayload(key: string): unknown {
+    const state = this.documents.get(key);
+    return state && state.payloadVersion === state.version ? state.payload : undefined;
   }
 
   /** Whether a field save of the document is queued or on the wire. Its document may not be `touched` yet. */

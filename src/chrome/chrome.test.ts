@@ -2170,6 +2170,88 @@ describe("they changed a field: the stored value decides, never the page (#48 ru
     expect(toastNode.textContent).not.toContain(conflictToast);
     expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
   });
+
+  test("a field opened after their unseen save is held, though its fetch already took their payload", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    server.theirWrite("pages/home", { title: "Theirs" }); // v4; the session stays at v3
+    const title = field("pages/home:title");
+    title.click();
+    await settle(); // the background fetch puts v4's payload in the session, which keeps version 3
+    title.textContent = "Mine";
+    await unpublishConflict();
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+    expect(title.textContent).toBe("Mine");
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(toastText()).toContain(conflictToast);
+  });
+
+  test("a publish catching up past a sheet-fetched payload holds a failed save of a field they changed", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    await editText("pages/home:lede", "Ours"); // v4: the document is listed in the sheet
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await editText("pages/home:title", "Mine"); // fails
+    const retry = buttonNamed("Retry", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs" }); // v5
+    const sheet = await openPublishSheet(); // the session takes v5's payload, keeping version 4
+    buttonNamed("Publish", sheet).click();
+    await settle();
+    expect(posts("publish").map((call) => call.body?.expectedVersion)).toEqual([5]);
+    expect(toastText()).toContain(conflictToast);
+    expect(field("pages/home:title").classList.contains("cms-field--failed")).toBe(true);
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(2);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+  });
+
+  test("a failed value equal to theirs is not held: the failure clears and nothing is sent", async () => {
+    const server = serve({ "pages/home": live });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Theirs"); // fails
+    const retry = buttonNamed("Retry", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict();
+    const title = field("pages/home:title");
+    expect(toastText()).not.toContain(conflictToast);
+    expect(toastText()).toContain("Unpublish");
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+    expect(title.textContent).toBe("Theirs");
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+  });
+
+  test("typing theirs into a held field resolves it without hiding another document's failure toast", async () => {
+    const server = serve({ "pages/home": live, "artists/finn": { publishedPayload: {} } });
+    const guardedField = handlers["POST /api/content/field"] as Handler;
+    handlers["POST /api/content/field"] = [serverError, guardedField];
+    await mount();
+    await editText("pages/home:title", "Mine"); // fails
+    const title = field("pages/home:title");
+    title.click();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await unpublishConflict(); // holds the failed value
+    expect(toastText()).toContain(conflictToast);
+    server.theirWrite("artists/finn", { name: "Theirs" });
+    await expect(handle?.api.unpublish("artists/finn")).rejects.toThrow("Stale");
+    await settle();
+    const finnFailure = toastText();
+    expect(finnFailure).toContain("artists/finn");
+    title.textContent = "Theirs";
+    press(title, "Enter");
+    await settle();
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+    expect(posts("field")).toHaveLength(1);
+    expect(toastText()).toBe(finnFailure);
+  });
 });
 
 describe("a bulk publish with a failure", () => {
