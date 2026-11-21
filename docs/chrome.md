@@ -196,11 +196,7 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   `api.publish` rejects and its toast has a **Review changes** button.
 - Unpublish, Restore and Discard send the session's known version. On a conflict a toast says the document changed, the
   session takes the server's copy and repaints the fields from it, and nothing else happens. A field with a save on its
-  way or an open widget keeps what the editor has. When the server's copy changed the field under an open widget, what
-  the editor commits from that widget is not sent: whether they leave it or a list swap replaces it, it is held as a
-  field `conflict` (failed outline, **Keep mine (overwrite)** / **Take theirs (reload field)**), because sent on the
-  copy just taken it would overwrite the other editor's change unseen. Esc, or leaving it unchanged, shows their value.
-  If their copy left that field as the widget found it, the commit saves as usual.
+  way or an open widget keeps what the editor has. Whether the other editor changed a field is decided from the stored value alone: the one the session held before the catch-up against theirs, never the page's text or `data-edit-value`. Opening any field fetches its document in the background (once per document, cached) so that value is known; if it still isn't when the conflict arrives, the field counts as changed. When they changed a field: what the editor commits from a widget open on it (leaving it, or a list swap replacing it) is not sent but held as a field `conflict` (failed outline, **Keep mine (overwrite)** / **Take theirs (reload field)**), because sent on the copy just taken it would overwrite their change unseen; Esc, leaving it unchanged, or typing exactly their value shows theirs. A failed save of that field becomes the same conflict, and its Retry no longer sends. A field they didn't change saves, and retries, as usual. `destroy()` while a widget is open over their change sends nothing: the edit is dropped, as an unsaved field is when the tab closes.
 - `api.publish(key, { at })` schedules whatever `scheduling` says, and refuses nothing: a host panel checks its own time.
 - An existing `scheduledAt` always shows in the bar as "<key> scheduled for <time>" with **Publish now**, which
   publishes the draft immediately and clears the schedule, by the rule above.
