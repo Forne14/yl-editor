@@ -266,6 +266,51 @@ function cellLines(fields: readonly Box[], edge: { left: number; right: number }
   return { vertical: xs, horizontal };
 }
 
+type Axis = "column" | "row" | "grid";
+
+interface Cell {
+  row: HTMLElement;
+  band: HTMLElement;
+  tools: HTMLElement | undefined;
+  /** An item, not the Add row. */
+  item: boolean;
+  box: Box;
+}
+
+interface Line {
+  top: number;
+  bottom: number;
+  /** Left to right. */
+  cells: Cell[];
+}
+
+/**
+ * Cells grouped into lines, and the list's axis from its items' boxes (ruling D10 on #28). A cell joins a line when
+ * it shares more than a pixel of height with it; lines run top to bottom, cells left to right, whatever the order of
+ * the DOM (a drag moves an item's element before anything is written). A column has one item per line, a row has
+ * every item on one line, a grid wraps. Fewer than two items is a column.
+ */
+function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Line[]; axis: Axis } {
+  const group = <T extends { box: Box }>(all: readonly T[]) => {
+    const lines: { top: number; bottom: number; cells: T[] }[] = [];
+    for (const cell of [...all].sort((a, b) => a.box.t - b.box.t || a.box.l - b.box.l)) {
+      const last = lines.at(-1);
+      if (last && cell.box.t < last.bottom - 1) {
+        last.cells.push(cell);
+        last.bottom = Math.max(last.bottom, cell.box.b);
+      } else {
+        lines.push({ top: cell.box.t, bottom: cell.box.b, cells: [cell] });
+      }
+    }
+    for (const line of lines) line.cells.sort((a, b) => a.box.l - b.box.l);
+    return lines;
+  };
+  const across = group(itemBoxes.map((box) => ({ box })));
+  const crowded = across.some((line) => line.cells.length > 1);
+  const axis: Axis = !crowded ? "column" : across.length === 1 ? "row" : "grid";
+  return { lines: group(cells), axis };
+}
+
 /** Adds the outline, the tag, each item's toolbar and band, and the Add row. */
 export function attachList(record: ListRecord, strings: Strings, handlers: ListHandlers): void {
   record.detach?.();
@@ -316,7 +361,9 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       const others = items.filter((other) => other !== item).map((other) => other.element);
       const before = others.find((other) => {
         const box = other.getBoundingClientRect();
-        return move.clientY < box.top + box.height / 2;
+        if (axis === "column") return move.clientY < box.top + box.height / 2;
+        // Along a line: above this item's line, or on it and left of its middle.
+        return move.clientY < box.top || (move.clientY < box.bottom && move.clientX < box.left + box.width / 2);
       });
       if (before) {
         if (before.previousSibling !== node) before.before(node);
@@ -540,57 +587,86 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   }
 
   const separators: HTMLElement[] = [];
+  let axis: Axis = "column";
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
     const origin = host.getBoundingClientRect();
     const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
-    const rows = [...items.map((item) => item.element), ...(addRow ? [addRow] : [])];
-    const boxes = rows.map((row) => boxOf(row, origin));
-    const halves = boxes.slice(0, -1).map((box, index) => Math.max(((boxes[index + 1]?.t ?? box.b) - box.b) / 2, 0));
+    const cells: Cell[] = [
+      ...items.map((item, index) => ({ row: item.element, band: bands[index], tools: toolbars[index], item: true })),
+      ...(addRow ? [{ row: addRow, band: addBand, tools: undefined, item: false }] : []),
+    ].flatMap((cell) => (cell.band ? [{ ...cell, band: cell.band, box: boxOf(cell.row, origin) }] : []));
+    const { lines, axis: found } = layOut(
+      cells.filter((cell) => cell.item).map((cell) => cell.box),
+      cells,
+    );
+    axis = found;
+    host.classList.toggle("cms-list--row", axis === "row");
+    host.classList.toggle("cms-list--grid", axis === "grid");
+    // Halfway to the next line, or the outline's padding at the ends.
+    const halves = lines.map((line, index) => {
+      const next = lines[index + 1];
+      return next ? Math.max((next.top - line.bottom) / 2, 0) : pad;
+    });
     const lead = Math.max(halves[0] ?? pad, pad);
-    const firstTop = (boxes[0]?.t ?? 0) - lead;
+    const firstTop = (lines[0]?.top ?? 0) - lead;
     frame.style.setProperty("--cms-frame-top", px(firstTop));
-    frame.style.setProperty("--cms-frame-height", px((boxes.at(-1)?.b ?? 0) + pad - firstTop));
-    rows.forEach((row, index) => {
-      const box = boxes[index] as Box;
-      const above = index === 0 ? lead : (halves[index - 1] ?? 0);
-      const below = halves[index] ?? pad;
-      const band = index < bands.length ? bands[index] : addBand;
-      if (!band) return;
-      // Inside the outline's 2px border on each side.
-      const left = -pad + 2 - box.l;
-      const width = origin.width + 2 * pad - 4;
-      band.style.setProperty("--cms-band-top", px(-above));
-      band.style.setProperty("--cms-band-bottom", px(-below));
-      band.style.setProperty("--cms-band-left", px(left));
-      band.style.setProperty("--cms-band-width", px(width));
-      const tools = toolbars[index];
-      if (tools) {
-        tools.style.setProperty("--cms-tools-above", px(above));
-        tools.style.setProperty("--cms-tools-right", px(origin.width - box.r));
-      }
-      if (index >= items.length) return;
-      const itemOrigin = row.getBoundingClientRect();
-      const fields = [...row.querySelectorAll("[data-edit-field]")]
-        .filter((node) => node.closest(".cms-item") === row)
-        .map((node) => boxOf(node, itemOrigin));
-      const lines = cellLines(fields, { left, right: left + width });
-      for (const x of lines.vertical) {
-        const line = element("span", { class: "cms-root cms-item__sep cms-item__sep--v", "aria-hidden": "true" });
-        line.style.setProperty("--cms-sep-x", px(x));
-        line.style.setProperty("--cms-sep-top", px(-above + 1));
-        line.style.setProperty("--cms-sep-length", px(box.b - box.t + above + below - 1));
-        row.append(line);
-        separators.push(line);
-      }
-      for (const { x, y, w } of lines.horizontal) {
-        const line = element("span", { class: "cms-root cms-item__sep cms-item__sep--h", "aria-hidden": "true" });
-        line.style.setProperty("--cms-sep-x", px(x));
-        line.style.setProperty("--cms-sep-top", px(y));
-        line.style.setProperty("--cms-sep-length", px(w));
-        row.append(line);
-        separators.push(line);
-      }
+    frame.style.setProperty("--cms-frame-height", px((lines.at(-1)?.bottom ?? 0) + pad - firstTop));
+    // Inside the outline's 2px border on each side.
+    const innerLeft = -pad + 2;
+    const innerRight = origin.width + pad - 2;
+    lines.forEach((line, lineIndex) => {
+      const above = lineIndex === 0 ? lead : (halves[lineIndex - 1] ?? 0);
+      const below = halves[lineIndex] ?? pad;
+      const top = line.top - above;
+      const bottom = line.bottom + below;
+      line.cells.forEach((cell, at) => {
+        const { box, band, row, tools } = cell;
+        const previous = line.cells[at - 1];
+        const next = line.cells[at + 1];
+        const left = previous ? (previous.box.r + box.l) / 2 : innerLeft;
+        const right = next ? (box.r + next.box.l) / 2 : innerRight;
+        const hasTop = lineIndex > 0;
+        const hasLeft = at > 0;
+        band.classList.toggle("cms-item__band--top", hasTop);
+        band.classList.toggle("cms-item__band--left", hasLeft);
+        band.style.setProperty("--cms-band-top", px(top - box.t));
+        band.style.setProperty("--cms-band-bottom", px(box.b - bottom));
+        band.style.setProperty("--cms-band-left", px(left - box.l));
+        band.style.setProperty("--cms-band-width", px(right - left));
+        if (tools) {
+          // On the item's leading line: the top left in a row or grid, the top right of the outline in a column.
+          tools.style.setProperty("--cms-tools-above", px(box.t - top));
+          tools.style.setProperty("--cms-tools-right", axis === "column" ? px(origin.width - box.r) : "auto");
+          tools.style.setProperty("--cms-tools-left", axis === "column" ? "auto" : px(left + pad - box.l));
+        }
+        if (!cell.item) return;
+        const itemOrigin = row.getBoundingClientRect();
+        const fields = [...row.querySelectorAll("[data-edit-field]")]
+          .filter((node) => node.closest(".cms-item") === row)
+          .map((node) => boxOf(node, itemOrigin));
+        // The cell's own top and left borders take a pixel; field lines start past them.
+        const lineTop = top - box.t + (hasTop ? 1 : 0);
+        const cellLeft = left - box.l + (hasLeft ? 1 : 0);
+        const cellRight = right - box.l;
+        const inside = cellLines(fields, { left: cellLeft, right: cellRight });
+        for (const x of inside.vertical) {
+          const sep = element("span", { class: "cms-root cms-item__sep cms-item__sep--v", "aria-hidden": "true" });
+          sep.style.setProperty("--cms-sep-x", px(x));
+          sep.style.setProperty("--cms-sep-top", px(lineTop));
+          sep.style.setProperty("--cms-sep-length", px(bottom - top - (hasTop ? 1 : 0)));
+          row.append(sep);
+          separators.push(sep);
+        }
+        for (const { x, y, w } of inside.horizontal) {
+          const sep = element("span", { class: "cms-root cms-item__sep cms-item__sep--h", "aria-hidden": "true" });
+          sep.style.setProperty("--cms-sep-x", px(x));
+          sep.style.setProperty("--cms-sep-top", px(y));
+          sep.style.setProperty("--cms-sep-length", px(w));
+          row.append(sep);
+          separators.push(sep);
+        }
+      });
     });
   };
   let frameRequest: number | undefined;
@@ -628,7 +704,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       node.removeAttribute("data-cms-open");
       if (!had && node.classList.length === 0) node.removeAttribute("class");
     }
-    host.classList.remove("cms-list");
+    host.classList.remove("cms-list", "cms-list--row", "cms-list--grid");
     if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
     record.detach = undefined;
     record.addButton = undefined;

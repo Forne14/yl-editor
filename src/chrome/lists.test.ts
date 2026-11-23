@@ -1382,3 +1382,194 @@ describe("drag to reorder and date order (#43)", () => {
     });
   });
 });
+
+describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #28)", () => {
+  const HOST_WIDTH = 600;
+  const three = () => {
+    artists = [
+      { _key: "a", name: "Mara" },
+      { _key: "b", name: "Tobias" },
+      { _key: "c", name: "Ines" },
+    ];
+    published = artists.map((artist) => ({ ...artist }));
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+  };
+  type Place = [x: number, y: number, width: number, height: number];
+  const box = (place: Place) => () => new DOMRect(...place);
+  /** Gives the host, each item and the Add row a box; the next paint reads them. */
+  const lay = (places: Place[], add: Place) => {
+    const bottom = Math.max(...places.map(([, y, , height]) => y + height), add[1] + add[3]);
+    list().getBoundingClientRect = box([0, 0, HOST_WIDTH, bottom]);
+    items().forEach((item, index) => {
+      const place = places[index];
+      if (place) item.getBoundingClientRect = box(place);
+    });
+    const addRow = list().querySelector<HTMLElement>(".cms-list__add");
+    if (addRow) addRow.getBoundingClientRect = box(add);
+  };
+  const repaint = async () => {
+    window.dispatchEvent(new Event("resize"));
+    await settle();
+  };
+  const band = (index: number) => items()[index]?.querySelector<HTMLElement>(".cms-item__band") as HTMLElement;
+  const addBand = () => list().querySelector<HTMLElement>(".cms-list__add .cms-item__band") as HTMLElement;
+  const tools = (index: number) => items()[index]?.querySelector<HTMLElement>(".cms-item__tools") as HTMLElement;
+  const prop = (node: HTMLElement, name: string) => node.style.getPropertyValue(name);
+  const column: Place[] = [
+    [0, 0, 300, 100],
+    [0, 150, 300, 100],
+    [0, 300, 300, 100],
+  ];
+  const row: Place[] = [
+    [0, 0, 180, 100],
+    [200, 0, 180, 100],
+    [400, 0, 180, 100],
+  ];
+  const grid: Place[] = [
+    [0, 0, 280, 100],
+    [300, 0, 280, 100],
+    [0, 140, 280, 100],
+  ];
+  const lines = (node: HTMLElement) => ({
+    top: node.classList.contains("cms-item__band--top"),
+    left: node.classList.contains("cms-item__band--left"),
+  });
+  const axis = () => ({
+    row: list().classList.contains("cms-list--row"),
+    grid: list().classList.contains("cms-list--grid"),
+  });
+
+  test("items stacked one under another are a column: a line above every item but the first", async () => {
+    three();
+    await mount();
+    lay(column, [0, 420, 300, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: false, grid: false });
+    expect([0, 1, 2].map((index) => lines(band(index)))).toEqual([
+      { top: false, left: false },
+      { top: true, left: false },
+      { top: true, left: false },
+    ]);
+    expect(lines(addBand())).toEqual({ top: true, left: false });
+  });
+
+  test("items side by side on one line are a row: a line left of every item but the first", async () => {
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: true, grid: false });
+    expect([0, 1, 2].map((index) => lines(band(index)))).toEqual([
+      { top: false, left: false },
+      { top: false, left: true },
+      { top: false, left: true },
+    ]);
+    // Cells tile the outline: each starts midway between two items; the last reaches the outline's inner edge.
+    expect(prop(band(0), "--cms-band-left")).toBe("-10px");
+    expect(prop(band(1), "--cms-band-left")).toBe("-10px");
+    expect(prop(band(1), "--cms-band-width")).toBe("200px");
+    expect(prop(band(2), "--cms-band-width")).toBe("220px");
+  });
+
+  test("a wrapped row is a grid: lines between items on a line and between lines, none doubled", async () => {
+    three();
+    await mount();
+    lay(grid, [0, 260, 580, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: false, grid: true });
+    expect([0, 1, 2].map((index) => lines(band(index)))).toEqual([
+      { top: false, left: false },
+      { top: false, left: true },
+      { top: true, left: false },
+    ]);
+    // The first line's cells end halfway to the second line; the second line's cell starts there.
+    expect(prop(band(0), "--cms-band-bottom")).toBe("-20px");
+    expect(prop(band(2), "--cms-band-top")).toBe("-20px");
+  });
+
+  test("the toolbar sits at the top left of an item in a row, at the right in a column", async () => {
+    three();
+    await mount();
+    lay(column, [0, 420, 300, 40]);
+    await repaint();
+    expect(prop(tools(1), "--cms-tools-left")).toBe("auto");
+    expect(prop(tools(1), "--cms-tools-right")).toBe(`${HOST_WIDTH - 300}px`);
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    expect(prop(tools(1), "--cms-tools-right")).toBe("auto");
+    // The cell starts at x = 190 and the item at 200; the toolbar is one outline padding in from the line.
+    expect(prop(tools(1), "--cms-tools-left")).toBe("2px");
+  });
+
+  test("it repaints when the layout changes axis, and back", async () => {
+    three();
+    await mount();
+    lay(column, [0, 420, 300, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: false, grid: false });
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: true, grid: false });
+    lay(grid, [0, 260, 580, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: false, grid: true });
+    lay(column, [0, 420, 300, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: false, grid: false });
+    expect(lines(band(1))).toEqual({ top: true, left: false });
+  });
+
+  test("a list with one item is a column", async () => {
+    artists = [{ _key: "a", name: "Mara" }];
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    await mount();
+    lay([[0, 0, 300, 100]], [0, 120, 300, 40]);
+    await repaint();
+    expect(axis()).toEqual({ row: false, grid: false });
+  });
+
+  test("detaching takes the axis class back off the host", async () => {
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    handle?.destroy();
+    handle = undefined;
+    expect(list().hasAttribute("class")).toBe(false);
+  });
+
+  test("a field line inside a row item starts one past the cell's own left line", async () => {
+    const h3 = items()[1]?.querySelector<HTMLElement>("h3") as HTMLElement;
+    const second = h3.cloneNode(true) as HTMLElement;
+    second.setAttribute("data-edit-field", (h3.getAttribute("data-edit-field") ?? "").replace(/name$/, "role"));
+    items()[1]?.append(second);
+    await mount();
+    lay(
+      [
+        [0, 0, 180, 100],
+        [200, 0, 180, 100],
+      ],
+      [0, 140, 580, 40],
+    );
+    h3.getBoundingClientRect = box([200, 10, 180, 20]);
+    second.getBoundingClientRect = box([200, 50, 180, 20]);
+    await repaint();
+    const horizontal = items()[1]?.querySelector<HTMLElement>(".cms-item__sep--h") as HTMLElement;
+    // Item 1's cell spans x = 190..610, so relative to the item it starts at -10; the line starts at -9.
+    expect(prop(horizontal, "--cms-sep-x")).toBe("-9px");
+    expect(prop(horizontal, "--cms-sep-length")).toBe("419px");
+  });
+
+  test("dragging in a row follows the pointer along the line", async () => {
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    toolButton(0, "grip").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+    list().dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 420, clientY: 50 }));
+    expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
+    list().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    await settle();
+    expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 1 }]);
+  });
+});
