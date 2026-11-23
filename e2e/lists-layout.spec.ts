@@ -123,7 +123,9 @@ test.describe("a list laid out sideways", () => {
     await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
     await page.mouse.down();
     await page.mouse.move(last.x + last.width - 4, line.y + line.height / 2, { steps: 15 });
-    await expect(first).toHaveClass(/cms-item--dragging/);
+    // By key: `first` now resolves to whichever item leads, and Ana has already moved.
+    const ana = page.locator('#crew-list [data-edit-item="pages/crew:crew[_key=ana]"]');
+    await expect(ana).toHaveClass(/cms-item--dragging/);
     await page.mouse.up();
     await expect.poll(() => crewNames(page)).toEqual(["Ben", "Cleo", "Dee", "Ana"]);
     await expectDraft(demo, CREW, "crew", ["Ben", "Cleo", "Dee", "Ana"]);
