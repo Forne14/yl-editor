@@ -3,7 +3,7 @@ import { diffPayloads, type DiffEntry } from "../diff.ts";
 import { renderRichText } from "../richtext/render.ts";
 import { ContentRequestError, createContentClient } from "../http/client.ts";
 import type { WireArrayOp } from "../http/wire-types.ts";
-import { Disposer, button, element, isItemKey, sameValue, uniqueId, valueAtPath } from "./dom.ts";
+import { Disposer, button, element, isItemKey, uniqueId, valueAtPath } from "./dom.ts";
 import { Badge, attach, groupByDocument, scanFields, showState, type FieldRecord } from "./fields.ts";
 import {
   attachList,
@@ -16,7 +16,7 @@ import {
   type ItemRecord,
   type ListRecord,
 } from "./lists.ts";
-import { ChangesUnavailableError, Session, type CatchUp, type Review, type SaveSlot } from "./session.ts";
+import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
   DocumentState,
@@ -37,15 +37,14 @@ interface ActiveWidget {
   handle: WidgetHandle | undefined;
   closed: boolean;
   slot: SaveSlot;
-  /** The newest document a catch-up took while it was open, once one changed its field (see `repaint`). */
+  /** Marked by a catch-up while it was open: the document adopted then (see `guarded`). */
   theirs?: WireDocument;
 }
 
 const TEXT_TYPES = new Set(["text", "richtext"]);
 
-/** The text plain `render` puts on the page for a value. */
-function plainShown(value: unknown): string {
-  return Array.isArray(value) ? value.join(", ") : value === null || typeof value === "object" ? "" : String(value);
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isConflict(error: unknown): error is ContentRequestError {
@@ -214,17 +213,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let active: ActiveWidget | null = null;
   let editing = true;
   let destroyed = false;
-  /** Set while `Session.catchUp` runs, so the conflict toast of a value it holds comes after its action's toasts. */
-  let catchingUp = false;
-  /** How many actions (`runAction`) are running; a catch-up's conflict toasts wait until none is. */
-  let acting = 0;
-  /**
-   * Slots a catch-up held while an action ran, shown when the last running action has shown its own toasts. Bound: one
-   * entry per slot, all cleared at that moment; no timer.
-   */
-  const deferredConflicts = new Set<SaveSlot>();
-  /** Per slot id, the token of the last conflict toast shown for it: Take theirs hides that one only. One per slot. */
-  const conflictToasts = new Map<string, number>();
   let openTicket = 0;
   /** The toast that reported the last failed load, hidden once a load succeeds. */
   let loadFailureToast: number | undefined;
@@ -232,8 +220,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const session = new Session(
     client,
     {
-      // Destroyed, the records are detached and the chrome gone: a save landing later touches nothing on the page.
       stateChanged(slot) {
+        // A save that lands after destroy: the markup is the host's again.
         if (destroyed) return;
         for (const record of recordsFor(slot)) showState(record, slot.state);
         if (slot.state === "saving") toast.show(strings.saving, "saving");
@@ -248,60 +236,19 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (slot.state === "saved") toast.show(strings.saved, "saved");
       },
       failed(slot, error) {
-        if (destroyed) return;
         toast.show(format(strings.saveFailed, { message: errorMessage(error, strings) }), "error", [
           { label: strings.retry, onClick: () => void session.retry(slot), variant: "primary" },
         ]);
       },
       conflicted(slot) {
-        if (destroyed) return;
-        // A text field already shows what the editor typed; a popover's field shows the value held, as a failed one.
-        for (const record of recordsFor(slot)) {
-          if (!TEXT_TYPES.has(record.info.type)) render(record, slot.failedValue);
-        }
-        // Held by a catch-up: the action that caught up (or the bulk run it is part of) shows its own toasts first,
-        // and this one must stay in view over them (see `runAction`).
-        if (catchingUp && acting > 0) deferredConflicts.add(slot);
-        else showConflict(slot);
+        toast.show(strings.conflict, "error", [
+          { label: strings.keepMine, onClick: () => void session.keepMine(slot), variant: "danger" },
+          { label: strings.takeTheirs, onClick: () => takeTheirs(slot), variant: "primary" },
+        ]);
       },
     },
     base,
   );
-
-  function showConflict(slot: SaveSlot): void {
-    conflictToasts.set(
-      slot.id,
-      toast.show(strings.conflict, "error", [
-        { label: strings.keepMine, onClick: () => keepMine(slot), variant: "danger" },
-        { label: strings.takeTheirs, onClick: () => takeTheirs(slot), variant: "primary" },
-      ]),
-    );
-  }
-
-  function keepMine(slot: SaveSlot): void {
-    // As Take theirs does: a widget open on the field would commit later over the value being sent now.
-    if (slot.conflict && active?.slot === slot) closeActive(false);
-    void session.keepMine(slot);
-  }
-
-  /**
-   * Runs one action that may catch up (a lifecycle write, a list write, a bulk run), toasts included. Conflicts its
-   * catch-ups hold are shown once no action is running, after every toast those actions showed.
-   */
-  async function runAction<Result>(run: () => Promise<Result>): Promise<Result> {
-    acting += 1;
-    try {
-      return await run();
-    } finally {
-      acting -= 1;
-      if (acting === 0) {
-        const held = [...deferredConflicts];
-        deferredConflicts.clear();
-        // Only those still held: Take theirs, a later save or a Discard may have resolved one meanwhile.
-        if (!destroyed) for (const slot of held) if (slot.conflict) showConflict(slot);
-      }
-    }
-  }
 
   function recordsFor(slot: SaveSlot): FieldRecord[] {
     return fields.filter((record) => record.id === slot.id);
@@ -330,7 +277,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       record.cleared ??= { editValue: target.dataset.editValue };
       target.textContent = "";
     } else if (plain && value !== undefined) {
-      target.textContent = plainShown(value);
+      target.textContent = Array.isArray(value)
+        ? value.join(", ")
+        : value === null || typeof value === "object"
+          ? ""
+          : String(value);
     }
     target.dispatchEvent(
       new CustomEvent("cms:change", { bubbles: true, detail: { key: record.info.key, path: record.info.path, value } }),
@@ -346,10 +297,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       if (active?.record === record) closeActive(false);
       render(record, valueAtPath(payload, slot.path), clearMissing);
     }
-    // Only this slot's conflict toast: another slot's, a Retry or a lifecycle failure may be up instead, and stays.
-    const shown = conflictToasts.get(slot.id);
-    conflictToasts.delete(slot.id);
-    if (shown !== undefined) toast.hideIf(shown);
+    toast.hide();
   }
 
   function touchedDocuments() {
@@ -400,17 +348,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     active = null;
     current.handle?.destroy();
     current.record.element.classList.remove("cms-field--editing");
-    // Closed without its commit or cancel (those take `theirs` first): nothing of the editor's is kept, so show theirs.
-    if (current.theirs) showTheirs(current, current.theirs);
     if (returnFocus && !destroyed) current.record.element.focus();
-  }
-
-  /** A widget that held nothing after a catch-up: its field shows the adopted value, as `repaint` would have. */
-  function showTheirs(opened: ActiveWidget, theirs: WireDocument): void {
-    // A value that failed to save is still the editor's, and the field shows it.
-    if (opened.slot.state === "failed") return;
-    render(opened.record, valueAtPath(theirs.payload, opened.record.info.path), true);
-    showState(opened.record, "idle");
   }
 
   async function openField(record: FieldRecord): Promise<void> {
@@ -427,15 +365,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const widget = registered ?? missingWidget(strings, info.type);
     const slot = session.slot(info.key, info.path);
     const committed = session.committedValue(info.key, info.path);
-    // A catch-up while it is open compares with the stored value (see `repaint`), so start fetching it now. The session's
-    // cache makes this one request per document per session; a failure is retried only by the next open. A popover
-    // below awaits this same request; a text widget opens at once from what it opens from.
-    session.document(info.key).then(
-      () => {
-        if (!destroyed) updateBar();
-      },
-      () => undefined,
-    );
     let initial: unknown;
     if (committed) {
       initial = committed.value;
@@ -466,6 +395,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       updateBar();
     }
     const opened: ActiveWidget = { record, handle: undefined, closed: false, slot };
+    /** A marked widget closed with nothing of the editor's to hold: the field shows the adopted value. */
+    const showTheirs = (theirs: WireDocument) => {
+      // A value that failed to save is still the editor's, and the field keeps showing it.
+      if (slot.state === "failed") return;
+      render(record, valueAtPath(theirs.payload, info.path), true);
+      showState(record, "idle");
+    };
     const context: WidgetContext = {
       element: record.element,
       field: { ...info, options: info.options ? [...info.options] : undefined },
@@ -475,35 +411,24 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       },
       async commit(next) {
         if (opened.closed) return;
-        const { theirs } = opened;
-        opened.theirs = undefined;
         if (active === opened) closeActive(true);
         opened.closed = true;
+        const changed = !sameValue(next, initial) || slot.state === "failed";
+        const { theirs } = opened;
         if (theirs) {
-          // A catch-up changed this field while it was open (see `repaint`). Sent now, a value that is neither its start
-          // nor theirs would go out on their version and overwrite their change unseen: it is held as a 409'd save is.
-          // Destroyed, nothing is held or sent.
-          if (destroyed || sameValue(next, initial)) showTheirs(opened, theirs);
-          else if (!sameValue(next, valueAtPath(theirs.payload, info.path))) {
-            session.holdConflict(info.key, info.path, next, theirs);
-          }
-          // The editor typed theirs: nothing is left to decide, even for a failed value the catch-up held.
-          else if (slot.conflict) takeTheirs(slot);
-          else showTheirs(opened, theirs);
+          // Sent now, it would go out on their version and overwrite what the editor hasn't seen.
+          if (destroyed) return;
+          if (changed) session.holdConflict(info.key, info.path, next, theirs);
+          else showTheirs(theirs);
           return;
         }
-        // Held and left as it was: the conflict stands as shown, so raising it again would only repeat its toast.
-        if (slot.conflict && sameValue(next, initial)) return;
-        const changed = !sameValue(next, initial) || slot.state === "failed";
         if (changed) await session.save(info.key, info.path, next);
       },
       cancel() {
         if (opened.closed) return;
-        const { theirs } = opened;
-        opened.theirs = undefined;
         if (active === opened) closeActive(true);
         opened.closed = true;
-        if (theirs) showTheirs(opened, theirs);
+        if (opened.theirs && !destroyed) showTheirs(opened.theirs);
       },
       announce: (message) => toast.announce(message),
     };
@@ -644,22 +569,20 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     closeActive(false, true);
     let after: unknown[] | null | undefined;
     try {
-      await runAction(() =>
-        lifecycle(
-          action,
-          key,
-          guarded(key, async (expectedVersion) => {
-            const op = build(await storedItems(list));
-            if (!op) return;
-            const document = await client.array(key, path, op, expectedVersion);
-            session.applyWrite(expectedVersion, document);
-            session.touch(key, [path]);
-            updateBar();
-            const stored = valueAtPath(document.payload, path);
-            after = Array.isArray(stored) ? stored : null;
-            onWritten?.();
-          }),
-        ),
+      await lifecycle(
+        action,
+        key,
+        guarded(key, async (expectedVersion) => {
+          const op = build(await storedItems(list));
+          if (!op) return;
+          const document = await client.array(key, path, op, expectedVersion);
+          session.applyWrite(expectedVersion, document);
+          session.touch(key, [path]);
+          updateBar();
+          const stored = valueAtPath(document.payload, path);
+          after = Array.isArray(stored) ? stored : null;
+          onWritten?.();
+        }),
       );
     } catch (error) {
       // Shown by `lifecycle`. After a conflict the content is another editor's: no removal of it can be put back.
@@ -1211,29 +1134,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     removals.splice(at, 1);
     if (last.toast !== undefined) toast.hideIf(last.toast);
     syncUndoButtons();
-    // One action with its conflict toast, so a field conflict its catch-up held shows after it (see `runAction`).
-    const outcome = await runAction(async () => {
-      const result = await listWriteAndSettle(
-        list,
-        strings.undo,
-        (items) => {
-          const before = last.before === undefined ? -1 : items.findIndex((entry) => itemKeyOf(entry) === last.before);
-          const after = last.after === undefined ? -1 : items.findIndex((entry) => itemKeyOf(entry) === last.after);
-          const index = before >= 0 ? before + 1 : after >= 0 ? after : Math.min(last.index, items.length);
-          return { kind: "insert", index, value: last.value };
-        },
-        undefined,
-        last.places,
-      );
-      if (!result.written && result.conflict) {
+    const outcome = await listWriteAndSettle(
+      list,
+      strings.undo,
+      (items) => {
+        const before = last.before === undefined ? -1 : items.findIndex((entry) => itemKeyOf(entry) === last.before);
+        const after = last.after === undefined ? -1 : items.findIndex((entry) => itemKeyOf(entry) === last.after);
+        const index = before >= 0 ? before + 1 : after >= 0 ? after : Math.min(last.index, items.length);
+        return { kind: "insert", index, value: last.value };
+      },
+      undefined,
+      last.places,
+    );
+    if (!outcome.written) {
+      if (outcome.conflict) {
         // Another editor changed the list: putting the item back at its old place would land in their content.
         clearTimeout(last.timer);
         toast.show(format(strings.undoConflict, { key: last.key, item: last.name }), "error");
+        return;
       }
-      return result;
-    });
-    if (!outcome.written) {
-      if (outcome.conflict) return;
       // Nothing written (offline, a refusal): the removal can still be undone, within its own window and in its place.
       if (last.expired) return;
       removals.splice(Math.min(at, removals.length), 0, last);
@@ -1626,52 +1545,44 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
               }
             }
             const failed: { key: string; error: unknown }[] = [];
-            // One action for the run and its toasts: a field conflict a document's catch-up held shows after the later
-            // documents' toasts and the run's own, rather than under them (see `runAction`).
-            const notDone = await runAction(async () => {
-              for (const key of keys) {
-                // Closing the sheet stops what hasn't started; its reviews have ended, and nobody is looking.
-                if (!isOpen) break;
-                const row = rows.get(key);
-                if (!row) continue;
-                inFlight = key;
-                try {
-                  if (kind === "publish") await publish(key, when, row.review);
-                  else await discard(key);
-                  row.item.remove();
-                  rows.delete(key);
-                  if (row.review) session.endReview(key, row.review);
-                } catch (error) {
-                  // Reported below and by `lifecycle`; carry on with the rest.
-                  failed.push({ key, error });
-                  if (!isOpen && row.review) session.endReview(key, row.review);
-                }
-                inFlight = undefined;
+            for (const key of keys) {
+              // Closing the sheet stops what hasn't started; its reviews have ended, and nobody is looking.
+              if (!isOpen) break;
+              const row = rows.get(key);
+              if (!row) continue;
+              inFlight = key;
+              try {
+                if (kind === "publish") await publish(key, when, row.review);
+                else await discard(key);
+                row.item.remove();
+                rows.delete(key);
+                if (row.review) session.endReview(key, row.review);
+              } catch (error) {
+                // Reported below and by `lifecycle`; carry on with the rest.
+                failed.push({ key, error });
+                if (!isOpen && row.review) session.endReview(key, row.review);
               }
-              const total = keys.length;
-              const left = keys.filter((key) => rows.has(key));
-              if (left.length === 0) {
-                if (total > 1) toast.show(format(strings.bulkDone, { action, total }), "saved");
-                return left;
-              }
-              const stopped = left.length > failed.length;
-              const message = format(stopped ? strings.bulkStopped : strings.bulkPartial, {
-                action,
-                total,
-                done: total - left.length,
-                keys: left.join(", "),
-              });
-              if (stopped && failed.length === 0) {
-                // Nothing went wrong, but it names what didn't go out, so it mustn't hide itself.
-                toast.show(message, "info", [{ label: strings.close, onClick: () => toast.hide(), variant: "ghost" }]);
-              } else if (total > 1) {
-                toast.show(message, "error");
-              }
-              return left;
-            });
+              inFlight = undefined;
+            }
+            const total = keys.length;
+            const notDone = keys.filter((key) => rows.has(key));
             if (notDone.length === 0) {
+              if (total > 1) toast.show(format(strings.bulkDone, { action, total }), "saved");
               if (isOpen) sheet.close();
               return;
+            }
+            const stopped = notDone.length > failed.length;
+            const message = format(stopped ? strings.bulkStopped : strings.bulkPartial, {
+              action,
+              total,
+              done: total - notDone.length,
+              keys: notDone.join(", "),
+            });
+            if (stopped && failed.length === 0) {
+              // Nothing went wrong, but it names what didn't go out, so it mustn't hide itself.
+              toast.show(message, "info", [{ label: strings.close, onClick: () => toast.hide(), variant: "ghost" }]);
+            } else if (total > 1) {
+              toast.show(message, "error");
             }
             if (!isOpen) return;
             syncDeleteWarnings();
@@ -1920,42 +1831,27 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
   }
 
+  // A field left open through a catch-up (#48, ruled 2026-11-23, option A):
+  // - A catch-up is `guarded` adopting a 409's `current` (Discard, Restore, Unpublish, list writes). Publish's repaint
+  //   is not one.
+  // - It marks the widget open on that document (`theirs`), unless the widget's slot has a save queued or on the wire:
+  //   that save goes out after the catch-up whatever the widget does, and the widget started from it.
+  // - A marked widget sends nothing. A commit that changed the value (leaving it, Enter, a swap's
+  //   `closeActive(false, true)`) is held through `Session.holdConflict`, as a save answered with a 409 is; Esc or an
+  //   unchanged commit shows the adopted value. After destroy it holds nothing and shows nothing.
+  // - A slot holding a conflict sends only through Keep mine: `save` re-holds, `retry` does nothing.
   /**
-   * A catch-up (#48): the session just adopted `adopted`, another editor's version, and `before` is its known payload
-   * from just before. The policy is the session's (invariants I1-I4 at the top of session.ts): `Session.catchUp` holds
-   * or clears the failed values, then this repaints the page and tells an open widget.
+   * Repaints the document's fields from a payload the session just took. A field with a save on its way keeps what the
+   * editor committed. `closeOpen` is for writes that replace the content under an open widget.
    */
-  function catchUp(key: string, adopted: WireDocument, before: unknown): void {
-    let caught: CatchUp;
-    catchingUp = true;
-    try {
-      caught = session.catchUp(key, adopted, before);
-    } finally {
-      catchingUp = false;
-    }
-    repaint(key, adopted, caught);
-  }
-
-  /**
-   * Repaints the document's fields from `adopted`, which the session just took. A field with a value the session still
-   * has (queued, on the wire, failed or held) keeps showing it. Without `caught`, the write replaced the content under
-   * an open widget, which closes. After a catch-up (`caught`, see session.ts I2) an open widget stays: when they changed
-   * its field it keeps `theirs`, the newest adopted document, until it closes, and its commit or cancel takes `theirs`
-   * first: a commit that differs from both its start and theirs is held, never sent; one equal to theirs resolves a
-   * held slot as Take theirs; anything else shows theirs. A save on its way goes out whatever the widget does.
-   */
-  function repaint(key: string, adopted: WireDocument, caught?: CatchUp): void {
+  function repaint(key: string, payload: unknown, closeOpen: boolean): void {
     for (const record of fields) {
-      if (record.info.key !== key) continue;
-      const { path } = record.info;
-      if (active?.record === record && caught) {
-        const open = active;
-        if (!open.slot.pending && !open.slot.sending && (open.theirs || caught.changed(path))) open.theirs = adopted;
-        continue;
+      if (record.info.key !== key || session.committedValue(key, record.info.path)) continue;
+      if (active?.record === record) {
+        if (!closeOpen) continue;
+        closeActive(false);
       }
-      if (session.committedValue(key, path)) continue;
-      if (active?.record === record) closeActive(false);
-      render(record, valueAtPath(adopted.payload, path), true);
+      render(record, valueAtPath(payload, record.info.path), true);
       showState(record, "idle");
     }
     // A list's items may have come or gone with the content: only the page can draw them.
@@ -1972,9 +1868,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         return await task(session.documents.get(key)?.version);
       } catch (error) {
         if (isConflict(error) && error.current) {
-          const before = session.knownPayload(key);
           session.adopt(error.current);
-          catchUp(key, error.current, before);
+          const open = active;
+          if (open?.record.info.key === key && !open.slot.pending && !open.slot.sending) open.theirs = error.current;
+          repaint(key, error.current.payload, false);
           updateBar();
         }
         throw error;
@@ -1982,33 +1879,29 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     };
   }
 
-  function publish(key: string, at: string | undefined, review?: Review): Promise<void> {
-    return runAction(async () => {
-      const document = await lifecycle(
-        strings.publish,
-        key,
-        async () => {
-          const expectedVersion = session.publishVersion(key, review);
-          const known = session.documents.get(key)?.version;
-          const written = await client.publish(key, { ...(at !== undefined ? { at } : {}), expectedVersion });
-          // The payload at the session's own version, never the sheet's newer read (session.ts I3).
-          const before = session.knownPayload(key);
-          // Scheduled, not published: the draft is still this session's change until it goes live.
-          if (at !== undefined) session.applyWrite(expectedVersion, written);
-          else session.settle(key, written);
-          // The sheet showed a change this page hasn't: the session is at that version now, so the page must be too.
-          if (expectedVersion !== known) catchUp(key, written, before);
-          updateBar();
-          return written;
-        },
-        strings.publishConflict,
-      );
-      if (at !== undefined) {
-        toast.show(format(strings.scheduled, { key, time: formatTime(document.scheduledAt ?? at) }), "saved");
-        return;
-      }
-      toast.show(format(strings.published, { key }), "saved");
-    });
+  async function publish(key: string, at: string | undefined, review?: Review): Promise<void> {
+    const document = await lifecycle(
+      strings.publish,
+      key,
+      async () => {
+        const expectedVersion = session.publishVersion(key, review);
+        const known = session.documents.get(key)?.version;
+        const written = await client.publish(key, { ...(at !== undefined ? { at } : {}), expectedVersion });
+        // Scheduled, not published: the draft is still this session's change until it goes live.
+        if (at !== undefined) session.applyWrite(expectedVersion, written);
+        else session.settle(key, written);
+        // The sheet showed a change this page hasn't: the session is at that version now, so the page must be too.
+        if (expectedVersion !== known) repaint(key, written.payload, false);
+        updateBar();
+        return written;
+      },
+      strings.publishConflict,
+    );
+    if (at !== undefined) {
+      toast.show(format(strings.scheduled, { key, time: formatTime(document.scheduledAt ?? at) }), "saved");
+      return;
+    }
+    toast.show(format(strings.published, { key }), "saved");
   }
 
   function publishNow(key: string): void {
@@ -2017,11 +1910,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     });
   }
 
-  function discard(key: string): Promise<void> {
-    return runAction(() => runDiscard(key));
-  }
-
-  async function runDiscard(key: string): Promise<void> {
+  async function discard(key: string): Promise<void> {
     const document = await lifecycle(
       strings.discard,
       key,
@@ -2030,7 +1919,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         session.clearFailed(key);
         forgetRemovals(key);
         session.settle(key, written);
-        if (written) repaint(key, written);
+        if (written) repaint(key, written.payload, true);
         else {
           // Never published: the store deleted it, so there is nothing left to edit.
           for (const list of lists) if (list.info.key === key) list.detach?.();
@@ -2050,11 +1939,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     toast.show(format(document ? strings.discarded : strings.discardedNeverPublished, { key }), "saved");
   }
 
-  function unpublish(key: string): Promise<void> {
-    return runAction(() => runUnpublish(key));
-  }
-
-  async function runUnpublish(key: string): Promise<void> {
+  async function unpublish(key: string): Promise<void> {
     await lifecycle(
       strings.unpublish,
       key,
@@ -2068,11 +1953,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     toast.show(format(strings.unpublished, { key }), "saved");
   }
 
-  function restoreRevision(key: string, revisionId: number): Promise<void> {
-    return runAction(() => runRestore(key, revisionId));
-  }
-
-  async function runRestore(key: string, revisionId: number): Promise<void> {
+  async function restoreRevision(key: string, revisionId: number): Promise<void> {
     // An edit still open goes onto the chain first, so the restore lands after it rather than under it.
     closeActive(false, true);
     await lifecycle(
@@ -2091,7 +1972,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           key,
           diffPayloads(before, written.payload).map((entry) => entry.path),
         );
-        repaint(key, written);
+        repaint(key, written.payload, true);
         updateBar();
       }),
     );

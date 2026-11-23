@@ -3,35 +3,7 @@
 // WRITES ARE SERIALISED PER DOCUMENT, not per field: every write sends `expectedVersion` and bumps the version, so
 // two fields of one document saved in parallel would make the second conflict with the first. Within a field,
 // values coalesce: if three commits land while one is in flight, only the latest is sent next.
-//
-// CONFLICTS AND CATCH-UPS (#48; rulings of 2026-11-21 and the decision of 2026-11-23). The session owns the policy;
-// mount only renders what these calls return or emit. Invariants:
-//
-// I1. A slot with `conflict` set never sends, except through `keepMine`. `save` on a held slot re-holds the new value
-//     (it becomes `failedValue`, same `conflict`, `conflicted` fires again) instead of sending; `retry` does nothing.
-//     A slot leaves the hold only by `keepMine`, `takeTheirs`, `clearFailed` or `dropSaves`. `conflict` is set only
-//     while the slot is "failed" with nothing queued or on the wire: `holdConflict` on a slot that is queued or
-//     sending queues the value behind that save instead (coalesced, as any save), and a 409 sets it after the send.
-// I2. A catch-up is one call, `catchUp(key, adopted, before)`, made right after the session adopted `adopted`, with
-//     `before` the `knownPayload` read just before that adopt. It walks the session's own slots for the key (never the
-//     page's field records): a "failed" slot with no conflict whose path they changed is held against `adopted`; one
-//     whose failed value equals theirs is cleared, as Take theirs does; a slot queued or in flight is untouched, and
-//     so is one already held. It returns `changed(path)`, which mount uses to repaint and to tell an open widget.
-// I3. `known` is the stored document at the session's own `version`. `state.payload` may be newer only after
-//     `documentForPublish` (which keeps our version on purpose); `document` fills the state, and `known`, only from a
-//     read at exactly our version, and otherwise just caches what it read. Only `adopt` sets `known` to a new version;
-//     those two reads fill it only at our version and never replace it with a newer one. `load` clears it when the
-//     version moves. "They changed F" means `known`@F differs (`sameValue`) from adopted@F; with `known` unknown, F
-//     counts as changed.
-// I4. The session never moves to an older version than it holds: `adopt` ignores an older document. Keep mine against
-//     a newer known document that changed the path re-holds against that newer one (a fresh conflict, nothing sent);
-//     against a newer version whose payload it doesn't know, it sends once on the held version, and the server's 409
-//     is the fresh conflict. `newerPayload` reads only `known`. A value queued over such a send (a later save, or a
-//     hold that queues) keeps its held `expected`, so it too meets the 409 rather than the session's newer version.
-//
-// Bounds: no timer and no retry here. A catch-up does no I/O. Keep mine sends at most one request per press.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
-import { sameValue, valueAtPath } from "./dom.ts";
 import type { DocumentForPublishResponse, DocumentState, DocumentSummary, WireDocument } from "./types.ts";
 
 export type SaveState = "idle" | "saving" | "saved" | "failed";
@@ -43,10 +15,9 @@ export interface SaveSlot {
   state: SaveState;
   /** The value that failed to save, kept for Retry and Keep mine. */
   failedValue?: unknown;
-  /** Set when the last failure was a version conflict, or a catch-up held the value (see I1). */
+  /** Set when the last failure was a version conflict. */
   conflict?: WireDocument;
-  /** `expected` overrides the session's version for this one send (Keep mine on a held version; see I4). */
-  pending?: { value: unknown; expected?: number };
+  pending?: { value: unknown };
   /** The value of the request on the wire now. */
   sending?: { value: unknown };
   scheduled?: Promise<void>;
@@ -69,16 +40,9 @@ export interface SessionEvents {
   conflicted(slot: SaveSlot, current: WireDocument): void;
 }
 
-// What `api.documents()` hands the host: no session-internal field goes on it (`known` lives in a map of its own).
 interface MutableDocument extends DocumentState {
   touched: boolean;
   touchedPaths: Set<string>;
-}
-
-/** What a catch-up tells mount (see I2). */
-export interface CatchUp {
-  /** Whether the other editor changed the stored value at `path`, judged from the known payload (see I3). */
-  changed(path: string): boolean;
 }
 
 const STORAGE_PREFIX = "yl-editor:touched:";
@@ -105,8 +69,6 @@ export class Session {
   private readonly writes = new Map<string, number>();
   /** The newest `documentForPublish` per key: an older one still in flight touches nothing. */
   private readonly reads = new Map<string, number>();
-  /** Per key, the stored document at the session's own version, when it knows it (see I3). */
-  private readonly known = new Map<string, WireDocument>();
   private readonly storageKey: string;
 
   constructor(
@@ -129,7 +91,6 @@ export class Session {
       const summary: DocumentSummary | undefined = summaries[key];
       if (!summary) {
         this.documents.delete(key);
-        this.known.delete(key);
         continue;
       }
       let existing = this.documents.get(key);
@@ -140,7 +101,6 @@ export class Session {
       if (existing && existing.version !== summary.version) {
         // Someone wrote since we last looked: what we cached is stale.
         this.fetched.delete(key);
-        this.known.delete(key);
         existing = { ...existing, payload: undefined, scheduledAt: null };
       }
       const rememberedPaths = summary.isDraft ? remembered[key] : undefined;
@@ -164,7 +124,7 @@ export class Session {
 
   /**
    * The document's draft view, fetched once per session and replaced by whatever each write returns. A failed fetch
-   * is not cached, so the next call retries. It fills the session's state only when read at the session's version.
+   * is not cached, so the next call retries.
    */
   document(key: string): Promise<WireDocument> {
     const cached = this.fetched.get(key);
@@ -175,12 +135,9 @@ export class Session {
         const current = this.fetched.get(key);
         if (current !== request) return current ?? document;
         const state = this.documents.get(key);
-        // Keep our version: if the server's is newer, the next write conflicts and the editor chooses. Only a read at
-        // our version fills what the page shows: a newer one would show another editor's schedule or content ahead of
-        // the version the session writes on (callers that need the newer document use the one returned).
-        if (state && document.version === state.version) {
+        if (state) {
+          // Keep our version: if the server's is newer, the next write conflicts and the editor chooses.
           state.payload = document.payload;
-          this.fillKnown(document);
           state.publishedAt = document.publishedAt;
           state.scheduledAt = document.scheduledAt;
         }
@@ -225,7 +182,6 @@ export class Session {
         // Keep our version, as `document` does: another editor's change must still conflict with our next write.
         state.isDraft = document.isDraft;
         state.payload = document.payload;
-        this.fillKnown(document);
         state.publishedAt = document.publishedAt;
         state.scheduledAt = document.scheduledAt;
       }
@@ -299,7 +255,9 @@ export class Session {
   clearFailed(key: string): void {
     for (const slot of this.slots.values()) {
       if (slot.key !== key || slot.state !== "failed") continue;
-      this.release(slot);
+      slot.failedValue = undefined;
+      slot.conflict = undefined;
+      this.setState(slot, "idle");
     }
   }
 
@@ -334,103 +292,62 @@ export class Session {
     return slot;
   }
 
-  /** Sends `value` for the path, after the document's queued writes. On a held slot it re-holds instead (I1). */
+  /** A slot holding a conflict never sends from here: the new value is held in its place (see `holdConflict`). */
   save(key: string, path: string, value: unknown): Promise<void> {
     const slot = this.slot(key, path);
     if (slot.conflict) {
-      this.hold(slot, value, slot.conflict);
+      this.holdConflict(key, path, value, slot.conflict);
       return Promise.resolve();
     }
-    return this.send(slot, value);
+    slot.pending = { value };
+    slot.conflict = undefined;
+    this.setState(slot, "saving");
+    if (!slot.scheduled) slot.scheduled = this.enqueue(key, () => this.flush(slot));
+    return slot.scheduled;
   }
 
   /**
-   * Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing, and so does
-   * one for a value since held as a conflict: only Keep mine or Take theirs resolve that.
+   * Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing, and so
+   * does one for a value since held as a conflict: only Keep mine sends that.
    */
   retry(slot: SaveSlot): Promise<void> {
     if (slot.state !== "failed" || slot.conflict) return Promise.resolve();
-    return this.send(slot, slot.failedValue);
+    return this.save(slot.key, slot.path, slot.failedValue);
   }
 
   /**
-   * Holds `value` as a conflict with `current` without sending it, as a save answered with a 409 would be: the editor
-   * changed the field in a widget opened before the session took `current`, another editor's version that changed the
-   * field too. Keep mine and Take theirs then resolve it. A slot already held keeps the newer of its two documents.
-   * A slot with a save queued or on the wire (Keep mine, pressed before the widget committed) is not held: the value
-   * queues behind that save, coalesced as any commit is, so `conflict` never sits on a slot that is sending (I1).
+   * Holds `value` as a conflict with `current` without sending it, as a save answered with a 409 is. The conflict is
+   * raised again only when the held value changed, so recommitting the same value adds no toast.
    */
   holdConflict(key: string, path: string, value: unknown, current: WireDocument): void {
     const slot = this.slot(key, path);
-    if (slot.pending || slot.sending) {
-      void this.send(slot, value);
-      return;
-    }
-    const against = slot.conflict && slot.conflict.version > current.version ? slot.conflict : current;
-    this.hold(slot, value, against);
+    const same =
+      slot.conflict !== undefined &&
+      slot.state === "failed" &&
+      JSON.stringify(slot.failedValue) === JSON.stringify(value);
+    slot.failedValue = value;
+    slot.conflict = current;
+    this.setState(slot, "failed");
+    if (!same) this.events.conflicted(slot, current);
   }
 
-  /**
-   * Overwrite: the only way a held value is sent (I1). It goes out on the session's version, never an older one (I4):
-   * - the held document is newer than the session's version: the session adopts it, then sends;
-   * - the session holds a newer version and knows its payload: it sends on that when the path there is still the held
-   *   value (its own save of another field since), else re-holds against it, a fresh conflict, and sends nothing;
-   * - the session holds a newer version without its payload (a `load` moved it): one send on the held version, whose
-   *   409 brings the server's document as the fresh conflict. The session's own version stays where it is.
-   */
+  /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
   keepMine(slot: SaveSlot): Promise<void> {
     if (slot.state !== "failed") return Promise.resolve();
-    const held = slot.conflict;
-    const value = slot.failedValue;
-    if (!held) return this.send(slot, value);
-    const version = this.documents.get(slot.key)?.version;
-    let expected: number | undefined;
-    if (version !== undefined && version > held.version) {
-      const newer = this.newerPayload(held);
-      if (!newer) expected = held.version;
-      else if (!sameValue(valueAtPath(newer.payload, slot.path), valueAtPath(held.payload, slot.path))) {
-        this.hold(slot, value, newer);
-        return Promise.resolve();
-      }
-    } else if (version === undefined || held.version > version) {
-      this.adopt(held);
-    }
+    if (slot.conflict) this.adopt(slot.conflict);
     slot.conflict = undefined;
-    return this.send(slot, value, expected);
+    return this.save(slot.key, slot.path, slot.failedValue);
   }
 
-  /**
-   * Accept the other edit. Returns the server's payload so the caller can repaint the field: the session's own when it
-   * is newer than the held document and known (it is at least as recent), else the held one, which it adopts unless the
-   * session already holds a newer version (I4: it never moves back).
-   */
+  /** Accept the other edit. Returns the server's value for the field so the caller can repaint it. */
   takeTheirs(slot: SaveSlot): unknown {
     const current = slot.conflict;
-    this.release(slot);
+    slot.conflict = undefined;
+    slot.failedValue = undefined;
+    this.setState(slot, "idle");
     if (!current) return undefined;
-    const newer = this.newerPayload(current);
-    if (newer) return newer.payload;
     this.adopt(current);
     return current.payload;
-  }
-
-  /**
-   * The catch-up after the session adopted `adopted`, another editor's version (see I2). `before` is `knownPayload`
-   * read just before that adopt; `undefined` means unknown, and then every path counts as changed (I3). Walks this
-   * session's slots for the key, whether or not the page renders them: a failed value of a path they changed is held
-   * against `adopted`, or cleared when it equals theirs. Queued, in-flight and already held slots are left alone.
-   */
-  catchUp(key: string, adopted: WireDocument, before: unknown): CatchUp {
-    const changed = (path: string) =>
-      before === undefined || !sameValue(valueAtPath(before, path), valueAtPath(adopted.payload, path));
-    for (const slot of [...this.slots.values()]) {
-      if (slot.key !== key || slot.state !== "failed" || slot.conflict || slot.pending || slot.sending) continue;
-      if (!changed(slot.path)) continue;
-      // Their value is the editor's: nothing to decide or resend.
-      if (sameValue(slot.failedValue, valueAtPath(adopted.payload, slot.path))) this.release(slot);
-      else this.hold(slot, slot.failedValue, adopted);
-    }
-    return { changed };
   }
 
   /** Publish or discard finished: the document is no longer this session's change. */
@@ -445,7 +362,6 @@ export class Session {
       state.publishedAt = null;
       state.scheduledAt = null;
       this.fetched.delete(key);
-      this.known.delete(key);
       this.noteWrite(key);
     }
     state.touched = false;
@@ -453,17 +369,12 @@ export class Session {
     this.writeTouched();
   }
 
-  /**
-   * Takes a document the server returned as the latest: version, payload, the known document, lifecycle dates and the
-   * fetch cache. One older than the version the session holds is ignored (I4).
-   */
+  /** Takes a document the server returned as the latest: version, payload, lifecycle dates and the fetch cache. */
   adopt(document: WireDocument): void {
-    const state = this.documents.get(document.key);
-    if (state && document.version < state.version) return;
     this.noteWrite(document.key);
     this.fetched.set(document.key, Promise.resolve(document));
+    const state = this.documents.get(document.key);
     if (!state) return;
-    this.known.set(document.key, document);
     state.version = document.version;
     state.isDraft = document.isDraft;
     state.payload = document.payload;
@@ -482,14 +393,6 @@ export class Session {
     this.adopt(document);
   }
 
-  /**
-   * The stored payload at the version this session knows, or `undefined` when it holds none: never fetched, cleared by
-   * `load`, or only read at a newer version than it knows (see I3). What a catch-up compares with.
-   */
-  knownPayload(key: string): unknown {
-    return this.knownDocument(key)?.payload;
-  }
-
   /** Whether a field save of the document is queued or on the wire. Its document may not be `touched` yet. */
   isSaving(key: string): boolean {
     for (const slot of this.slots.values()) if (slot.key === key && (slot.pending || slot.sending)) return true;
@@ -499,54 +402,6 @@ export class Session {
   /** Resolves once every write queued so far for the document has finished. */
   pending(key: string): Promise<void> {
     return this.chains.get(key) ?? Promise.resolve();
-  }
-
-  /** The known document (I3): the stored document at exactly the session's version, if the session has it. */
-  private knownDocument(key: string): WireDocument | undefined {
-    const state = this.documents.get(key);
-    const known = this.known.get(key);
-    return state && known?.version === state.version ? known : undefined;
-  }
-
-  /** A document read at the session's own version is the known one; any other version is not (I3). */
-  private fillKnown(document: WireDocument): void {
-    if (this.documents.get(document.key)?.version === document.version) this.known.set(document.key, document);
-  }
-
-  /**
-   * The known document for `document`'s key when the session holds a newer version than it. A version moved by `load`
-   * alone has none, so nothing says what changed since `document`; nor does a payload only read at a newer version.
-   */
-  private newerPayload(document: WireDocument): WireDocument | undefined {
-    const known = this.knownDocument(document.key);
-    return known && known.version > document.version ? known : undefined;
-  }
-
-  /**
-   * Queues `value` for the slot, coalesced with anything queued; `expected` overrides the version for that send. A
-   * value replacing a queued Keep mine on its held version keeps that version (I4): the session's own is newer than
-   * what the editor saw, so sending on it would overwrite an unseen change.
-   */
-  private send(slot: SaveSlot, value: unknown, expected = slot.pending?.expected): Promise<void> {
-    slot.pending = expected === undefined ? { value } : { value, expected };
-    this.setState(slot, "saving");
-    if (!slot.scheduled) slot.scheduled = this.enqueue(slot.key, () => this.flush(slot));
-    return slot.scheduled;
-  }
-
-  /** Holds `value` against `current`: failed, with a conflict, and nothing sent (I1). */
-  private hold(slot: SaveSlot, value: unknown, current: WireDocument): void {
-    slot.failedValue = value;
-    slot.conflict = current;
-    this.setState(slot, "failed");
-    this.events.conflicted(slot, current);
-  }
-
-  /** Drops a failed or held value: nothing left to retry, keep or take. */
-  private release(slot: SaveSlot): void {
-    slot.conflict = undefined;
-    slot.failedValue = undefined;
-    this.setState(slot, "idle");
   }
 
   private noteWrite(key: string): void {
@@ -563,11 +418,11 @@ export class Session {
   private async flush(slot: SaveSlot): Promise<void> {
     try {
       while (slot.pending) {
-        const { value, expected: held } = slot.pending;
+        const { value } = slot.pending;
         slot.pending = undefined;
         slot.sending = { value };
         try {
-          const expected = held ?? this.documents.get(slot.key)?.version;
+          const expected = this.documents.get(slot.key)?.version;
           const document = await this.client.field(slot.key, slot.path, value, expected);
           slot.sending = undefined;
           this.applyWrite(expected, document);

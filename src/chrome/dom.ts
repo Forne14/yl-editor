@@ -62,28 +62,6 @@ export function uniqueId(prefix: string): string {
   return `${prefix}-${idCounter}`;
 }
 
-/** `value` with every plain object's keys sorted, so two JSON values that differ only in key order serialise alike. */
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value === null || typeof value !== "object") return value;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return value;
-  // `fromEntries` defines own properties, so a `__proto__` key stays a key.
-  return Object.fromEntries(
-    Object.keys(value)
-      .sort()
-      .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
-  );
-}
-
-/**
- * Whether two field values are the same JSON value. A plain object's key order doesn't count (the store and a widget
- * may build the same object in different orders); an array's order does.
- */
-export function sameValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
-}
-
 /** A `_key` id, as docs/paths.md defines it: the one copy the browser bundle uses. */
 export const KEY_ID = "[A-Za-z0-9_-]+";
 const KEY_PATTERN = new RegExp(`^${KEY_ID}$`);
