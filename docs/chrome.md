@@ -320,7 +320,9 @@ chrome creates (see docs/paths.md).
   are placed from the boxes on the page, through custom properties, and redrawn when the list or a field resizes.
 - The axis is read from the items' boxes too. In a column the lines between items are horizontal. In a row they are
   vertical. In a wrapping grid they run both ways, still inside one outline. The toolbar sits at the start of the
-  item's leading line in every layout.
+  item's leading line in every layout. The chrome adds `cms-list--row` or `cms-list--grid` to the list (a column gets
+  neither). In a row or grid, give the Add row a line of its own (`.my-list > .cms-list__add { flex-basis: 100%; }` or
+  `grid-column: 1 / -1`); otherwise it is laid out as a cell of the last line.
 - Drag to reorder: press the handle (`.cms-item__grip`) with a pointer and move. The item follows the pointer on the
   page and nothing is written until you let go. The drop is one `move` write, like Move up and Move down. Dropping it
   where it started writes nothing. Escape, a cancelled pointer or a failed write puts it back. Move up and Move down
