@@ -47,9 +47,18 @@ export interface ListHandlers {
   act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement, focusOn?: ItemAction): void;
   /** A drag is about to start: false (and said) while the list waits for the page. */
   dragStart(): boolean;
-  /** The item was dropped at `to` (an index among the list's items). Resolves false when nothing was written. */
-  drop(item: ItemRecord, to: number, grip: HTMLButtonElement): Promise<boolean>;
+  /**
+   * The item was dropped next to `place`'s item, by `_key`: after it, or before it when the item is now first. The
+   * page can show fewer items than are stored, so only a neighbour's key, not a page index, names a stored place.
+   * `putBack` returns the element to where the drag took it from; the write calls it before the items are arranged in
+   * the stored order, so a drop leaves the host's markup between items where Move up and down leave it. Resolves false
+   * when nothing was written.
+   */
+  drop(item: ItemRecord, place: DropPlace, putBack: () => void): Promise<boolean>;
 }
+
+/** Where a drop left an item: after the item with this `_key`, or before it when the dropped item is now first. */
+export type DropPlace = { after: string } | { before: string };
 
 export interface ListRecord {
   element: HTMLElement;
@@ -219,7 +228,10 @@ interface Box {
   b: number;
 }
 
-function boxOf(node: Element, origin: DOMRect): Box {
+/** The viewport as an origin: boxes in client coordinates, as a pointer event's are. */
+const VIEWPORT = { left: 0, top: 0 } as const;
+
+function boxOf(node: Element, origin: { left: number; top: number }): Box {
   const rect = node.getBoundingClientRect();
   return {
     l: rect.left - origin.left,
@@ -290,21 +302,22 @@ interface Line {
  * the DOM (a drag moves an item's element before anything is written). A column has one item per line, a row has
  * every item on one line, a grid wraps. Fewer than two items is a column.
  */
-function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Line[]; axis: Axis } {
-  const group = <T extends { box: Box }>(all: readonly T[]) => {
-    const lines: { top: number; bottom: number; cells: T[] }[] = [];
-    for (const cell of [...all].sort((a, b) => a.box.t - b.box.t || a.box.l - b.box.l)) {
-      const last = lines.at(-1);
-      if (last && cell.box.t < last.bottom - 1) {
-        last.cells.push(cell);
-        last.bottom = Math.max(last.bottom, cell.box.b);
-      } else {
-        lines.push({ top: cell.box.t, bottom: cell.box.b, cells: [cell] });
-      }
+function group<T extends { box: Box }>(all: readonly T[]): { top: number; bottom: number; cells: T[] }[] {
+  const lines: { top: number; bottom: number; cells: T[] }[] = [];
+  for (const cell of [...all].sort((a, b) => a.box.t - b.box.t || a.box.l - b.box.l)) {
+    const last = lines.at(-1);
+    if (last && cell.box.t < last.bottom - 1) {
+      last.cells.push(cell);
+      last.bottom = Math.max(last.bottom, cell.box.b);
+    } else {
+      lines.push({ top: cell.box.t, bottom: cell.box.b, cells: [cell] });
     }
-    for (const line of lines) line.cells.sort((a, b) => a.box.l - b.box.l);
-    return lines;
-  };
+  }
+  for (const line of lines) line.cells.sort((a, b) => a.box.l - b.box.l);
+  return lines;
+}
+
+function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Line[]; axis: Axis } {
   const across = group(itemBoxes.map((box) => ({ box })));
   const crowded = across.some((line) => line.cells.length > 1);
   const axis: Axis = !crowded ? "column" : across.length === 1 ? "row" : "grid";
@@ -338,33 +351,61 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
 
   const toolbars: (HTMLElement | undefined)[] = [];
   const bands: HTMLElement[] = [];
-  /**
-   * A drag moves only the item's element on the page; nothing is written until the drop, which makes one move. Pointer
-   * capture sits on the list, which never moves (capture on the handle would be lost when the item is re-inserted).
-   * Ends at most once: a drop, pointercancel, Escape, lost capture or detach.
-   */
+  // The drag. Invariants:
+  // - Claim: at most one drag per list at a time. `endDrag` is set exactly while one runs; a pointerdown while it is
+  //   set, or one `dragStart` refuses (the list waits for the page), starts nothing.
+  // - One pointer: the drag belongs to the pointerdown's `pointerId`. Moves, ups, cancels and lost capture of any
+  //   other pointer are ignored.
+  // - Page only: until the drop nothing is written. A drag moves only the dragged item's own element among its
+  //   siblings; every other node (host markup between items, the chrome's rows) stays where it is.
+  // - Release: `endDrag` runs at most once (it clears itself first), from the drag's pointerup or pointercancel
+  //   anywhere in the document, lost capture, Escape, or detach. It removes every listener it added (on the list and
+  //   on the document) and releases the capture, whatever the outcome.
+  // - Put back: a cancel, a drop where it started, or a drop that wrote nothing returns the element to the place
+  //   (`parent`, `next`) it had at pointerdown. A drop that writes puts it back on the write chain before the items
+  //   are arranged in the stored order (`ListHandlers.drop`), so a drop and a move leave the same markup.
+  // - Bound: a drop sends at most one move, placed by the neighbour's `_key`, never by a page index.
+  // Pointer capture sits on the list, which never moves (capture on the handle would be lost when the item is
+  // re-inserted).
   let endDrag: ((outcome: "drop" | "cancel") => void) | undefined;
-  const startDrag = (event: PointerEvent, item: ItemRecord, grip: HTMLButtonElement) => {
+  const startDrag = (event: PointerEvent, item: ItemRecord) => {
     if (event.button !== 0 || endDrag || !handlers.dragStart()) return;
     event.preventDefault();
+    const pointer = event.pointerId;
     const node = item.element;
     const parent = node.parentNode;
     const next = node.nextSibling;
     const from = items.indexOf(item);
     node.classList.add("cms-item--dragging");
     try {
-      host.setPointerCapture(event.pointerId);
+      host.setPointerCapture(pointer);
     } catch {
-      // No capture (a synthetic pointer): the moves still arrive while the pointer stays over the list.
+      // No capture (a synthetic pointer): moves arrive while the pointer is over the list, and the up from anywhere.
     }
+    const ours = (other: PointerEvent) => other.pointerId === pointer;
     const onMove = (move: PointerEvent) => {
+      if (!ours(move)) return;
       const others = items.filter((other) => other !== item).map((other) => other.element);
-      const before = others.find((other) => {
-        const box = other.getBoundingClientRect();
-        if (axis === "column") return move.clientY < box.top + box.height / 2;
-        // Along a line: above this item's line, or on it and left of its middle.
-        return move.clientY < box.top || (move.clientY < box.bottom && move.clientX < box.left + box.width / 2);
-      });
+      let before: HTMLElement | undefined;
+      if (axis === "column") {
+        before = others.find((other) => {
+          const box = other.getBoundingClientRect();
+          return move.clientY < box.top + box.height / 2;
+        });
+      } else {
+        // Along a line: above it, or within it and left of an item's middle. The line's top and bottom, not the item's
+        // own box: an item shorter than its line still holds the pointer anywhere within the line.
+        const lines = group(others.map((other) => ({ element: other, box: boxOf(other, VIEWPORT) })));
+        for (const line of lines) {
+          const cell = line.cells.find(
+            ({ box }) => move.clientY < line.top || (move.clientY < line.bottom && move.clientX < (box.l + box.r) / 2),
+          );
+          if (cell) {
+            before = cell.element;
+            break;
+          }
+        }
+      }
       if (before) {
         if (before.previousSibling !== node) before.before(node);
       } else {
@@ -373,8 +414,12 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       }
       record.paint();
     };
-    const onUp = () => endDrag?.("drop");
-    const onCancel = () => endDrag?.("cancel");
+    const onUp = (up: PointerEvent) => {
+      if (ours(up)) endDrag?.("drop");
+    };
+    const onCancel = (cancel: PointerEvent) => {
+      if (ours(cancel)) endDrag?.("cancel");
+    };
     const onKey = (key: KeyboardEvent) => {
       if (key.key !== "Escape") return;
       key.stopPropagation();
@@ -384,33 +429,43 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       if (node.parentNode === parent && node.nextSibling !== next) parent?.insertBefore(node, next);
     };
     host.addEventListener("pointermove", onMove);
-    host.addEventListener("pointerup", onUp);
-    host.addEventListener("pointercancel", onCancel);
     host.addEventListener("lostpointercapture", onCancel);
+    // On the document, so an up or cancel outside the list ends the drag when capture failed. A captured one reaches
+    // the document too, by way of the list.
+    document.addEventListener("pointerup", onUp, true);
+    document.addEventListener("pointercancel", onCancel, true);
     document.addEventListener("keydown", onKey, true);
     endDrag = (outcome) => {
       endDrag = undefined;
       host.removeEventListener("pointermove", onMove);
-      host.removeEventListener("pointerup", onUp);
-      host.removeEventListener("pointercancel", onCancel);
       host.removeEventListener("lostpointercapture", onCancel);
+      document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", onCancel, true);
       document.removeEventListener("keydown", onKey, true);
       try {
-        host.releasePointerCapture(event.pointerId);
+        host.releasePointerCapture(pointer);
       } catch {
         // Already released.
       }
       node.classList.remove("cms-item--dragging");
-      const order = items
-        .map((other) => other.element)
-        .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
-      const to = order.indexOf(node);
-      if (outcome === "cancel" || to === from || to < 0 || !host.isConnected) {
+      const order = [...items].sort((a, b) =>
+        a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+      const to = order.indexOf(item);
+      // The page can show fewer items than are stored: the drop names its neighbour, which the write finds by key.
+      const neighbour = to > 0 ? order[to - 1] : order[1];
+      const place: DropPlace | undefined =
+        neighbour?.itemKey === undefined
+          ? undefined
+          : to > 0
+            ? { after: neighbour.itemKey }
+            : { before: neighbour.itemKey };
+      if (outcome === "cancel" || to === from || !place || !host.isConnected) {
         putBack();
         record.paint();
         return;
       }
-      void handlers.drop(item, to, grip).then((written) => {
+      void handlers.drop(item, place, putBack).then((written) => {
         // Nothing written (offline, a refusal): the page shows the stored order again.
         if (!written && host.isConnected) {
           putBack();
@@ -451,7 +506,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     const buttons: HTMLButtonElement[] = [];
     if (info.order === "manual") {
       const grip = toolButton("grip", format(strings.itemDrag, placement), false);
-      grip.addEventListener("pointerdown", (event) => startDrag(event, item, grip));
+      grip.addEventListener("pointerdown", (event) => startDrag(event, item));
       buttons.push(
         grip,
         toolButton("up", format(strings.itemMoveUp, placement), index === 0, format(strings.itemIsFirst, placement)),

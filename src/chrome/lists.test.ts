@@ -1381,6 +1381,142 @@ describe("drag to reorder and date order (#43)", () => {
       expect(document.activeElement).toBe(other);
     });
   });
+
+  describe("code review round 1 (#52)", () => {
+    const press = (type: string, target: EventTarget, init: PointerEventInit = {}) =>
+      target.dispatchEvent(
+        new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, ...init }),
+      );
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+
+    test("a drop is placed by its neighbour's key when the page doesn't show every stored item", async () => {
+      artists = [
+        { _key: "a", name: "Mara" },
+        { _key: "b", name: "Tobias" },
+        { _key: "x", name: "Hidden" },
+        { _key: "c", name: "Ines" },
+      ];
+      listAttrs = { ...listAttrs, max: undefined };
+      const shown = artists.filter((artist) => artist._key !== "x");
+      document.body.innerHTML = `<main id="page">${renderOne("artists", shown)}</main>`;
+      await mount();
+      lay();
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 260 });
+      press("pointerup", list());
+      await settle();
+      // After Ines, which is stored last: [Tobias, Hidden, Ines, Mara], not [Tobias, Hidden, Mara, Ines].
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 3 }]);
+      expect(artists.map((artist) => artist._key)).toEqual(["b", "x", "c", "a"]);
+    });
+
+    test("a drop placed first resolves before its new neighbour", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(2));
+      press("pointermove", list(), { clientY: 10 });
+      press("pointerup", list());
+      await settle();
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 2, to: 0 }]);
+      expect(names()).toEqual(["Ines", "Mara", "Tobias"]);
+    });
+
+    test("a drop leaves host markup between items where Move down leaves it", async () => {
+      const edit = editable(KEY);
+      const item = (artist: Artist, index: number) =>
+        `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></li>`;
+      document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists.map(item).join('<li class="sep">·</li>')}</ul></main>`;
+      await mount();
+      lay();
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 160 });
+      press("pointerup", list());
+      await settle();
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 1 }]);
+      const children = [...list().children]
+        .filter((node) => !node.classList.contains("cms-root"))
+        .map((node) => node.querySelector("h3")?.textContent ?? node.textContent);
+      expect(children).toEqual(["Tobias", "·", "Mara"]);
+    });
+
+    test("another pointer's moves and pointerup are ignored", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 260 });
+      press("pointermove", list(), { clientY: 10, pointerId: 2 });
+      expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+      press("pointerup", list(), { pointerId: 2 });
+      press("pointercancel", list(), { pointerId: 2 });
+      press("lostpointercapture", list(), { pointerId: 2 });
+      await settle();
+      expect(arrayCalls).toEqual([]);
+      expect(items()[2]?.classList.contains("cms-item--dragging")).toBe(true);
+      press("pointerup", list());
+      await settle();
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 2 }]);
+    });
+
+    test("a pointerup outside the list still drops the item", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 260 });
+      press("pointerup", document.body);
+      await settle();
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 2 }]);
+    });
+
+    test("a pointercancel outside the list puts the item back", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 260 });
+      press("pointercancel", document.body);
+      await settle();
+      expect(arrayCalls).toEqual([]);
+      expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+    });
+
+    test("after Done mid-drag, a pointerup anywhere writes nothing", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 260 });
+      handle?.destroy();
+      handle = undefined;
+      press("pointerup", document.body);
+      press("pointerup", list());
+      await settle();
+      expect(arrayCalls).toEqual([]);
+    });
+
+    test("a failed drop is named for its direction", async () => {
+      three();
+      await mount();
+      lay();
+      arrayAnswer = () => json({ error: { code: "internal", message: "down" } }, 500);
+      press("pointerdown", grip(0));
+      press("pointermove", list(), { clientY: 260 });
+      press("pointerup", list());
+      await settle();
+      const toast = document.querySelector<HTMLElement>(".cms-toast");
+      expect(toast?.textContent).toContain(`Move Mara down failed for ${KEY}`);
+      press("pointerdown", grip(2));
+      press("pointermove", list(), { clientY: 10 });
+      press("pointerup", list());
+      await settle();
+      expect(toast?.textContent).toContain(`Move Ines up failed for ${KEY}`);
+    });
+  });
 });
 
 describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #28)", () => {
@@ -1571,5 +1707,26 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     list().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     await settle();
     expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 1 }]);
+  });
+
+  test("dragging in a row with uneven heights tests the pointer against the line, not each item's box", async () => {
+    three();
+    await mount();
+    // Tobias is shorter than the line: the pointer below him but within the line is still on the line.
+    lay(
+      [
+        [0, 0, 180, 100],
+        [200, 0, 180, 40],
+        [400, 0, 180, 100],
+      ],
+      [0, 140, 580, 40],
+    );
+    await repaint();
+    toolButton(2, "grip").dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+    list().dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 250, clientY: 70 }));
+    expect(names()).toEqual(["Mara", "Ines", "Tobias"]);
+    list().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    await settle();
+    expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 2, to: 1 }]);
   });
 });

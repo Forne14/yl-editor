@@ -12,6 +12,7 @@ import {
   newItemKey,
   scanLists,
   storedIndex,
+  type DropPlace,
   type ItemAction,
   type ItemRecord,
   type ListRecord,
@@ -578,7 +579,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       add: () => void addItem(list),
       act: (item, action, pressed, focusOn) => void actOnItem(list, item, action, pressed, focusOn),
       dragStart: () => !refuseBusy(list.element),
-      drop: (item, to, grip) => dropItem(list, item, to, grip),
+      drop: (item, place, putBack) => dropItem(list, item, place, putBack),
     });
   }
 
@@ -1078,24 +1079,42 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   }
 
   /**
-   * One move write: a step from the stored index (Move up and down, the handle's arrow keys), or `{ to }` an index (a
-   * drop). Held until the page shows the move: a swap or another press meanwhile would act on the old order. The
+   * One move write: a step from the stored index (Move up and down, the handle's arrow keys), or next to a neighbour
+   * named by `_key` (a drop). Both are resolved against the stored array as the write goes out: the page can show fewer
+   * items than are stored, so a page index would name the wrong stored place. A neighbour no longer stored writes
+   * nothing. Held until the page shows the move: a swap or another press meanwhile would act on the old order. The
    * announcement and focus are the same for every route. Resolves false when nothing was written.
    */
   async function moveItem(
     list: ListRecord,
     item: ItemRecord,
-    place: number | { to: number },
+    place: number | DropPlace,
     label: string,
     focusOn: ItemAction,
+    /** Runs right after the write, before the copies are arranged: a drop puts its element back here. */
+    onWritten?: () => void,
   ): Promise<boolean> {
     const name = itemName(list, item, strings);
     const copy = copiesOf(list.id).indexOf(list);
-    const outcome = await listWriteAndSettle(list, label, (items) => {
-      const from = storedIndex(items, item);
-      const to = typeof place === "number" ? from + place : Math.min(place.to, items.length - 1);
-      return from < 0 || to < 0 || to >= items.length || to === from ? undefined : { kind: "move", from, to };
-    });
+    const outcome = await listWriteAndSettle(
+      list,
+      label,
+      (items) => {
+        const from = storedIndex(items, item);
+        let to: number;
+        if (typeof place === "number") {
+          to = from + place;
+        } else {
+          const after = "after" in place;
+          const at = items.findIndex((entry) => itemKeyOf(entry) === (after ? place.after : place.before));
+          // `move` takes the index the item ends at, counted once it is out of the array.
+          const shifted = at > from ? at - 1 : at;
+          to = at < 0 ? -1 : after ? shifted + 1 : shifted;
+        }
+        return from < 0 || to < 0 || to >= items.length || to === from ? undefined : { kind: "move", from, to };
+      },
+      onWritten,
+    );
     if (!outcome.written) return false;
     const fresh = copiesOf(list.id)[copy];
     const moved = itemByKey(fresh, item.itemKey);
@@ -1107,8 +1126,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return true;
   }
 
-  function dropItem(list: ListRecord, item: ItemRecord, to: number, grip: HTMLButtonElement): Promise<boolean> {
-    return moveItem(list, item, { to }, grip.getAttribute("aria-label") ?? "grip", "grip");
+  /** A drop, named in messages as Move up or Move down by where it went on the page. */
+  function dropItem(list: ListRecord, item: ItemRecord, place: DropPlace, putBack: () => void): Promise<boolean> {
+    const from = list.items.indexOf(item);
+    const up = "before" in place || list.items.findIndex((other) => other.itemKey === place.after) < from;
+    const placement = { item: itemName(list, item, strings), position: from + 1, count: list.items.length };
+    const label = format(up ? strings.itemMoveUp : strings.itemMoveDown, placement);
+    return moveItem(list, item, place, label, "grip", putBack);
   }
 
   async function actOnItem(
