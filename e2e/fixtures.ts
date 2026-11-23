@@ -158,6 +158,8 @@ export interface Demo {
     richtext?: "fallback";
     /** Render the `pages/team` keyed list (`lists=1`). */
     lists?: boolean;
+    /** Render the `pages/crew` keyed list, a row that wraps into a grid (`rowlist=1`). */
+    rowlist?: boolean;
   }): Promise<Page>;
 }
 
@@ -290,6 +292,7 @@ async function createDemo(
       if (options.scheduling) query.set("scheduling", "1");
       if (options.richtext) query.set("richtext", options.richtext);
       if (options.lists) query.set("lists", "1");
+      if (options.rowlist) query.set("rowlist", "1");
       await target.goto(`/?${query}`);
       await waitForEditor(target);
       return target;
