@@ -17,15 +17,17 @@
 //     page's field records): a "failed" slot with no conflict whose path they changed is held against `adopted`; one
 //     whose failed value equals theirs is cleared, as Take theirs does; a slot queued or in flight is untouched, and
 //     so is one already held. It returns `changed(path)`, which mount uses to repaint and to tell an open widget.
-// I3. `known` is the stored document at the session's own `version`, apart from `state.payload`, which may be newer
-//     (`document` and `documentForPublish` cache what they read and keep our version on purpose). Only `adopt` sets
-//     `known`; those two reads fill it only with a document at exactly our version, and never replace it with a newer
-//     one. `load` clears it when the version moves. "They changed F" means `known`@F differs (`sameValue`) from
-//     adopted@F; with `known` unknown, F counts as changed.
+// I3. `known` is the stored document at the session's own `version`. `state.payload` may be newer only after
+//     `documentForPublish` (which keeps our version on purpose); `document` fills the state, and `known`, only from a
+//     read at exactly our version, and otherwise just caches what it read. Only `adopt` sets `known` to a new version;
+//     those two reads fill it only at our version and never replace it with a newer one. `load` clears it when the
+//     version moves. "They changed F" means `known`@F differs (`sameValue`) from adopted@F; with `known` unknown, F
+//     counts as changed.
 // I4. The session never moves to an older version than it holds: `adopt` ignores an older document. Keep mine against
 //     a newer known document that changed the path re-holds against that newer one (a fresh conflict, nothing sent);
 //     against a newer version whose payload it doesn't know, it sends once on the held version, and the server's 409
-//     is the fresh conflict. `newerPayload` reads only `known`.
+//     is the fresh conflict. `newerPayload` reads only `known`. A value queued over such a send (a later save, or a
+//     hold that queues) keeps its held `expected`, so it too meets the 409 rather than the session's newer version.
 //
 // Bounds: no timer and no retry here. A catch-up does no I/O. Keep mine sends at most one request per press.
 import { ContentRequestError, type ContentClient } from "../http/client.ts";
@@ -162,7 +164,7 @@ export class Session {
 
   /**
    * The document's draft view, fetched once per session and replaced by whatever each write returns. A failed fetch
-   * is not cached, so the next call retries.
+   * is not cached, so the next call retries. It fills the session's state only when read at the session's version.
    */
   document(key: string): Promise<WireDocument> {
     const cached = this.fetched.get(key);
@@ -173,8 +175,10 @@ export class Session {
         const current = this.fetched.get(key);
         if (current !== request) return current ?? document;
         const state = this.documents.get(key);
-        if (state) {
-          // Keep our version: if the server's is newer, the next write conflicts and the editor chooses.
+        // Keep our version: if the server's is newer, the next write conflicts and the editor chooses. Only a read at
+        // our version fills what the page shows: a newer one would show another editor's schedule or content ahead of
+        // the version the session writes on (callers that need the newer document use the one returned).
+        if (state && document.version === state.version) {
           state.payload = document.payload;
           this.fillKnown(document);
           state.publishedAt = document.publishedAt;
@@ -518,8 +522,12 @@ export class Session {
     return known && known.version > document.version ? known : undefined;
   }
 
-  /** Queues `value` for the slot, coalesced with anything queued; `expected` overrides the version for that send. */
-  private send(slot: SaveSlot, value: unknown, expected?: number): Promise<void> {
+  /**
+   * Queues `value` for the slot, coalesced with anything queued; `expected` overrides the version for that send. A
+   * value replacing a queued Keep mine on its held version keeps that version (I4): the session's own is newer than
+   * what the editor saw, so sending on it would overwrite an unseen change.
+   */
+  private send(slot: SaveSlot, value: unknown, expected = slot.pending?.expected): Promise<void> {
     slot.pending = expected === undefined ? { value } : { value, expected };
     this.setState(slot, "saving");
     if (!slot.scheduled) slot.scheduled = this.enqueue(slot.key, () => this.flush(slot));

@@ -2188,7 +2188,7 @@ describe("they changed a field: the stored value decides, never the page (#48 ru
     server.theirWrite("pages/home", { title: "Theirs" }); // v4; the session stays at v3
     const title = field("pages/home:title");
     title.click();
-    await settle(); // the background fetch puts v4's payload in the session, which keeps version 3
+    await settle(); // the background fetch reads v4, which the session, still at version 3, only caches
     title.textContent = "Mine";
     await unpublishConflict();
     press(title, "Enter");
@@ -2293,6 +2293,83 @@ describe("the catch-up policy lives in the session (#48, decision of 2026-11-23)
     expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
     expect(title.classList.contains("cms-field--failed")).toBe(true);
     expect(toastText()).toContain(conflictToast);
+  });
+
+  test("a held field reopened and left unchanged raises nothing again: no toast, no repaint", async () => {
+    const { api, title } = await heldTitle();
+    api.status("Something else", "error");
+    const changes = vi.fn();
+    title.addEventListener("cms:change", changes);
+    title.click();
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(toastText()).toContain("Something else");
+    expect(toastText()).not.toContain(conflictToast);
+    expect(changes).not.toHaveBeenCalled();
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+  });
+
+  test("I4: a value saved over a queued Keep mine keeps the held version, so it conflicts instead of overwriting", async () => {
+    const { server, title } = await heldTitle(); // held at v4
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // v5
+    server.theirWrite("pages/home", { lede: "Later" }); // v6
+    await handle?.api.refresh(); // the session takes v6 with no payload
+    // The fields' fetch of v6 stays out until the end, so the session never learns v6's payload.
+    const read = hold("GET /api/content/document");
+    const gate = hold("POST /api/content/field");
+    await editText("pages/home:lede", "Other"); // on the wire, on v6
+    keepMine.click(); // queued behind it, on v4
+    title.click();
+    title.textContent = "Mine again";
+    press(title, "Enter");
+    gate.release();
+    await settle();
+    read.release();
+    await settle();
+    expect(posts("field").map((call) => [call.body?.value, call.body?.expectedVersion])).toEqual([
+      ["Other", 6],
+      ["Mine again", 4],
+    ]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs again" });
+    expect(title.classList.contains("cms-field--failed")).toBe(true);
+    expect(toastText()).toContain(conflictToast);
+  });
+
+  test("a select committed by destroy whose save lands afterwards leaves the detached field alone", async () => {
+    const style = addEditValueField("style", "select", "plain", ["plain", "bold"]);
+    serve({ "pages/home": { ...live, payload: { title: "Hello", style: "plain" } } });
+    await mount();
+    style.click();
+    await settle();
+    const select = popoverControl<HTMLSelectElement>("select");
+    select.value = "bold";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const gate = hold("POST /api/content/field");
+    const changes = vi.fn();
+    style.addEventListener("cms:change", changes);
+    handle?.destroy();
+    handle = undefined;
+    gate.release();
+    await settle();
+    expect(posts("field").map((call) => call.body?.value)).toEqual(["bold"]);
+    expect(changes).not.toHaveBeenCalled();
+    expect(style.dataset.cmsState).toBeUndefined();
+    expect(style.className).toBe("");
+    expect(style.textContent).toBe("rendered");
+  });
+
+  test("a text field's background fetch of a newer document leaves the bar's schedule alone", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    server.stored.get("pages/home")!.scheduledAt = "2030-01-01T00:00:00+00:00";
+    server.stored.get("pages/home")!.version += 1; // another editor scheduled it: v4, the session stays at v3
+    field("pages/home:title").click();
+    await settle();
+    expect(document.querySelector(".cms-bar__scheduled")).toBeNull();
+    expect(handle?.api.documents().get("pages/home")?.scheduledAt).toBeNull();
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(3);
   });
 
   test("a held field reopened and changed holds the new value, which Keep mine then sends", async () => {
@@ -2608,6 +2685,33 @@ describe("Session holds and catch-ups (#48 invariants)", () => {
     expect(slot.conflict).toBe(newer);
     expect(conflicts.at(-1)).toBe(newer);
     expect(session.documents.get(KEY)?.version).toBe(5);
+  });
+
+  test("I4: a value replacing a queued Keep mine on the held version keeps that version, from save or a hold", async () => {
+    const releases: (() => void)[] = [];
+    const { session, sent } = await sessionOver(
+      (value, expected) =>
+        new Promise((resolve) => releases.push(() => resolve(theirs(Number(expected) + 1, { title: value })))),
+    );
+    const held = theirs(4, { title: "Theirs" });
+    session.adopt(held);
+    session.holdConflict(KEY, "title", "Mine", held);
+    // A refresh moved the version on without its payload.
+    (session.documents.get(KEY) as { version: number }).version = 6;
+    const busy = session.save(KEY, "lede", "Other");
+    const slot = session.slot(KEY, "title");
+    const kept = session.keepMine(slot);
+    void session.save(KEY, "title", "Mine again");
+    session.holdConflict(KEY, "title", "Mine third", theirs(6, { title: "Theirs again" }));
+    for (let round = 0; round < 4; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      releases.shift()?.();
+    }
+    await Promise.all([busy, kept]);
+    expect(sent).toEqual([
+      { value: "Other", expected: 6 },
+      { value: "Mine third", expected: 4 },
+    ]);
   });
 
   test("I4: the session never adopts a version older than the one it holds", async () => {
