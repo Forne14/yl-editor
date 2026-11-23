@@ -18,8 +18,8 @@ export interface SaveSlot {
   /** Set when the last failure was a version conflict. Set and cleared only through `Session.setConflict`. */
   conflict?: WireDocument;
   /**
-   * Whether `conflict` is a document a catch-up took (`holdConflict`, `catchUp`) rather than a 409's `current` held by
-   * a field save: only the first is never adopted when it is not newer (see `adoptHeld`).
+   * Whether `conflict` is a document the session took (`holdConflict`, re-pointed by `take`) rather than a 409's
+   * `current` held by a field save: only the first is never taken again when it is not newer (see `heldToTake`).
    */
   conflictCaughtUp?: boolean;
   pending?: { value: unknown };
@@ -43,6 +43,11 @@ export interface SessionEvents {
   /** `error` is a `ContentRequestError`, or whatever `fetch` threw when the server was unreachable. */
   failed(slot: SaveSlot, error: unknown): void;
   conflicted(slot: SaveSlot, current: WireDocument): void;
+  /**
+   * The session took another editor's document as the latest (see `Session.take`): a catch-up, or Keep mine or Take
+   * theirs adopting a held one. Every conflict held for its key already stands against it.
+   */
+  took(document: WireDocument): void;
 }
 
 interface MutableDocument extends DocumentState {
@@ -339,29 +344,34 @@ export class Session {
     if (slot.conflict) this.events.conflicted(slot, slot.conflict);
   }
 
-  /**
-   * A catch-up took `document` as the latest. Every conflict held for its key now stands against it, so Keep mine and
-   * Take theirs decide about what the page was caught up to, not an older document.
-   */
+  /** A catch-up took `document` (a lifecycle or list write's 409) as the latest. */
   catchUp(document: WireDocument): void {
-    this.adopt(document);
-    for (const slot of this.slots.values()) {
-      if (slot.key === document.key && slot.conflict) this.setConflict(slot, document, true);
-    }
+    this.take(document);
   }
 
-  /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
+  /**
+   * Overwrite: adopt the server's version so the next write is accepted, then resend our value. The value is queued
+   * before the document is taken, so the chrome sees this slot's save on its way and leaves a widget open on it
+   * unmarked; the save itself reads the version only once the chain runs it, after the take.
+   */
   keepMine(slot: SaveSlot): Promise<void> {
     if (slot.state !== "failed") return Promise.resolve();
-    this.adoptHeld(slot);
+    const taken = this.heldToTake(slot);
     this.setConflict(slot, undefined);
-    return this.save(slot.key, slot.path, slot.failedValue);
+    const sent = this.save(slot.key, slot.path, slot.failedValue);
+    if (taken) this.take(taken);
+    return sent;
   }
 
-  /** Accept the other edit. Returns the server's value for the field so the caller can repaint it. */
+  /**
+   * Accept the other edit. Returns the payload of the document the hold stands against, which `take` has made the one
+   * the session stands on for this hold (`take` re-points every hold of the key), so the caller can repaint the field
+   * from it.
+   */
   takeTheirs(slot: SaveSlot): unknown {
     const current = slot.conflict;
-    this.adoptHeld(slot);
+    const taken = this.heldToTake(slot);
+    if (taken) this.take(taken);
     this.setConflict(slot, undefined);
     slot.failedValue = undefined;
     this.setState(slot, "idle");
@@ -369,16 +379,32 @@ export class Session {
   }
 
   /**
-   * Adopts the slot's held document. A 409's `current` held by a field save is the server's latest and is always
-   * adopted, older or not: a document deleted and recreated starts again at version 1. A hold made by a catch-up is a
-   * document the session already took, and the session's own writes since may have moved past it, so it is adopted
-   * only when newer: taking it again would send the next write on a version the server has left behind.
+   * The slot's held document, if Keep mine or Take theirs must take it. A 409's `current` held by a field save is the
+   * server's latest and is always taken, older or not: a document deleted and recreated starts again at version 1. A
+   * hold made by a catch-up is a document the session already took, and the session's own writes since may have moved
+   * past it, so it is taken only when newer: taking it again would send the next write on a version the server has left
+   * behind.
    */
-  private adoptHeld(slot: SaveSlot): void {
+  private heldToTake(slot: SaveSlot): WireDocument | undefined {
     const document = slot.conflict;
-    if (!document) return;
+    if (!document) return undefined;
     const known = this.documents.get(document.key)?.version;
-    if (!slot.conflictCaughtUp || known === undefined || document.version > known) this.adopt(document);
+    return !slot.conflictCaughtUp || known === undefined || document.version > known ? document : undefined;
+  }
+
+  /**
+   * The one step for every document the session takes from another editor (`catchUp`, `keepMine`, `takeTheirs`): adopt
+   * it, re-point every conflict held for its key to it, then tell the chrome (`took`), which marks the widget open on
+   * that key. A held 409's `current` newer than `document` is the server's later word, not yet taken: it stays.
+   */
+  private take(document: WireDocument): void {
+    this.adopt(document);
+    for (const slot of this.slots.values()) {
+      if (slot.key !== document.key || !slot.conflict) continue;
+      if (!slot.conflictCaughtUp && slot.conflict.version > document.version) continue;
+      this.setConflict(slot, document, true);
+    }
+    this.events.took(document);
   }
 
   /** The one place a slot's conflict changes, so its origin never outlives it. */
