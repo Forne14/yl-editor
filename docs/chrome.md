@@ -202,7 +202,7 @@ node, class, attribute and listener the chrome added and leaves the host's marku
   editor's change unseen. Esc, or leaving it unchanged, shows their value. The chrome doesn't check which field they
   changed, so the choice can come up for a field they didn't touch (the store will decide that: #51). A held field sends
   only through Keep mine: reopening it, Retry or `destroy()` never send it. `destroy()` drops a widget left open this way
-  without sending it.
+  without sending it. Any other open widget is still committed by `destroy()`, but the page is no longer repainted from its save.
 - `api.publish(key, { at })` schedules whatever `scheduling` says, and refuses nothing: a host panel checks its own time.
 - An existing `scheduledAt` always shows in the bar as "<key> scheduled for <time>" with **Publish now**, which
   publishes the draft immediately and clears the schedule, by the rule above.
