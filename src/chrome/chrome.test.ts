@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
+import { ContentRequestError } from "../http/client.ts";
 import { Session } from "./session.ts";
 import type { EditorHandle, EditorOptions, Widget, WidgetContext, WireDocument } from "./types.ts";
 
@@ -1243,7 +1244,7 @@ function sessionWith(documentForPublish: ContentClient["documentForPublish"]): S
     document: () => Promise.reject(new Error("no second read expected")),
     documents: () => Promise.resolve({ "pages/home": summary("pages/home", true, true) }),
   } as unknown as ContentClient;
-  const events = { stateChanged() {}, saved() {}, failed() {}, conflicted() {} };
+  const events = { stateChanged() {}, saved() {}, failed() {}, conflicted() {}, took() {} };
   return new Session(client, events, "/api/content");
 }
 
@@ -1838,6 +1839,593 @@ describe("Unpublish, Restore and Discard send the known version", () => {
     expect(lede.getAttribute("contenteditable")).not.toBeNull();
     expect(lede.textContent).toBe("Typing");
   });
+});
+
+describe("a field left open through a conflict catch-up (#48)", () => {
+  const live = { publishedPayload: { title: "Hello" }, payload: { title: "Hello" } };
+  const conflictToast = "Someone else changed this field";
+
+  /** Opens Title, types `typed` (if any), lets another editor write `change`, then an Unpublish conflicts. */
+  async function catchUpWhileOpen(change: Record<string, unknown>, typed?: string) {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    const title = field("pages/home:title");
+    title.click();
+    if (typed !== undefined) title.textContent = typed;
+    server.theirWrite("pages/home", change);
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    return { server, title };
+  }
+
+  test("leaving it changed after an Unpublish conflict sends nothing and holds it as a conflict", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+    expect(title.textContent).toBe("Mine");
+    expect(title.dataset.cmsState).toBe("failed");
+    expect(visibleToast().textContent).toContain(conflictToast);
+  });
+
+  test("it is held whichever field they changed: no comparison by field", async () => {
+    const { server, title } = await catchUpWhileOpen({ lede: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Hello", lede: "Theirs" });
+    expect(title.dataset.cmsState).toBe("failed");
+  });
+
+  test("Keep mine then sends it on the adopted version", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field").map((call) => call.body)).toEqual([
+      { key: "pages/home", path: "title", value: "Mine", expectedVersion: 4 },
+    ]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+    expect(title.dataset.cmsState).toBe("saved");
+  });
+
+  test("Take theirs shows theirs and sends nothing", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+  });
+
+  test("Esc sends and holds nothing, and the field shows theirs", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Escape");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    expect(toastText()).not.toContain(conflictToast);
+  });
+
+  test("leaving it unchanged sends and holds nothing, and the field shows theirs", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" });
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    expect(toastText()).not.toContain(conflictToast);
+  });
+
+  test("a Discard conflict holds it too", async () => {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Mine";
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await expect(api.discard("pages/home")).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.dataset.cmsState).toBe("failed");
+    expect(visibleToast().textContent).toContain(conflictToast);
+  });
+
+  test("a Restore conflict holds a widget opened while the restore was on its way", async () => {
+    const server = serve({ "pages/home": live });
+    const { api } = await mount();
+    const { release } = hold("POST /api/content/restore-revision");
+    const restore = api.restoreRevision("pages/home", 7);
+    await settle();
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Mine";
+    server.theirWrite("pages/home", { title: "Theirs" });
+    release();
+    await expect(restore).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.dataset.cmsState).toBe("failed");
+    expect(visibleToast().textContent).toContain(conflictToast);
+  });
+
+  test("a field whose save was answered with a conflict, reopened and committed, sends nothing", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await editText("pages/home:title", "Mine"); // 409: held
+    expect(posts("field")).toHaveLength(1);
+    const title = field("pages/home:title");
+    title.click();
+    press(title, "Enter"); // unchanged
+    await settle();
+    await editText("pages/home:title", "Mine again"); // changed
+    expect(posts("field")).toHaveLength(1);
+    expect(title.dataset.cmsState).toBe("failed");
+    expect(visibleToast().textContent).toContain(conflictToast);
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field").at(-1)?.body).toMatchObject({ value: "Mine again", expectedVersion: 4 });
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine again" });
+  });
+
+  test("a held field reopened after a catch-up and committed, changed or not, sends nothing", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    title.click();
+    press(title, "Enter");
+    await settle();
+    await editText("pages/home:title", "Mine again");
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Mine again");
+    expect(title.dataset.cmsState).toBe("failed");
+  });
+
+  test("a Retry still showing for a field since held sends nothing", async () => {
+    const server = serve({ "pages/home": live });
+    handlers["POST /api/content/field"] = [serverError, handlers["POST /api/content/field"] as Handler];
+    const { api } = await mount();
+    await editText("pages/home:title", "Mine"); // 500: Retry
+    const retry = buttonNamed("Retry", visibleToast());
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Mine again";
+    server.theirWrite("pages/home", { lede: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    press(title, "Enter");
+    await settle();
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(title.dataset.cmsState).toBe("failed");
+  });
+
+  /** Holds Title after a catch-up (version 4), then saves Lede on that version (now 5). */
+  async function heldThenOwnSave() {
+    const caught = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(caught.title, "Enter");
+    await settle();
+    const conflict = visibleToast();
+    const keepMine = buttonNamed("Keep mine (overwrite)", conflict);
+    const takeTheirs = buttonNamed("Take theirs (reload field)", conflict);
+    await editText("pages/home:lede", "Own");
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4]);
+    expect(caught.server.stored.get("pages/home")?.version).toBe(5);
+    return { ...caught, keepMine, takeTheirs };
+  }
+
+  test("Take theirs after the session's own later save keeps its version", async () => {
+    const { server, title, takeTheirs } = await heldThenOwnSave();
+    takeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+    await editText("pages/home:lede", "Again");
+    expect(posts("field").at(-1)?.body?.expectedVersion).toBe(5);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ lede: "Again" });
+  });
+
+  test("Keep mine after the session's own later save sends on its version, with no second conflict", async () => {
+    const { server, title, keepMine } = await heldThenOwnSave();
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4, 5]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Own" });
+    expect(title.dataset.cmsState).toBe("saved");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(6);
+  });
+
+  test("a later catch-up re-points the hold to the document it adopted", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    const takeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // version 5
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    expect(title.textContent).toBe("Mine");
+    takeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs again");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+    expect(posts("field")).toHaveLength(0);
+  });
+
+  test("Keep mine after a later catch-up sends on the newer version", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // version 5
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([5]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+  });
+
+  test("re-holding the same value after the conflict toast went away raises it again", async () => {
+    const { title } = await heldThenOwnSave();
+    // The own save's "Saving…" and "Saved" replaced the conflict toast.
+    expect(toastText()).not.toContain(conflictToast);
+    title.click();
+    press(title, "Enter");
+    await settle();
+    expect(visibleToast().textContent).toContain(conflictToast);
+    buttonNamed("Close", visibleToast()).click();
+    expect(toastText()).not.toContain(conflictToast);
+    title.click();
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field").at(-1)?.body).toMatchObject({ path: "title", value: "Mine", expectedVersion: 5 });
+  });
+
+  test("a commit equal to the adopted value shows theirs and holds nothing", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Theirs");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    expect(toastText()).not.toContain(conflictToast);
+  });
+
+  test("a failed save whose marked widget commits exactly theirs clears the failure, so Retry sends nothing", async () => {
+    const server = serve({ "pages/home": live });
+    handlers["POST /api/content/field"] = [serverError, handlers["POST /api/content/field"] as Handler];
+    const { api } = await mount();
+    await editText("pages/home:title", "Mine"); // 500: Retry
+    const retry = buttonNamed("Retry", visibleToast());
+    const title = field("pages/home:title");
+    title.click();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    title.textContent = "Theirs";
+    press(title, "Enter");
+    await settle();
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+  });
+
+  /** Holds Title (version 4), reopens it, then another editor's write and an Unpublish conflict mark it (version 5). */
+  async function heldThenMarked() {
+    const caught = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(caught.title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    caught.title.click();
+    caught.server.theirWrite("pages/home", { title: "Theirs again" });
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    expect(caught.title.getAttribute("contenteditable")).not.toBeNull();
+    return { ...caught, keepMine };
+  }
+
+  test("a held field whose marked widget commits exactly theirs takes theirs", async () => {
+    const { title, keepMine } = await heldThenMarked();
+    title.textContent = "Theirs again";
+    press(title, "Enter");
+    await settle();
+    expect(title.textContent).toBe("Theirs again");
+    expect(title.dataset.cmsState).toBe("idle");
+    // Only the conflict's own toast goes: the Unpublish failure is still showing.
+    expect(toastText()).toContain("Unpublish did nothing");
+    keepMine.click();
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+  });
+
+  test.each([
+    ["Esc", "Escape"],
+    ["an unchanged commit", "Enter"],
+  ])("%s on a held field's marked widget raises the conflict again", async (_name, key) => {
+    const { server, title } = await heldThenMarked();
+    press(title, key);
+    await settle();
+    expect(title.textContent).toBe("Mine");
+    expect(title.dataset.cmsState).toBe("failed");
+    expect(visibleToast().textContent).toContain(conflictToast);
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field").map((call) => call.body)).toEqual([
+      { key: "pages/home", path: "title", value: "Mine", expectedVersion: 5 },
+    ]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+  });
+
+  test("Take theirs on another field's conflict re-points the hold, so Take theirs shows that document", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter"); // held at version 4
+    await settle();
+    const titleTakeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again", lede: "Their lede" }); // version 5
+    await editText("pages/home:lede", "Own"); // 409: current is version 5
+    buttonNamed("Take theirs (reload field)", visibleToast()).click();
+    await settle();
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+    titleTakeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs again");
+    expect(title.dataset.cmsState).toBe("idle");
+    await editText("pages/home:title", "Next");
+    expect(posts("field").at(-1)?.body).toMatchObject({ value: "Next", expectedVersion: 5 });
+  });
+
+  test("Take theirs on an older conflict leaves a newer save conflict standing against its own document", async () => {
+    const server = serve({ "pages/home": live });
+    await mount();
+    server.theirWrite("pages/home", { lede: "Their lede" }); // version 4
+    await editText("pages/home:lede", "Own"); // 409: current is version 4
+    const ledeTakeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    server.theirWrite("pages/home", { title: "Later" }); // version 5
+    await editText("pages/home:title", "Mine"); // 409: current is version 5
+    const titleTakeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    ledeTakeTheirs.click();
+    await settle();
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(4);
+    titleTakeTheirs.click();
+    await settle();
+    expect(field("pages/home:title").textContent).toBe("Later");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+  });
+
+  /** Lede's save conflicts with a version where they changed Title; Title is then opened and typed in. */
+  async function openOverAnotherConflict() {
+    const server = serve({ "pages/home": live });
+    await mount();
+    server.theirWrite("pages/home", { title: "Ben", lede: "Ben's lede" }); // version 4
+    await editText("pages/home:lede", "Own"); // 409: current is version 4
+    const conflict = visibleToast();
+    const keepMine = buttonNamed("Keep mine (overwrite)", conflict);
+    const takeTheirs = buttonNamed("Take theirs (reload field)", conflict);
+    const title = field("pages/home:title");
+    title.click();
+    title.textContent = "Mine";
+    return { server, title, keepMine, takeTheirs };
+  }
+
+  test.each(["Keep mine (overwrite)", "Take theirs (reload field)"])(
+    "%s on another field's conflict marks the widget left open, so leaving it holds",
+    async (choice) => {
+      const { server, title, keepMine, takeTheirs } = await openOverAnotherConflict();
+      (choice.startsWith("Keep") ? keepMine : takeTheirs).click();
+      await settle();
+      press(title, "Enter");
+      await settle();
+      expect(posts("field").filter((call) => call.body?.path === "title")).toHaveLength(0);
+      expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Ben" });
+      expect(title.textContent).toBe("Mine");
+      expect(title.dataset.cmsState).toBe("failed");
+      expect(visibleToast().textContent).toContain(conflictToast);
+    },
+  );
+
+  test("Restore cancels a marked widget rather than holding it, then shows the restored content", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    const { release } = hold("POST /api/content/restore-revision");
+    const restore = handle?.api.restoreRevision("pages/home", 7);
+    await settle();
+    expect(title.getAttribute("contenteditable")).toBeNull();
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    expect(toastText()).not.toContain(conflictToast);
+    release();
+    await restore;
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Restored");
+  });
+
+  /** A popover on `n` whose own read (taken before their write) is answered on `answered`, around a Restore conflict. */
+  async function popoverAroundCatchUp(answered: "after" | "before") {
+    addEditValueField("n", "number");
+    const server = serve({ "pages/home": { payload: { n: 1 }, publishedPayload: { n: 1 } } });
+    const { api } = await mount();
+    const read = handlers["GET /api/content/document"] as Handler;
+    // Restore's own read fails, so nothing is cached and the popover's read is its own request.
+    handlers["GET /api/content/document"] = serverError;
+    const restoring = hold("POST /api/content/restore-revision");
+    const restore = api.restoreRevision("pages/home", 7);
+    await settle();
+    let answer: () => void = () => undefined;
+    handlers["GET /api/content/document"] = (body, url) => {
+      const before = read(body, url);
+      return new Promise((resolve) => (answer = () => resolve(before)));
+    };
+    field("pages/home:n").click();
+    await settle();
+    server.theirWrite("pages/home", { n: 2 });
+    if (answered === "before") answer();
+    restoring.release();
+    await expect(restore).rejects.toThrow("Stale");
+    if (answered === "after") answer();
+    await settle();
+    const input = popoverControl<HTMLInputElement>("input");
+    const shown = input.value;
+    input.value = "5";
+    press(input, "Enter");
+    await settle();
+    return { server, shown };
+  }
+
+  test("a popover whose read is answered after the catch-up starts from the adopted document", async () => {
+    const { server, shown } = await popoverAroundCatchUp("after");
+    expect(shown).toBe("2");
+    expect(fieldWrites().map((call) => [call.body?.value, call.body?.expectedVersion])).toEqual([[5, 4]]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ n: 5 });
+  });
+
+  test("a popover open by the time of the catch-up is marked, and a change is held", async () => {
+    const { server, shown } = await popoverAroundCatchUp("before");
+    expect(shown).toBe("1");
+    expect(fieldWrites()).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ n: 2 });
+    expect(visibleToast().textContent).toContain(conflictToast);
+  });
+
+  test.each(["Keep mine (overwrite)", "Take theirs (reload field)"])(
+    "%s on a save's conflict with a recreated document adopts it, older or not",
+    async (choice) => {
+      handlers["GET /api/content/documents"] = () => ({
+        json: { documents: { "pages/home": summary("pages/home", true, true, 7) } },
+      });
+      const recreated = wireDocument("pages/home", 1, { title: "Theirs" });
+      handlers["POST /api/content/field"] = [
+        () => ({ status: 409, json: { error: { code: "conflict", message: "Stale", current: recreated } } }),
+        echoField,
+      ];
+      const { api } = await mount();
+      await editText("pages/home:title", "Mine");
+      buttonNamed(choice, visibleToast()).click();
+      await settle();
+      const title = field("pages/home:title");
+      if (choice.startsWith("Keep")) {
+        expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([7, 1]);
+        expect(title.dataset.cmsState).toBe("saved");
+        expect(api.documents().get("pages/home")?.version).toBe(2);
+      } else {
+        expect(posts("field")).toHaveLength(1);
+        expect(title.textContent).toBe("Theirs");
+        expect(api.documents().get("pages/home")?.version).toBe(1);
+      }
+    },
+  );
+
+  test.each([
+    ["a conflict", conflictToast, undefined],
+    ["a failure", "Retry", serverError],
+  ] as const)("%s answering a save after destroy shows no toast", async (_name, shown, answer) => {
+    const server = serve({ "pages/home": live });
+    if (answer) handlers["POST /api/content/field"] = answer;
+    await mount();
+    const { release } = hold("POST /api/content/field");
+    commitText("pages/home:title", "Mine");
+    await settle();
+    const toast = visibleToast();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    handle?.destroy();
+    release();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(toast.textContent).not.toContain(shown);
+  });
+
+  test("destroy with the widget still open sends nothing, holds nothing, shows no toast", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    const toast = visibleToast();
+    handle?.destroy();
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(toast.textContent).not.toContain(conflictToast);
+    expect(title.classList.contains("cms-field--failed")).toBe(false);
+  });
+
+  test("a save that lands after destroy leaves the host's markup alone", async () => {
+    serve({ "pages/home": live });
+    await mount();
+    const { release } = hold("POST /api/content/field");
+    commitText("pages/home:title", "Mine");
+    await settle();
+    const title = field("pages/home:title");
+    expect(title.dataset.cmsState).toBe("saving");
+    handle?.destroy();
+    title.removeAttribute("data-cms-state");
+    title.classList.remove("cms-field--saving");
+    release();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(title.dataset.cmsState).toBeUndefined();
+    expect(title.classList.contains("cms-field--saved")).toBe(false);
+  });
+});
+
+test("Session: Retry on a slot holding a conflict sends nothing; Keep mine sends", async () => {
+  const sent: unknown[] = [];
+  const current = wireDocument("pages/home", 4, { title: "Theirs" });
+  const client = {
+    documents: () => Promise.resolve({ "pages/home": summary("pages/home", true, true) }),
+    field: (_key: string, _path: string, value: unknown, expectedVersion?: number) => {
+      sent.push({ value, expectedVersion });
+      return Promise.resolve(wireDocument("pages/home", Number(expectedVersion) + 1, { title: value }));
+    },
+  } as unknown as ContentClient;
+  const conflicted: unknown[] = [];
+  const session = new Session(
+    client,
+    { stateChanged() {}, saved() {}, failed() {}, conflicted: (_slot, doc) => conflicted.push(doc), took() {} },
+    "/api/content",
+  );
+  await session.load(["pages/home"]);
+  session.holdConflict("pages/home", "title", "Mine", current);
+  const slot = session.slot("pages/home", "title");
+  expect(conflicted).toHaveLength(1);
+  await session.retry(slot);
+  expect(conflicted).toHaveLength(1);
+  // Re-holding the same value raises the conflict again: its toast may be gone.
+  await session.save("pages/home", "title", "Mine");
+  expect(sent).toEqual([]);
+  expect(conflicted).toHaveLength(2);
+  await session.save("pages/home", "title", "Mine again");
+  expect(sent).toEqual([]);
+  expect(conflicted).toHaveLength(3);
+  expect(slot.state).toBe("failed");
+  await session.keepMine(slot);
+  expect(sent).toEqual([{ value: "Mine again", expectedVersion: 4 }]);
+  expect(slot.state).toBe("saved");
+});
+
+test("Session: a hold from a marked widget keeps a newer conflict the server already answered with", async () => {
+  // Deleted and recreated: the server's latest (version 7) is not the catch-up's document (version 6).
+  const latest = wireDocument("pages/home", 7, { title: "Latest" });
+  const client = {
+    documents: () => Promise.resolve({ "pages/home": summary("pages/home", true, true) }),
+    field: () => Promise.reject(new ContentRequestError(409, "conflict", "Stale", undefined, latest)),
+  } as unknown as ContentClient;
+  const session = new Session(
+    client,
+    { stateChanged() {}, saved() {}, failed() {}, conflicted() {}, took() {} },
+    "/api/content",
+  );
+  await session.load(["pages/home"]);
+  await session.save("pages/home", "title", "Mine");
+  const slot = session.slot("pages/home", "title");
+  expect(slot.conflict?.version).toBe(7);
+  session.holdConflict("pages/home", "title", "Mine again", wireDocument("pages/home", 6, { title: "Older" }));
+  expect(slot.conflict?.version).toBe(7);
+  expect(slot.failedValue).toBe("Mine again");
+  expect(slot.state).toBe("failed");
 });
 
 describe("a bulk publish with a failure", () => {
@@ -2894,7 +3482,11 @@ describe("cancelling a bulk run", () => {
 describe("a slow GET documents", () => {
   function sessionWithSummaries(summaries: () => Promise<Record<string, unknown>>) {
     const client = { documents: summaries } as unknown as ContentClient;
-    return new Session(client, { stateChanged() {}, saved() {}, failed() {}, conflicted() {} }, "/api/content");
+    return new Session(
+      client,
+      { stateChanged() {}, saved() {}, failed() {}, conflicted() {}, took() {} },
+      "/api/content",
+    );
   }
 
   test("an older summary doesn't lower the version or drop the newer document", async () => {

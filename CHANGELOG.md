@@ -49,6 +49,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Chrome: a field left open while Discard, Restore, Unpublish or a list action met another editor's change no longer
+  saves over that change (#48, a swap after a conflict commits an open widget over the other editor's change). Leaving
+  it with a changed value, or a list swap replacing it, holds the value as a field conflict with the usual Keep mine /
+  Take theirs choice; Esc or leaving it unchanged shows their value. A held field sends only through Keep mine, never by
+  reopening it, Retry or `destroy()`. Save events that land after `destroy()` no longer touch the host's markup.
 - Chrome: with `scheduling: true`, a half-typed "Publish at" now says why Publish is disabled (WCAG 3.3.1). Once focus
   leaves the input, a line under it shows the new `scheduleIncomplete` string, the input gets `aria-invalid="true"` and
   the line is announced. A past time's line now sets `aria-invalid` too. Emptying the date's segments by keyboard now

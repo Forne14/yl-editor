@@ -15,8 +15,13 @@ export interface SaveSlot {
   state: SaveState;
   /** The value that failed to save, kept for Retry and Keep mine. */
   failedValue?: unknown;
-  /** Set when the last failure was a version conflict. */
+  /** Set when the last failure was a version conflict. Set and cleared only through `Session.setConflict`. */
   conflict?: WireDocument;
+  /**
+   * Whether `conflict` is a document the session took (`holdConflict`, re-pointed by `take`) rather than a 409's
+   * `current` held by a field save: only the first is never taken again when it is not newer (see `heldToTake`).
+   */
+  conflictCaughtUp?: boolean;
   pending?: { value: unknown };
   /** The value of the request on the wire now. */
   sending?: { value: unknown };
@@ -38,6 +43,11 @@ export interface SessionEvents {
   /** `error` is a `ContentRequestError`, or whatever `fetch` threw when the server was unreachable. */
   failed(slot: SaveSlot, error: unknown): void;
   conflicted(slot: SaveSlot, current: WireDocument): void;
+  /**
+   * The session took another editor's document as the latest (see `Session.take`): a catch-up, or Keep mine or Take
+   * theirs adopting a held one. Every conflict held for its key already stands against it.
+   */
+  took(document: WireDocument): void;
 }
 
 interface MutableDocument extends DocumentState {
@@ -256,7 +266,7 @@ export class Session {
     for (const slot of this.slots.values()) {
       if (slot.key !== key || slot.state !== "failed") continue;
       slot.failedValue = undefined;
-      slot.conflict = undefined;
+      this.setConflict(slot, undefined);
       this.setState(slot, "idle");
     }
   }
@@ -271,7 +281,7 @@ export class Session {
       if (slot.key !== key || !only(slot.path)) continue;
       if (slot.state === "failed") {
         slot.failedValue = undefined;
-        slot.conflict = undefined;
+        this.setConflict(slot, undefined);
       } else if (slot.pending && !slot.sending) {
         // Called on the document's write chain, so nothing of it is on the wire: a queued value is not yet sent.
         slot.pending = undefined;
@@ -292,37 +302,116 @@ export class Session {
     return slot;
   }
 
+  /**
+   * A slot holding a conflict never sends from here: the new value is held in its place against the same document, the
+   * hold's origin unchanged, and the conflict is raised again (see `holdConflict`).
+   */
   save(key: string, path: string, value: unknown): Promise<void> {
     const slot = this.slot(key, path);
+    if (slot.conflict) {
+      this.hold(slot, value);
+      return Promise.resolve();
+    }
     slot.pending = { value };
-    slot.conflict = undefined;
     this.setState(slot, "saving");
     if (!slot.scheduled) slot.scheduled = this.enqueue(key, () => this.flush(slot));
     return slot.scheduled;
   }
 
-  /** Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing. */
+  /**
+   * Resends a failed value. A button still showing for a value since dropped (see `dropSaves`) does nothing, and so
+   * does one for a value since held as a conflict: only Keep mine sends that.
+   */
   retry(slot: SaveSlot): Promise<void> {
-    if (slot.state !== "failed") return Promise.resolve();
+    if (slot.state !== "failed" || slot.conflict) return Promise.resolve();
     return this.save(slot.key, slot.path, slot.failedValue);
   }
 
-  /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
-  keepMine(slot: SaveSlot): Promise<void> {
-    if (slot.state !== "failed") return Promise.resolve();
-    if (slot.conflict) this.adopt(slot.conflict);
-    return this.retry(slot);
+  /**
+   * Holds `value` as a conflict with `current`, a document a catch-up took, without sending it, as a save answered with
+   * a 409 is. Every hold raises the conflict, the same value again included: its toast may be gone, and only that toast
+   * offers Keep mine.
+   */
+  holdConflict(key: string, path: string, value: unknown, current: WireDocument): void {
+    const slot = this.slot(key, path);
+    // A conflict already held stays: `take` has moved it to the newest document taken, or kept a newer 409's `current`.
+    if (!slot.conflict) this.setConflict(slot, current, true);
+    this.hold(slot, value);
   }
 
-  /** Accept the other edit. Returns the server's value for the field so the caller can repaint it. */
+  private hold(slot: SaveSlot, value: unknown): void {
+    slot.failedValue = value;
+    this.setState(slot, "failed");
+    if (slot.conflict) this.events.conflicted(slot, slot.conflict);
+  }
+
+  /** A catch-up took `document` (a lifecycle or list write's 409) as the latest. */
+  catchUp(document: WireDocument): void {
+    this.take(document);
+  }
+
+  /**
+   * Overwrite: adopt the server's version so the next write is accepted, then resend our value. The value is queued
+   * before the document is taken, so the chrome sees this slot's save on its way and leaves a widget open on it
+   * unmarked; the save itself reads the version only once the chain runs it, after the take.
+   */
+  keepMine(slot: SaveSlot): Promise<void> {
+    if (slot.state !== "failed") return Promise.resolve();
+    const taken = this.heldToTake(slot);
+    this.setConflict(slot, undefined);
+    const sent = this.save(slot.key, slot.path, slot.failedValue);
+    if (taken) this.take(taken);
+    return sent;
+  }
+
+  /**
+   * Accept the other edit. Returns the payload of the document the hold stands against, which `take` has made the one
+   * the session stands on for this hold (`take` re-points every hold of the key), so the caller can repaint the field
+   * from it.
+   */
   takeTheirs(slot: SaveSlot): unknown {
     const current = slot.conflict;
-    slot.conflict = undefined;
+    const taken = this.heldToTake(slot);
+    if (taken) this.take(taken);
+    this.setConflict(slot, undefined);
     slot.failedValue = undefined;
     this.setState(slot, "idle");
-    if (!current) return undefined;
-    this.adopt(current);
-    return current.payload;
+    return current?.payload;
+  }
+
+  /**
+   * The slot's held document, if Keep mine or Take theirs must take it. A 409's `current` held by a field save is the
+   * server's latest and is always taken, older or not: a document deleted and recreated starts again at version 1. A
+   * hold made by a catch-up is a document the session already took, and the session's own writes since may have moved
+   * past it, so it is taken only when newer: taking it again would send the next write on a version the server has left
+   * behind.
+   */
+  private heldToTake(slot: SaveSlot): WireDocument | undefined {
+    const document = slot.conflict;
+    if (!document) return undefined;
+    const known = this.documents.get(document.key)?.version;
+    return !slot.conflictCaughtUp || known === undefined || document.version > known ? document : undefined;
+  }
+
+  /**
+   * The one step for every document the session takes from another editor (`catchUp`, `keepMine`, `takeTheirs`): adopt
+   * it, re-point every conflict held for its key to it, then tell the chrome (`took`), which marks the widget open on
+   * that key. A held 409's `current` newer than `document` is the server's later word, not yet taken: it stays.
+   */
+  private take(document: WireDocument): void {
+    this.adopt(document);
+    for (const slot of this.slots.values()) {
+      if (slot.key !== document.key || !slot.conflict) continue;
+      if (!slot.conflictCaughtUp && slot.conflict.version > document.version) continue;
+      this.setConflict(slot, document, true);
+    }
+    this.events.took(document);
+  }
+
+  /** The one place a slot's conflict changes, so its origin never outlives it. */
+  private setConflict(slot: SaveSlot, document: WireDocument | undefined, caughtUp = false): void {
+    slot.conflict = document;
+    slot.conflictCaughtUp = document ? caughtUp : undefined;
   }
 
   /** Publish or discard finished: the document is no longer this session's change. */
@@ -412,7 +501,7 @@ export class Session {
           slot.pending = undefined;
           this.setState(slot, "failed");
           if (error instanceof ContentRequestError && error.code === "conflict" && error.current) {
-            slot.conflict = error.current;
+            this.setConflict(slot, error.current);
             this.events.conflicted(slot, error.current);
           } else {
             this.events.failed(slot, error);
