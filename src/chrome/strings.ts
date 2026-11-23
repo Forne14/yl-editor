@@ -128,6 +128,7 @@ export const defaultStrings = {
   itemChipOpen: "✕",
   itemToolbar: "{item}, {position} of {count}: actions",
   itemActions: "Actions for {item}, {position} of {count}",
+  itemDrag: "Drag to reorder {item}, or use the move buttons",
   itemMoveUp: "Move {item} up",
   itemMoveDown: "Move {item} down",
   itemDuplicate: "Duplicate {item}",
@@ -135,6 +136,7 @@ export const defaultStrings = {
   itemIsFirst: "{item} is already first.",
   itemIsLast: "{item} is already last.",
   itemMoved: "{item} moved to position {position} of {count}.",
+  itemSorted: "{item} is now at position {position} of {count}, in date order.",
   itemAdded: "{item} added at position {position} of {count}.",
   itemDuplicated: "{item} duplicated. The copy is at position {position} of {count}.",
   itemRemoved:

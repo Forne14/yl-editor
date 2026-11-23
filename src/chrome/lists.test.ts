@@ -229,7 +229,9 @@ describe("a list while editing", () => {
     await mount();
     const up = toolButton(1, "up");
     const remove = toolButton(1, "remove");
-    expect([up.tabIndex, toolButton(1, "down").tabIndex, remove.tabIndex]).toEqual([0, -1, -1]);
+    expect([toolButton(1, "grip").tabIndex, up.tabIndex, toolButton(1, "down").tabIndex, remove.tabIndex]).toEqual([
+      0, -1, -1, -1,
+    ]);
     up.focus();
     up.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     expect(document.activeElement).toBe(remove);
@@ -1162,5 +1164,221 @@ describe("a field open in a list when a conflict swaps it (#48)", () => {
     expect(fieldCalls).toEqual(["artists[_key=a].name"]);
     expect(toastText()).not.toContain("Someone else changed this field");
     expect(names()).toEqual(["Mara", "Tobias", "New artist"]);
+  });
+});
+
+describe("drag to reorder and date order (#43)", () => {
+  const grip = (index: number) => toolButton(index, "grip");
+  const pointer = (type: string, target: Element, init: { clientY?: number; button?: number } = {}) =>
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init }));
+  /** Each item is 100px tall; its midpoint is what a drag compares the pointer with. */
+  const lay = () =>
+    items().forEach((item, index) => {
+      item.getBoundingClientRect = () => new DOMRect(0, index * 100, 300, 100);
+    });
+  const three = () => {
+    artists = [
+      { _key: "a", name: "Mara" },
+      { _key: "b", name: "Tobias" },
+      { _key: "c", name: "Ines" },
+    ];
+    published = artists.map((artist) => ({ ...artist }));
+    document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+  };
+
+  test("the handle is the first toolbar button, named for the item", async () => {
+    await mount();
+    const buttons = [...(items()[0]?.querySelectorAll<HTMLElement>(".cms-item__tools [data-action]") ?? [])];
+    expect(buttons.map((node) => node.dataset.action)).toEqual(["grip", "up", "down", "remove"]);
+    expect(grip(0).getAttribute("aria-label")).toBe("Drag to reorder Mara, or use the move buttons");
+    expect(grip(0).className).toContain("cms-item__grip");
+  });
+
+  test("a drop makes one move write from the old index to the new, then focuses the handle and announces", async () => {
+    three();
+    await mount();
+    lay();
+    pointer("pointerdown", grip(0));
+    expect(items()[0]?.classList.contains("cms-item--dragging")).toBe(true);
+    pointer("pointermove", list(), { clientY: 160 });
+    expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
+    expect(arrayCalls).toEqual([]);
+    pointer("pointerup", list());
+    await settle();
+    expect(arrayCalls).toEqual([{ op: { kind: "move", from: 0, to: 1 }, expectedVersion: 4 }]);
+    expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
+    expect(items()[1]?.classList.contains("cms-item--dragging")).toBe(false);
+    expect(liveText()).toBe("Mara moved to position 2 of 3.");
+    expect(document.activeElement).toBe(grip(1));
+  });
+
+  test("a drop at the same place writes nothing", async () => {
+    three();
+    await mount();
+    lay();
+    pointer("pointerdown", grip(1));
+    pointer("pointermove", list(), { clientY: 260 });
+    pointer("pointermove", list(), { clientY: 120 });
+    pointer("pointerup", list());
+    await settle();
+    expect(arrayCalls).toEqual([]);
+    expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+    expect(items()[1]?.classList.contains("cms-item--dragging")).toBe(false);
+  });
+
+  test("pointercancel puts the item back and writes nothing", async () => {
+    three();
+    await mount();
+    lay();
+    pointer("pointerdown", grip(0));
+    pointer("pointermove", list(), { clientY: 260 });
+    expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+    pointer("pointercancel", list());
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+    expect(arrayCalls).toEqual([]);
+    expect(items()[0]?.classList.contains("cms-item--dragging")).toBe(false);
+  });
+
+  test("Escape puts the item back, and a later pointerup does nothing", async () => {
+    three();
+    await mount();
+    lay();
+    pointer("pointerdown", grip(0));
+    pointer("pointermove", list(), { clientY: 260 });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    pointer("pointerup", list());
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+    expect(arrayCalls).toEqual([]);
+  });
+
+  test("a failed write puts the item back where the page showed it", async () => {
+    three();
+    await mount();
+    lay();
+    arrayAnswer = () => json({ error: { code: "internal", message: "down" } }, 500);
+    pointer("pointerdown", grip(0));
+    pointer("pointermove", list(), { clientY: 260 });
+    pointer("pointerup", list());
+    await settle();
+    expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+  });
+
+  test("a drag is refused with listBusy while the list waits for the page", async () => {
+    await mount();
+    const realFetch = globalThis.fetch;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (!String(input).includes("/api/")) await gate;
+      return realFetch(input, init);
+    });
+    addButton()?.click();
+    await settle();
+    pointer("pointerdown", grip(0));
+    expect(liveText()).toBe("Updating the list…");
+    expect(items()[0]?.classList.contains("cms-item--dragging")).toBe(false);
+    release();
+    await settle();
+  });
+
+  test("Arrow Up and Down on the handle move the item one step and focus stays on the handle", async () => {
+    await mount();
+    grip(1).focus();
+    grip(1).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    await settle();
+    expect(arrayCalls).toEqual([{ op: { kind: "move", from: 1, to: 0 }, expectedVersion: 4 }]);
+    expect(names()).toEqual(["Tobias", "Mara"]);
+    expect(liveText()).toBe("Tobias moved to position 1 of 2.");
+    expect(document.activeElement).toBe(grip(0));
+    grip(0).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    await settle();
+    expect(arrayCalls[1]?.op).toEqual({ kind: "move", from: 0, to: 1 });
+    expect(document.activeElement).toBe(grip(1));
+  });
+
+  test("Arrow Up on the first item's handle says it is first and writes nothing", async () => {
+    await mount();
+    grip(0).focus();
+    grip(0).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    await settle();
+    expect(arrayCalls).toEqual([]);
+    expect(liveText()).toBe("Mara is already first.");
+    expect(document.activeElement).toBe(grip(0));
+  });
+
+  test("Left and Right still rove between the handle and the buttons", async () => {
+    await mount();
+    grip(0).focus();
+    grip(0).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(toolButton(0, "up"));
+  });
+
+  describe("order data", () => {
+    const sorted = (rows: Artist[]) => {
+      pageAnswer = () =>
+        new Response(`<!doctype html><html><body><main id="page">${renderOne("artists", rows)}</main></body></html>`);
+    };
+    const zedFirst = [
+      { _key: "b", name: "Tobias" },
+      { _key: "c", name: "Ines" },
+      { _key: "a", name: "Zed" },
+    ];
+    const rename = (index: number, text: string) => {
+      const field = items()[index]?.querySelector("h3") as HTMLElement;
+      field.click();
+      field.textContent = text;
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    };
+    beforeEach(() => {
+      listAttrs = { ...listAttrs, order: "data" };
+      artists = [
+        { _key: "a", name: "Mara" },
+        { _key: "b", name: "Tobias" },
+        { _key: "c", name: "Ines" },
+      ];
+      document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+    });
+
+    test("has no handle", async () => {
+      await mount();
+      expect(grip(0)).toBeNull();
+      expect(list().querySelector(".cms-item__grip")).toBeNull();
+    });
+
+    test("an item that moved is announced, and its field gets focus in the new place", async () => {
+      await mount();
+      sorted(zedFirst);
+      rename(0, "Zed");
+      await settle();
+      expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+      expect(liveText()).toBe("Zed is now at position 3 of 3, in date order.");
+      expect(document.activeElement).toBe(items()[2]?.querySelector("h3"));
+    });
+
+    test("an item that stayed is not announced", async () => {
+      await mount();
+      sorted(artists.map((artist) => (artist._key === "b" ? { ...artist, name: "Tom" } : artist)));
+      rename(1, "Tom");
+      await settle();
+      expect(fieldCalls).toEqual(["artists[_key=b].name"]);
+      expect(names()).toEqual(["Mara", "Tom", "Ines"]);
+      expect(liveText()).not.toContain("date order");
+    });
+
+    test("focus is left alone when the editor has moved it elsewhere meanwhile", async () => {
+      await mount();
+      sorted(zedFirst);
+      rename(0, "Zed");
+      const other = document.createElement("button");
+      document.body.append(other);
+      other.focus();
+      await settle();
+      expect(liveText()).toBe("Zed is now at position 3 of 3, in date order.");
+      expect(document.activeElement).toBe(other);
+    });
   });
 });
