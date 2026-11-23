@@ -718,6 +718,19 @@
   color: var(--cms-danger);
 }
 
+:where(.cms-item__grip) {
+  cursor: grab;
+  touch-action: none;
+}
+
+:where(.cms-item--dragging) {
+  opacity: 0.6;
+}
+
+:where(.cms-item--dragging) > .cms-item__band {
+  background: color-mix(in srgb, var(--cms-accent) 16%, transparent);
+}
+
 :where(.cms-btn[aria-disabled="true"]) {
   opacity: 0.5;
   cursor: not-allowed;

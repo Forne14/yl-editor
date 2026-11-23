@@ -237,7 +237,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           record.cleared = undefined;
           if (!TEXT_TYPES.has(record.info.type)) render(record, value);
         }
-        if (slot.state === "saved") toast.show(strings.saved, "saved");
+        if (slot.state === "saved") {
+          toast.show(strings.saved, "saved");
+          settleDataOrder(slot);
+        }
       },
       failed(slot, error) {
         if (destroyed) return;
@@ -555,7 +558,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             : `[yl-editor] ${list.id} has no Add, Remove or Move: its field ${byPosition} is addressed by position inside a keyed item. Render an item's fields with editable(docKey).itemFields(path, item, index). See docs/chrome.md → Lists.`,
         );
       }
-      attachList(list, strings, { actions: false, canAdd: false, canUndo: false, add() {}, undo() {}, act() {} });
+      attachList(list, strings, {
+        actions: false,
+        canAdd: false,
+        canUndo: false,
+        add() {},
+        undo() {},
+        act() {},
+        dragStart: () => false,
+        drop: async () => false,
+      });
       return;
     }
     attachList(list, strings, {
@@ -564,7 +576,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       canUndo: removals.some((removal) => removal.listId === list.id),
       undo: () => void undoRemoval(list.id, undefined, list),
       add: () => void addItem(list),
-      act: (item, action, pressed) => void actOnItem(list, item, action, pressed),
+      act: (item, action, pressed, focusOn) => void actOnItem(list, item, action, pressed, focusOn),
+      dragStart: () => !refuseBusy(list.element),
+      drop: (item, to, grip) => dropItem(list, item, to, grip),
     });
   }
 
@@ -676,7 +690,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     list.detach?.();
     // One place per item that stays, marked where it is now, plus the place a restored element came from.
     const places: Comment[] = [];
-    for (const item of list.items) {
+    // In the page's order as it is now: a drop has already put the dragged element where the editor let go of it.
+    const standing = [...list.items].sort((a, b) =>
+      a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+    );
+    for (const item of standing) {
       if (item.itemKey === undefined || !order.includes(item.itemKey)) continue;
       const place = document.createComment("");
       item.element.before(place);
@@ -932,8 +950,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const tools = item?.element.querySelector<HTMLElement>(":scope > .cms-item__tools");
     if (!tools) return;
     const buttons = [...tools.querySelectorAll<HTMLButtonElement>("button[data-action]")];
+    const free = (action: ItemAction | undefined) =>
+      buttons.find((node) => node.dataset.action === action && node.getAttribute("aria-disabled") !== "true");
+    // A move button inert now that the item reached an end: the opposite move, before the handle.
+    const opposite = preferred === "up" ? "down" : preferred === "down" ? "up" : undefined;
     const target =
-      buttons.find((node) => node.dataset.action === preferred && node.getAttribute("aria-disabled") !== "true") ??
+      free(preferred) ??
+      free(opposite) ??
       buttons.find((node) => node.getAttribute("aria-disabled") !== "true") ??
       buttons[0];
     if (!target) return;
@@ -1014,11 +1037,87 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (focusIsFree(fresh)) await openFirstField(fresh, item);
   }
 
+  /**
+   * A field saved inside an item of an `order="data"` list can change the host's order, and only the page knows that
+   * order: once the save has settled (nothing newer queued, which `saved` state means) the chrome swaps the list in
+   * from the page, as Add does. An item that changed place is announced, and the field gets focus in its new place.
+   * One swap per settled save at most, and swaps coalesce (`swapLists`). A field open in the list keeps its widget: the
+   * swap would close it, so the page's order is then shown by the next save or reload.
+   */
+  function settleDataOrder(slot: SaveSlot): void {
+    if (!editing || destroyed) return;
+    const record = recordsFor(slot).find((entry) => entry.element.isConnected);
+    if (!record) return;
+    const list = lists.find(
+      (entry) =>
+        entry.info.order === "data" &&
+        entry.info.key === slot.key &&
+        !entry.nested &&
+        entry.detach !== undefined &&
+        entry.items.some((item) => item.itemKey !== undefined && item.element.contains(record.element)),
+    );
+    const item = list?.items.find((entry) => entry.element.contains(record.element));
+    if (!list || !item || item.itemKey === undefined) return;
+    if (active && list.element.contains(active.record.element)) return;
+    const copy = copiesOf(list.id).indexOf(list);
+    const before = list.items.indexOf(item);
+    const itemKey = item.itemKey;
+    void swapLists(list.info.key).then(() => {
+      if (destroyed) return;
+      const fresh = copiesOf(list.id)[copy];
+      const moved = itemByKey(fresh, itemKey);
+      if (!fresh || !moved) return;
+      const position = fresh.items.indexOf(moved) + 1;
+      if (position === before + 1) return;
+      toast.announce(
+        format(strings.itemSorted, { item: itemName(fresh, moved, strings), position, count: fresh.items.length }),
+      );
+      if (!focusIsFree(fresh)) return;
+      fields.find((entry) => entry.id === slot.id && moved.element.contains(entry.element))?.element.focus();
+    });
+  }
+
+  /**
+   * One move write: a step from the stored index (Move up and down, the handle's arrow keys), or `{ to }` an index (a
+   * drop). Held until the page shows the move: a swap or another press meanwhile would act on the old order. The
+   * announcement and focus are the same for every route. Resolves false when nothing was written.
+   */
+  async function moveItem(
+    list: ListRecord,
+    item: ItemRecord,
+    place: number | { to: number },
+    label: string,
+    focusOn: ItemAction,
+  ): Promise<boolean> {
+    const name = itemName(list, item, strings);
+    const copy = copiesOf(list.id).indexOf(list);
+    const outcome = await listWriteAndSettle(list, label, (items) => {
+      const from = storedIndex(items, item);
+      const to = typeof place === "number" ? from + place : Math.min(place.to, items.length - 1);
+      return from < 0 || to < 0 || to >= items.length || to === from ? undefined : { kind: "move", from, to };
+    });
+    if (!outcome.written) return false;
+    const fresh = copiesOf(list.id)[copy];
+    const moved = itemByKey(fresh, item.itemKey);
+    if (!fresh || !moved) return true;
+    toast.announce(
+      format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
+    );
+    if (focusIsFree(fresh)) focusTools(moved, focusOn);
+    return true;
+  }
+
+  function dropItem(list: ListRecord, item: ItemRecord, to: number, grip: HTMLButtonElement): Promise<boolean> {
+    return moveItem(list, item, { to }, grip.getAttribute("aria-label") ?? "grip", "grip");
+  }
+
   async function actOnItem(
     list: ListRecord,
     item: ItemRecord,
     action: ItemAction,
     pressed: HTMLButtonElement,
+    /** The button focus returns to after a move, when it isn't `action`'s: the drag handle, for an arrow key. */
+    focusOn?: ItemAction,
   ): Promise<void> {
     const reason = pressed.dataset.reason;
     if (pressed.getAttribute("aria-disabled") === "true") {
@@ -1030,21 +1129,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const label = pressed.getAttribute("aria-label") ?? action;
     const copy = copiesOf(list.id).indexOf(list);
     if (action === "up" || action === "down") {
-      const step = action === "up" ? -1 : 1;
-      // Held until the page shows the move: a swap or another press meanwhile would act on the old order.
-      const outcome = await listWriteAndSettle(list, label, (items) => {
-        const from = storedIndex(items, item);
-        const to = from + step;
-        return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
-      });
-      if (!outcome.written) return;
-      const fresh = copiesOf(list.id)[copy];
-      const moved = itemByKey(fresh, item.itemKey);
-      if (!fresh || !moved) return;
-      toast.announce(
-        format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
-      );
-      if (focusIsFree(fresh)) focusTools(moved, action);
+      await moveItem(list, item, action === "up" ? -1 : 1, label, focusOn ?? action);
       return;
     }
     if (action === "duplicate") {

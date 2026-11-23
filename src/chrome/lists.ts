@@ -29,7 +29,7 @@ export interface ItemRecord {
   itemKey: string | undefined;
 }
 
-export type ItemAction = "up" | "down" | "duplicate" | "remove";
+export type ItemAction = "grip" | "up" | "down" | "duplicate" | "remove";
 
 export interface ListHandlers {
   /**
@@ -43,7 +43,12 @@ export interface ListHandlers {
   /** Whether a removal from this list can still be undone: the Add row then offers Undo too. */
   canUndo: boolean;
   undo(): void;
-  act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement): void;
+  /** `focusOn`: the button focus returns to after a move, when it isn't the one pressed (the handle, for an arrow key). */
+  act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement, focusOn?: ItemAction): void;
+  /** A drag is about to start: false (and said) while the list waits for the page. */
+  dragStart(): boolean;
+  /** The item was dropped at `to` (an index among the list's items). Resolves false when nothing was written. */
+  drop(item: ItemRecord, to: number, grip: HTMLButtonElement): Promise<boolean>;
 }
 
 export interface ListRecord {
@@ -174,6 +179,7 @@ export function storedIndex(items: readonly unknown[], item: ItemRecord): number
 
 const SVG = "http://www.w3.org/2000/svg";
 const ICONS: Record<ItemAction | "add", string[]> = {
+  grip: ["M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01"],
   up: ["m6 15 6-6 6 6"],
   down: ["m6 9 6 6 6-6"],
   duplicate: ["M9 9h11v11H9z", "M5 15V6a2 2 0 0 1 2-2h9"],
@@ -287,6 +293,85 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
 
   const toolbars: (HTMLElement | undefined)[] = [];
   const bands: HTMLElement[] = [];
+  /**
+   * A drag moves only the item's element on the page; nothing is written until the drop, which makes one move. Pointer
+   * capture sits on the list, which never moves (capture on the handle would be lost when the item is re-inserted).
+   * Ends at most once: a drop, pointercancel, Escape, lost capture or detach.
+   */
+  let endDrag: ((outcome: "drop" | "cancel") => void) | undefined;
+  const startDrag = (event: PointerEvent, item: ItemRecord, grip: HTMLButtonElement) => {
+    if (event.button !== 0 || endDrag || !handlers.dragStart()) return;
+    event.preventDefault();
+    const node = item.element;
+    const parent = node.parentNode;
+    const next = node.nextSibling;
+    const from = items.indexOf(item);
+    node.classList.add("cms-item--dragging");
+    try {
+      host.setPointerCapture(event.pointerId);
+    } catch {
+      // No capture (a synthetic pointer): the moves still arrive while the pointer stays over the list.
+    }
+    const onMove = (move: PointerEvent) => {
+      const others = items.filter((other) => other !== item).map((other) => other.element);
+      const before = others.find((other) => {
+        const box = other.getBoundingClientRect();
+        return move.clientY < box.top + box.height / 2;
+      });
+      if (before) {
+        if (before.previousSibling !== node) before.before(node);
+      } else {
+        const last = others.at(-1);
+        if (last && last.nextSibling !== node) last.after(node);
+      }
+      record.paint();
+    };
+    const onUp = () => endDrag?.("drop");
+    const onCancel = () => endDrag?.("cancel");
+    const onKey = (key: KeyboardEvent) => {
+      if (key.key !== "Escape") return;
+      key.stopPropagation();
+      endDrag?.("cancel");
+    };
+    const putBack = () => {
+      if (node.parentNode === parent && node.nextSibling !== next) parent?.insertBefore(node, next);
+    };
+    host.addEventListener("pointermove", onMove);
+    host.addEventListener("pointerup", onUp);
+    host.addEventListener("pointercancel", onCancel);
+    host.addEventListener("lostpointercapture", onCancel);
+    document.addEventListener("keydown", onKey, true);
+    endDrag = (outcome) => {
+      endDrag = undefined;
+      host.removeEventListener("pointermove", onMove);
+      host.removeEventListener("pointerup", onUp);
+      host.removeEventListener("pointercancel", onCancel);
+      host.removeEventListener("lostpointercapture", onCancel);
+      document.removeEventListener("keydown", onKey, true);
+      try {
+        host.releasePointerCapture(event.pointerId);
+      } catch {
+        // Already released.
+      }
+      node.classList.remove("cms-item--dragging");
+      const order = items
+        .map((other) => other.element)
+        .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+      const to = order.indexOf(node);
+      if (outcome === "cancel" || to === from || to < 0 || !host.isConnected) {
+        putBack();
+        record.paint();
+        return;
+      }
+      void handlers.drop(item, to, grip).then((written) => {
+        // Nothing written (offline, a refusal): the page shows the stored order again.
+        if (!written && host.isConnected) {
+          putBack();
+          record.paint();
+        }
+      });
+    };
+  };
   items.forEach((item, index) => {
     if (!handlers.actions) {
       // Still a row of the grid: a band for its line and the tint, but nothing to act with.
@@ -313,12 +398,15 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         tabindex: "-1",
       });
       node.append(icon(action));
-      node.addEventListener("click", () => handlers.act(item, action, node));
+      if (action !== "grip") node.addEventListener("click", () => handlers.act(item, action, node));
       return node;
     };
     const buttons: HTMLButtonElement[] = [];
     if (info.order === "manual") {
+      const grip = toolButton("grip", format(strings.itemDrag, placement), false);
+      grip.addEventListener("pointerdown", (event) => startDrag(event, item, grip));
       buttons.push(
+        grip,
         toolButton("up", format(strings.itemMoveUp, placement), index === 0, format(strings.itemIsFirst, placement)),
         toolButton(
           "down",
@@ -368,6 +456,14 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         return;
       }
       const at = buttons.indexOf(target);
+      if (target.dataset.action === "grip" && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        // The same as Move up / Move down, with focus staying on the handle.
+        event.preventDefault();
+        const step = event.key === "ArrowUp" ? "up" : "down";
+        const mover = buttons.find((node) => node.dataset.action === step);
+        if (mover) handlers.act(item, step, mover, "grip");
+        return;
+      }
       const to =
         event.key === "ArrowRight"
           ? (at + 1) % buttons.length
@@ -521,13 +617,14 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   paint();
 
   record.detach = () => {
+    endDrag?.("cancel");
     observer?.disconnect();
     window.removeEventListener("resize", schedule);
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     for (const node of separators.splice(0)) node.remove();
     for (const node of added) node.remove();
     for (const { node, hadClass: had } of itemClasses) {
-      node.classList.remove("cms-item");
+      node.classList.remove("cms-item", "cms-item--dragging");
       node.removeAttribute("data-cms-open");
       if (!had && node.classList.length === 0) node.removeAttribute("class");
     }
