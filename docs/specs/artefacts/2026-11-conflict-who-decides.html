@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Who decides a conflict</title>
+    <style>
+      :root {
+        --bg: #f4f5f8;
+        --card: #fff;
+        --fg: #16181d;
+        --muted: #5b6170;
+        --line: #e3e5eb;
+        --pick: #2557d6;
+        --pick-bg: #e8edfb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1116;
+          --card: #1b1d24;
+          --fg: #f3f4f8;
+          --muted: #aab0bf;
+          --line: #2a2d36;
+          --pick: #6b9bff;
+          --pick-bg: #1f2a44;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.55 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 1.15rem;
+        margin: 40px 0 6px;
+      }
+      p,
+      li {
+        max-width: 76ch;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      table {
+        border-collapse: collapse;
+        background: var(--card);
+        font-size: 0.92rem;
+        margin: 8px 0;
+      }
+      th,
+      td {
+        border: 1px solid var(--line);
+        padding: 6px 10px;
+        text-align: left;
+      }
+      .options {
+        display: grid;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .opt {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+      }
+      .opt.pick {
+        border: 2px solid var(--pick);
+      }
+      .opt h3 {
+        margin: 0 0 6px;
+        font-size: 1rem;
+      }
+      .opt p {
+        margin: 4px 0;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        background: var(--pick-bg);
+        color: var(--pick);
+        font-weight: 600;
+      }
+      .who {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      code {
+        font-size: 0.88em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Who decides that another editor changed a field?</h1>
+      <p class="muted">
+        #48 · a swap after a conflict commits an open widget over the other editor's change. PR #50 (one hold for a
+        field left open through a conflict) has had six review rounds. Nothing on screen changes in any option below:
+        all of them use the conflict toast you approved.
+      </p>
+
+      <h2>Where it stands</h2>
+      <table>
+        <tr>
+          <th>Round</th>
+          <td>1</td>
+          <td>2</td>
+          <td>3</td>
+          <td>4</td>
+          <td>5</td>
+          <td>6</td>
+        </tr>
+        <tr>
+          <th>Important findings</th>
+          <td>2</td>
+          <td>3</td>
+          <td>1</td>
+          <td>5</td>
+          <td>1</td>
+          <td>5</td>
+        </tr>
+      </table>
+      <p>
+        The diff is now about 2,000 lines. Every round finds a new case of the same thing: <strong>the browser</strong>
+        decides whether Ben changed the field. To do that it must keep a copy of the document at the right version, and
+        it has to get that right through fetches, refreshes, retries, bulk publish and documents that are deleted and
+        recreated. Round 6 found, among others, that a Keep mine that fails on the network can still overwrite. It also
+        found that a document recreated at version 1 leaves the editor stuck: last round's fix made the browser ignore
+        versions that go down.
+      </p>
+
+      <h2>Options</h2>
+      <div class="options">
+        <div class="opt pick">
+          <h3>A · Ship the narrow fix now; let the server decide later <span class="tag">recommended</span></h3>
+          <p>
+            Back PR #50 down to the original bug. After a conflict catch-up, what a field left open commits is held as a
+            conflict (Keep mine / Take theirs), and a held field never sends except through Keep mine. No copy kept in
+            the browser, no background fetch, and no comparison by field. The publish path and retried saves stay as
+            they are on <code>main</code> today.
+          </p>
+          <p>
+            New ticket, in the store and contract suite: a field write sent on an old version is accepted when that
+            field didn't change since that version, and refused otherwise. The server has the revisions, so it can tell
+            exactly. Your ruling 1A (only a real change to <em>this</em> field raises a conflict) then holds everywhere,
+            and holds for every save, not only this rare case.
+          </p>
+          <p class="who">
+            Editor, until the new ticket lands: in the rare case that a field is open while Discard, Restore or
+            Unpublish meets another editor's change, the toast can ask about a field Ben didn't touch. Overwriting
+            unseen is never possible. Site developer: nothing now; later, custom stores must pass the new contract
+            tests.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>B · Let the server decide now, in this ticket</h3>
+          <p>
+            Same as A, with the store change in this ticket too. It touches a different area (the store, the contract
+            suite and every custom store), so the PR grows again and needs its own review.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>C · Keep patching the browser-side design</h3>
+          <p>Round 7 with the five fixes from round 6. On the trend so far, more rounds will follow.</p>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
