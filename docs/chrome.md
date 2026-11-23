@@ -318,7 +318,16 @@ chrome creates (see docs/paths.md).
   separates each item from the next, and each field from the next inside an item; fields in a list lose their own
   outline. Nothing nests or crosses. A field's hover, editing and focus states are solid and drawn inside it. The lines
   are placed from the boxes on the page, through custom properties, and redrawn when the list or a field resizes.
-- Each item has a toolbar on its top line: Move up, Move down, Duplicate (when on) and Remove, 44px each. It shows on
+- The axis is read from the items' boxes too. In a column the lines between items are horizontal. In a row they are
+  vertical. In a wrapping grid they run both ways, still inside one outline. The toolbar sits at the start of the
+  item's leading line in every layout.
+- Drag to reorder: press the handle (`.cms-item__grip`) with a pointer and move. The item follows the pointer on the
+  page and nothing is written until you let go. The drop is one `move` write, like Move up and Move down. Dropping it
+  where it started writes nothing. Escape, a cancelled pointer or a failed write puts it back. Move up and Move down
+  stay as the single-pointer alternative (WCAG 2.5.7). With focus on the handle, Arrow Up and Arrow Down move the item
+  one place. While the list is updating, a drag is refused with `listBusy`.
+- Each item has a toolbar on its top line: the drag handle and Move up and Move down (in a `manual` list), Duplicate
+  (when on) and Remove, 44px each. It shows on
   hover and on focus inside the item, which also tints the item. It is one Tab stop (`role="toolbar"`), with Left,
   Right, Home and End between its buttons, and it comes before the item's fields in Tab order. On a device without
   hover (`@media (hover: none)`) each item shows a chip ("⋯ 2 of 3") on its line instead; tapping it opens the toolbar,
@@ -337,9 +346,14 @@ chrome creates (see docs/paths.md).
   removals of their document. A value that failed to save, or was still queued, inside the removed item has nowhere
   left to go: it is dropped, and the toast says so (`removedDroppedToast`).
 - Focus after each operation: a move keeps it on the same button of the moved item, or its other move button once
-  that one is inert; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
+  that one is inert; a drop or an arrow key on the handle keeps it on the handle; Remove moves it to the item now in that place, else the one before, else Add; Undo to the
   restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
   `itemDuplicated`, `itemRemoved`, `itemRestored`).
+- In an `order="data"` list you sort the items. Once a field save inside one of its items has settled, the chrome
+  reloads the list's markup from the page (as Add does). If the item changed place, the new place is announced
+  (`itemSorted`: "Winter Warehouse is now at position 3 of 4, in date order.") and focus follows the field. If it
+  didn't move, nothing is said. While another field in that list is open, the reload waits for a later save, so the
+  open editor isn't closed.
 - Every operation is an `array` write (`insert`, `move` or `remove`) on the document's write chain, after the saves
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
@@ -391,7 +405,7 @@ actions added these: `restore`, `restoreRevisionLabel`, `restoreConfirm`, `resto
 The number and date widgets added `invalidValue` (Enter on a half-typed date or invalid number) and `invalidValueKept`
 (leaving one). Lists added `listTag`, `listTagNoMax`, `listAdd`, `listEmpty`, `listFull`, `listAtMin`, `itemFallback`,
 `itemChip`, `itemChipOpen`, `itemToolbar`, `itemActions`, `itemMoveUp`, `itemMoveDown`, `itemDuplicate`, `itemRemove`,
-`itemIsFirst`, `itemIsLast`, `itemMoved`, `itemAdded`, `itemDuplicated`, `itemRemoved`, `itemRestored`, `removedToast`,
+`itemIsFirst`, `itemIsLast`, `itemDrag`, `itemMoved`, `itemSorted`, `itemAdded`, `itemDuplicated`, `itemRemoved`, `itemRestored`, `removedToast`,
 `undo`, `listReload`, `reload`, `removedDroppedToast`, `listBusy` and `undoConflict`.
 
 `discardDeletes` describes the built-in SQLite store with foreign keys on, which deletes a document's revisions with it.
