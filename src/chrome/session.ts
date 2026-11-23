@@ -316,25 +316,30 @@ export class Session {
   }
 
   /**
-   * Holds `value` as a conflict with `current` without sending it, as a save answered with a 409 is. The conflict is
-   * raised again only when the held value changed, so recommitting the same value adds no toast.
+   * Holds `value` as a conflict with `current` without sending it, as a save answered with a 409 is. Every hold raises
+   * the conflict, the same value again included: its toast may be gone, and only that toast offers Keep mine.
    */
   holdConflict(key: string, path: string, value: unknown, current: WireDocument): void {
     const slot = this.slot(key, path);
-    const same =
-      slot.conflict !== undefined &&
-      slot.state === "failed" &&
-      JSON.stringify(slot.failedValue) === JSON.stringify(value);
     slot.failedValue = value;
     slot.conflict = current;
     this.setState(slot, "failed");
-    if (!same) this.events.conflicted(slot, current);
+    this.events.conflicted(slot, current);
+  }
+
+  /**
+   * A catch-up took `document` as the latest. Every conflict held for its key now stands against it, so Keep mine and
+   * Take theirs decide about what the page was caught up to, not an older document.
+   */
+  catchUp(document: WireDocument): void {
+    this.adopt(document);
+    for (const slot of this.slots.values()) if (slot.key === document.key && slot.conflict) slot.conflict = document;
   }
 
   /** Overwrite: adopt the server's version so the next write is accepted, then resend our value. */
   keepMine(slot: SaveSlot): Promise<void> {
     if (slot.state !== "failed") return Promise.resolve();
-    if (slot.conflict) this.adopt(slot.conflict);
+    if (slot.conflict) this.adoptHeld(slot.conflict);
     slot.conflict = undefined;
     return this.save(slot.key, slot.path, slot.failedValue);
   }
@@ -346,8 +351,18 @@ export class Session {
     slot.failedValue = undefined;
     this.setState(slot, "idle");
     if (!current) return undefined;
-    this.adopt(current);
+    this.adoptHeld(current);
     return current.payload;
+  }
+
+  /**
+   * Adopts a held conflict's document only when it is newer than the session's. A hold made by a catch-up is a document
+   * the session already took, and the session's own writes since may have moved past it: taking it again would send the
+   * next write on a version the server has left behind.
+   */
+  private adoptHeld(document: WireDocument): void {
+    const known = this.documents.get(document.key)?.version;
+    if (known === undefined || document.version > known) this.adopt(document);
   }
 
   /** Publish or discard finished: the document is no longer this session's change. */

@@ -2006,6 +2006,116 @@ describe("a field left open through a conflict catch-up (#48)", () => {
     expect(title.dataset.cmsState).toBe("failed");
   });
 
+  /** Holds Title after a catch-up (version 4), then saves Lede on that version (now 5). */
+  async function heldThenOwnSave() {
+    const caught = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(caught.title, "Enter");
+    await settle();
+    const conflict = visibleToast();
+    const keepMine = buttonNamed("Keep mine (overwrite)", conflict);
+    const takeTheirs = buttonNamed("Take theirs (reload field)", conflict);
+    await editText("pages/home:lede", "Own");
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4]);
+    expect(caught.server.stored.get("pages/home")?.version).toBe(5);
+    return { ...caught, keepMine, takeTheirs };
+  }
+
+  test("Take theirs after the session's own later save keeps its version", async () => {
+    const { server, title, takeTheirs } = await heldThenOwnSave();
+    takeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+    await editText("pages/home:lede", "Again");
+    expect(posts("field").at(-1)?.body?.expectedVersion).toBe(5);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ lede: "Again" });
+  });
+
+  test("Keep mine after the session's own later save sends on its version, with no second conflict", async () => {
+    const { server, title, keepMine } = await heldThenOwnSave();
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([4, 5]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine", lede: "Own" });
+    expect(title.dataset.cmsState).toBe("saved");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(6);
+  });
+
+  test("a later catch-up re-points the hold to the document it adopted", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    const takeTheirs = buttonNamed("Take theirs (reload field)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // version 5
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    expect(title.textContent).toBe("Mine");
+    takeTheirs.click();
+    await settle();
+    expect(title.textContent).toBe("Theirs again");
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+    expect(posts("field")).toHaveLength(0);
+  });
+
+  test("Keep mine after a later catch-up sends on the newer version", async () => {
+    const { server, title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    server.theirWrite("pages/home", { title: "Theirs again" }); // version 5
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    keepMine.click();
+    await settle();
+    expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([5]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+  });
+
+  test("re-holding the same value after the conflict toast went away raises it again", async () => {
+    const { title } = await heldThenOwnSave();
+    // The own save's "Saving…" and "Saved" replaced the conflict toast.
+    expect(toastText()).not.toContain(conflictToast);
+    title.click();
+    press(title, "Enter");
+    await settle();
+    expect(visibleToast().textContent).toContain(conflictToast);
+    buttonNamed("Close", visibleToast()).click();
+    expect(toastText()).not.toContain(conflictToast);
+    title.click();
+    press(title, "Enter");
+    await settle();
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field").at(-1)?.body).toMatchObject({ path: "title", value: "Mine", expectedVersion: 5 });
+  });
+
+  test("a commit equal to the adopted value shows theirs and holds nothing", async () => {
+    const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Theirs");
+    press(title, "Enter");
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    expect(toastText()).not.toContain(conflictToast);
+  });
+
+  test.each([
+    ["a conflict", conflictToast, undefined],
+    ["a failure", "Retry", serverError],
+  ] as const)("%s answering a save after destroy shows no toast", async (_name, shown, answer) => {
+    const server = serve({ "pages/home": live });
+    if (answer) handlers["POST /api/content/field"] = answer;
+    await mount();
+    const { release } = hold("POST /api/content/field");
+    commitText("pages/home:title", "Mine");
+    await settle();
+    const toast = visibleToast();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    handle?.destroy();
+    release();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(toast.textContent).not.toContain(shown);
+  });
+
   test("destroy with the widget still open sends nothing, holds nothing, shows no toast", async () => {
     const { title } = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
     const toast = visibleToast();
@@ -2056,12 +2166,14 @@ test("Session: Retry on a slot holding a conflict sends nothing; Keep mine sends
   const slot = session.slot("pages/home", "title");
   expect(conflicted).toHaveLength(1);
   await session.retry(slot);
+  expect(conflicted).toHaveLength(1);
+  // Re-holding the same value raises the conflict again: its toast may be gone.
   await session.save("pages/home", "title", "Mine");
   expect(sent).toEqual([]);
-  expect(conflicted).toHaveLength(1);
+  expect(conflicted).toHaveLength(2);
   await session.save("pages/home", "title", "Mine again");
   expect(sent).toEqual([]);
-  expect(conflicted).toHaveLength(2);
+  expect(conflicted).toHaveLength(3);
   expect(slot.state).toBe("failed");
   await session.keepMine(slot);
   expect(sent).toEqual([{ value: "Mine again", expectedVersion: 4 }]);

@@ -236,11 +236,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (slot.state === "saved") toast.show(strings.saved, "saved");
       },
       failed(slot, error) {
+        if (destroyed) return;
         toast.show(format(strings.saveFailed, { message: errorMessage(error, strings) }), "error", [
           { label: strings.retry, onClick: () => void session.retry(slot), variant: "primary" },
         ]);
       },
       conflicted(slot) {
+        if (destroyed) return;
         toast.show(strings.conflict, "error", [
           { label: strings.keepMine, onClick: () => void session.keepMine(slot), variant: "danger" },
           { label: strings.takeTheirs, onClick: () => takeTheirs(slot), variant: "primary" },
@@ -418,8 +420,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         if (theirs) {
           // Sent now, it would go out on their version and overwrite what the editor hasn't seen.
           if (destroyed) return;
-          if (changed) session.holdConflict(info.key, info.path, next, theirs);
-          else showTheirs(theirs);
+          // A value equal to theirs is nothing to decide about.
+          if (changed && !sameValue(next, valueAtPath(theirs.payload, info.path))) {
+            session.holdConflict(info.key, info.path, next, theirs);
+          } else showTheirs(theirs);
           return;
         }
         if (changed) await session.save(info.key, info.path, next);
@@ -1838,8 +1842,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   //   that save goes out after the catch-up whatever the widget does, and the widget started from it.
   // - A marked widget sends nothing. A commit that changed the value (leaving it, Enter, a swap's
   //   `closeActive(false, true)`) is held through `Session.holdConflict`, as a save answered with a 409 is; Esc or an
-  //   unchanged commit shows the adopted value. After destroy it holds nothing and shows nothing.
-  // - A slot holding a conflict sends only through Keep mine: `save` re-holds, `retry` does nothing.
+  //   unchanged commit, or one equal to the adopted value, shows the adopted value. After destroy it holds nothing and
+  //   shows nothing, and no save answered after destroy shows a toast.
+  // - A slot holding a conflict sends only through Keep mine: `save` re-holds, `retry` does nothing. Every hold, the
+  //   same value again included, raises the conflict toast, so Keep mine is always on offer once its toast is gone.
+  // Invariants:
+  // - A held conflict's document is never older than the last catch-up of its key: `Session.catchUp` re-points every
+  //   held slot of the key to the document it adopts.
+  // - The session's version never goes back: Keep mine and Take theirs adopt the held document only when it is newer
+  //   than the session's (a catch-up hold is not, and the session's own writes since may have passed it).
+  // - `theirs` is set only by a catch-up, on the one open widget, and read only by that widget's commit or cancel.
   /**
    * Repaints the document's fields from a payload the session just took. A field with a save on its way keeps what the
    * editor committed. `closeOpen` is for writes that replace the content under an open widget.
@@ -1868,7 +1880,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         return await task(session.documents.get(key)?.version);
       } catch (error) {
         if (isConflict(error) && error.current) {
-          session.adopt(error.current);
+          session.catchUp(error.current);
           const open = active;
           if (open?.record.info.key === key && !open.slot.pending && !open.slot.sending) open.theirs = error.current;
           repaint(key, error.current.payload, false);
