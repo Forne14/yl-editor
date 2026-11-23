@@ -2097,6 +2097,127 @@ describe("a field left open through a conflict catch-up (#48)", () => {
     expect(toastText()).not.toContain(conflictToast);
   });
 
+  /** Holds Title (version 4), reopens it, then another editor's write and an Unpublish conflict mark it (version 5). */
+  async function heldThenMarked() {
+    const caught = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
+    press(caught.title, "Enter");
+    await settle();
+    const keepMine = buttonNamed("Keep mine (overwrite)", visibleToast());
+    caught.title.click();
+    caught.server.theirWrite("pages/home", { title: "Theirs again" });
+    await expect(handle?.api.unpublish("pages/home")).rejects.toThrow("Stale");
+    expect(caught.title.getAttribute("contenteditable")).not.toBeNull();
+    return { ...caught, keepMine };
+  }
+
+  test("a held field whose marked widget commits exactly theirs takes theirs", async () => {
+    const { title, keepMine } = await heldThenMarked();
+    title.textContent = "Theirs again";
+    press(title, "Enter");
+    await settle();
+    expect(title.textContent).toBe("Theirs again");
+    expect(title.dataset.cmsState).toBe("idle");
+    // Only the conflict's own toast goes: the Unpublish failure is still showing.
+    expect(toastText()).toContain("Unpublish did nothing");
+    keepMine.click();
+    await settle();
+    expect(posts("field")).toHaveLength(0);
+    expect(handle?.api.documents().get("pages/home")?.version).toBe(5);
+  });
+
+  test.each([
+    ["Esc", "Escape"],
+    ["an unchanged commit", "Enter"],
+  ])("%s on a held field's marked widget raises the conflict again", async (_name, key) => {
+    const { server, title } = await heldThenMarked();
+    press(title, key);
+    await settle();
+    expect(title.textContent).toBe("Mine");
+    expect(title.dataset.cmsState).toBe("failed");
+    expect(visibleToast().textContent).toContain(conflictToast);
+    buttonNamed("Keep mine (overwrite)", visibleToast()).click();
+    await settle();
+    expect(posts("field").map((call) => call.body)).toEqual([
+      { key: "pages/home", path: "title", value: "Mine", expectedVersion: 5 },
+    ]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Mine" });
+  });
+
+  /** A popover on `n` whose own read (taken before their write) is answered on `answered`, around a Restore conflict. */
+  async function popoverAroundCatchUp(answered: "after" | "before") {
+    addEditValueField("n", "number");
+    const server = serve({ "pages/home": { payload: { n: 1 }, publishedPayload: { n: 1 } } });
+    const { api } = await mount();
+    const read = handlers["GET /api/content/document"] as Handler;
+    // Restore's own read fails, so nothing is cached and the popover's read is its own request.
+    handlers["GET /api/content/document"] = serverError;
+    const restoring = hold("POST /api/content/restore-revision");
+    const restore = api.restoreRevision("pages/home", 7);
+    await settle();
+    let answer: () => void = () => undefined;
+    handlers["GET /api/content/document"] = (body, url) => {
+      const before = read(body, url);
+      return new Promise((resolve) => (answer = () => resolve(before)));
+    };
+    field("pages/home:n").click();
+    await settle();
+    server.theirWrite("pages/home", { n: 2 });
+    if (answered === "before") answer();
+    restoring.release();
+    await expect(restore).rejects.toThrow("Stale");
+    if (answered === "after") answer();
+    await settle();
+    const input = popoverControl<HTMLInputElement>("input");
+    const shown = input.value;
+    input.value = "5";
+    press(input, "Enter");
+    await settle();
+    return { server, shown };
+  }
+
+  test("a popover whose read is answered after the catch-up starts from the adopted document", async () => {
+    const { server, shown } = await popoverAroundCatchUp("after");
+    expect(shown).toBe("2");
+    expect(fieldWrites().map((call) => [call.body?.value, call.body?.expectedVersion])).toEqual([[5, 4]]);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ n: 5 });
+  });
+
+  test("a popover open by the time of the catch-up is marked, and a change is held", async () => {
+    const { server, shown } = await popoverAroundCatchUp("before");
+    expect(shown).toBe("1");
+    expect(fieldWrites()).toHaveLength(0);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ n: 2 });
+    expect(visibleToast().textContent).toContain(conflictToast);
+  });
+
+  test.each(["Keep mine (overwrite)", "Take theirs (reload field)"])(
+    "%s on a save's conflict with a recreated document adopts it, older or not",
+    async (choice) => {
+      handlers["GET /api/content/documents"] = () => ({
+        json: { documents: { "pages/home": summary("pages/home", true, true, 7) } },
+      });
+      const recreated = wireDocument("pages/home", 1, { title: "Theirs" });
+      handlers["POST /api/content/field"] = [
+        () => ({ status: 409, json: { error: { code: "conflict", message: "Stale", current: recreated } } }),
+        echoField,
+      ];
+      const { api } = await mount();
+      await editText("pages/home:title", "Mine");
+      buttonNamed(choice, visibleToast()).click();
+      await settle();
+      const title = field("pages/home:title");
+      if (choice.startsWith("Keep")) {
+        expect(posts("field").map((call) => call.body?.expectedVersion)).toEqual([7, 1]);
+        expect(title.dataset.cmsState).toBe("saved");
+        expect(api.documents().get("pages/home")?.version).toBe(2);
+      } else {
+        expect(posts("field")).toHaveLength(1);
+        expect(title.textContent).toBe("Theirs");
+        expect(api.documents().get("pages/home")?.version).toBe(1);
+      }
+    },
+  );
+
   test.each([
     ["a conflict", conflictToast, undefined],
     ["a failure", "Retry", serverError],
