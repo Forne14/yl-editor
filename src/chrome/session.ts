@@ -334,7 +334,8 @@ export class Session {
    */
   holdConflict(key: string, path: string, value: unknown, current: WireDocument): void {
     const slot = this.slot(key, path);
-    this.setConflict(slot, current, true);
+    // A conflict already held stays: `take` has moved it to the newest document taken, or kept a newer 409's `current`.
+    if (!slot.conflict) this.setConflict(slot, current, true);
     this.hold(slot, value);
   }
 

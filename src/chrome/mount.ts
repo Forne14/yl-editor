@@ -464,7 +464,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           // A value equal to theirs is nothing to decide about, and settles a conflict already held as Take theirs does.
           if (sameValue(next, valueAtPath(theirs.payload, info.path))) {
             if (slot.conflict) takeTheirs(slot);
-            else showTheirs(theirs);
+            else {
+              // The editor chose theirs over a value that failed to save: that value is no longer theirs to retry.
+              if (slot.state === "failed") session.takeTheirs(slot);
+              showTheirs(theirs);
+            }
           } else if (changed) session.holdConflict(info.key, info.path, next, theirs);
           else showTheirs(theirs);
           return;

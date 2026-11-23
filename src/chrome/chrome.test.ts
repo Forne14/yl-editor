@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupByDocument, scanFields } from "./fields.ts";
 import { mountEditor, type ContentClient } from "./index.ts";
+import { ContentRequestError } from "../http/client.ts";
 import { Session } from "./session.ts";
 import type { EditorHandle, EditorOptions, Widget, WidgetContext, WireDocument } from "./types.ts";
 
@@ -2097,6 +2098,27 @@ describe("a field left open through a conflict catch-up (#48)", () => {
     expect(toastText()).not.toContain(conflictToast);
   });
 
+  test("a failed save whose marked widget commits exactly theirs clears the failure, so Retry sends nothing", async () => {
+    const server = serve({ "pages/home": live });
+    handlers["POST /api/content/field"] = [serverError, handlers["POST /api/content/field"] as Handler];
+    const { api } = await mount();
+    await editText("pages/home:title", "Mine"); // 500: Retry
+    const retry = buttonNamed("Retry", visibleToast());
+    const title = field("pages/home:title");
+    title.click();
+    server.theirWrite("pages/home", { title: "Theirs" });
+    await expect(api.unpublish("pages/home")).rejects.toThrow("Stale");
+    title.textContent = "Theirs";
+    press(title, "Enter");
+    await settle();
+    expect(title.textContent).toBe("Theirs");
+    expect(title.dataset.cmsState).toBe("idle");
+    retry.click();
+    await settle();
+    expect(posts("field")).toHaveLength(1);
+    expect(server.stored.get("pages/home")?.payload).toMatchObject({ title: "Theirs" });
+  });
+
   /** Holds Title (version 4), reopens it, then another editor's write and an Unpublish conflict mark it (version 5). */
   async function heldThenMarked() {
     const caught = await catchUpWhileOpen({ title: "Theirs" }, "Mine");
@@ -2382,6 +2404,28 @@ test("Session: Retry on a slot holding a conflict sends nothing; Keep mine sends
   await session.keepMine(slot);
   expect(sent).toEqual([{ value: "Mine again", expectedVersion: 4 }]);
   expect(slot.state).toBe("saved");
+});
+
+test("Session: a hold from a marked widget keeps a newer conflict the server already answered with", async () => {
+  // Deleted and recreated: the server's latest (version 7) is not the catch-up's document (version 6).
+  const latest = wireDocument("pages/home", 7, { title: "Latest" });
+  const client = {
+    documents: () => Promise.resolve({ "pages/home": summary("pages/home", true, true) }),
+    field: () => Promise.reject(new ContentRequestError(409, "conflict", "Stale", undefined, latest)),
+  } as unknown as ContentClient;
+  const session = new Session(
+    client,
+    { stateChanged() {}, saved() {}, failed() {}, conflicted() {}, took() {} },
+    "/api/content",
+  );
+  await session.load(["pages/home"]);
+  await session.save("pages/home", "title", "Mine");
+  const slot = session.slot("pages/home", "title");
+  expect(slot.conflict?.version).toBe(7);
+  session.holdConflict("pages/home", "title", "Mine again", wireDocument("pages/home", 6, { title: "Older" }));
+  expect(slot.conflict?.version).toBe(7);
+  expect(slot.failedValue).toBe("Mine again");
+  expect(slot.state).toBe("failed");
 });
 
 describe("a bulk publish with a failure", () => {
