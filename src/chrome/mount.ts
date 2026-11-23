@@ -232,17 +232,20 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const session = new Session(
     client,
     {
+      // Destroyed, the records are detached and the chrome gone: a save landing later touches nothing on the page.
       stateChanged(slot) {
+        if (destroyed) return;
         for (const record of recordsFor(slot)) showState(record, slot.state);
-        if (slot.state === "saving" && !destroyed) toast.show(strings.saving, "saving");
+        if (slot.state === "saving") toast.show(strings.saving, "saving");
         updateBar();
       },
       saved(slot, value) {
+        if (destroyed) return;
         for (const record of recordsFor(slot)) {
           record.cleared = undefined;
           if (!TEXT_TYPES.has(record.info.type)) render(record, value);
         }
-        if (slot.state === "saved" && !destroyed) toast.show(strings.saved, "saved");
+        if (slot.state === "saved") toast.show(strings.saved, "saved");
       },
       failed(slot, error) {
         if (destroyed) return;
@@ -489,6 +492,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           else showTheirs(opened, theirs);
           return;
         }
+        // Held and left as it was: the conflict stands as shown, so raising it again would only repeat its toast.
+        if (slot.conflict && sameValue(next, initial)) return;
         const changed = !sameValue(next, initial) || slot.state === "failed";
         if (changed) await session.save(info.key, info.path, next);
       },
