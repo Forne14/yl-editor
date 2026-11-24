@@ -15,7 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   alternative. Escape or a cancelled pointer puts the item back. Arrow Up and Down on the focused handle move the item
   too, and focus stays on the handle. Lists laid out in a row or a wrapping grid draw their lines on the axis read from
   the items' boxes. In an `order="data"` list, the chrome reloads the list's markup from the page after a save, in the
-  background. The reload never makes the list busy or closes an open editor. A saved field whose item changed place is
+  background. The reload never makes the list busy, and never replaces markup that holds focus or a pressed pointer,
+  except the saved field. A saved field whose item changed place is
   announced (`itemSorted`), and focus follows the field.
   New `defaultStrings` keys: `itemDrag` and `itemSorted`.
 - `keyedItems(itemSchema)` and `addListKeys(payload, paths)` from `@yl/editor` (#28, edit lists: add, remove and

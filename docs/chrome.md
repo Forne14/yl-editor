@@ -354,11 +354,13 @@ chrome creates (see docs/paths.md).
   restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
   `itemDuplicated`, `itemRemoved`, `itemRestored`).
 - In an `order="data"` list you sort the items. Once a field save inside one of its items has settled, the chrome
-  reloads the list's markup from the page in the background. Several saves give one reload. The reload never makes the
-  list busy, and it waits while a field is open in any of that document's lists, so it never closes an editor. If the
-  item changed place, the new place is announced (`itemSorted`: "Winter Warehouse is now at position 3 of 4."). Focus
-  stays on what had it, in the new markup, or else goes to the saved field. A reload that fails or times out is
-  dropped without a message. The order on screen then catches up at the next save or page load.
+  reloads the list's markup from the page in the background. Several saves give one reload, and the reload never makes
+  the list busy. It never replaces markup that holds focus or a pressed pointer, except the saved field itself. So if
+  focus is still on the saved field (Enter in a date), the item moves at once, focus follows the field, and the new
+  place is announced (`itemSorted`: "Winter Warehouse is now at position 3 of 4."). If the editor has moved on inside
+  that document's lists (another field, Add, an item's toolbar), the reload waits until focus and pointer have left
+  them. It then swaps without moving focus, and announces. A reload that fails or times out is dropped without a
+  message. The order on screen then catches up at the next save or page load.
 - Every operation is an `array` write (`insert`, `move` or `remove`) on the document's write chain, after the saves
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.
