@@ -47,6 +47,8 @@ export interface ListHandlers {
   act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement, focusOn?: ItemAction): void;
   /** A drag is about to start: false (and said) while the list waits for the page. */
   dragStart(): boolean;
+  /** The drag `dragStart` granted is over (dropped, cancelled or detached): called exactly once per granted drag. */
+  dragEnd(): void;
   /**
    * The item was dropped next to `place`'s item, by `_key`: after it, or before it when the item is now first. The
    * page can show fewer items than are stored, so only a neighbour's key, not a page index, names a stored place.
@@ -356,14 +358,20 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   //   set, or one `dragStart` refuses (the list waits for the page), starts nothing.
   // - One pointer: the drag belongs to the pointerdown's `pointerId`. Moves, ups, cancels and lost capture of any
   //   other pointer are ignored.
-  // - Page only: until the drop nothing is written. A drag moves only the dragged item's own element among its
-  //   siblings; every other node (host markup between items, the chrome's rows) stays where it is.
+  // - Page only: until the drop nothing is written. A drag moves only the dragged item's own element, next to another
+  //   item (which can sit in another wrapper of the host's); every other node (host markup between items, the
+  //   chrome's rows) stays where it is.
   // - Release: `endDrag` runs at most once (it clears itself first), from the drag's pointerup or pointercancel
   //   anywhere in the document, lost capture, Escape, or detach. It removes every listener it added (on the list and
   //   on the document) and releases the capture, whatever the outcome.
-  // - Put back: a cancel, a drop where it started, or a drop that wrote nothing returns the element to the place
-  //   (`parent`, `next`) it had at pointerdown. A drop that writes puts it back on the write chain before the items
-  //   are arranged in the stored order (`ListHandlers.drop`), so a drop and a move leave the same markup.
+  // - Report: a granted `dragStart` is paired with exactly one `dragEnd`, from `endDrag`'s `finally` (after the drop's
+  //   write has been asked for, so its lock is already held), so the host's count of running drags returns to zero.
+  // - Put back: a cancel, a drop where it started, or a drop that wrote nothing (resolved false, or rejected) returns
+  //   the element to the place (`parent`, `next`) it had at pointerdown, from wherever the drag left it, another
+  //   wrapper of the host's included. It does so only while `parent` is still in the list and `next` still follows
+  //   in it (or was the end); otherwise the markup has been replaced and is the page's. A drop that writes puts it
+  //   back on the write chain before the items are arranged in the stored order (`ListHandlers.drop`), so a drop and
+  //   a move leave the same markup.
   // - Bound: a drop sends at most one move, placed by the neighbour's `_key`, never by a page index.
   // Pointer capture sits on the list, which never moves (capture on the handle would be lost when the item is
   // re-inserted).
@@ -426,7 +434,38 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       endDrag?.("cancel");
     };
     const putBack = () => {
-      if (node.parentNode === parent && node.nextSibling !== next) parent?.insertBefore(node, next);
+      if (!parent || !parent.isConnected || !host.contains(parent)) return;
+      if (next !== null && next.parentNode !== parent) return;
+      if (node.parentNode !== parent || node.nextSibling !== next) parent.insertBefore(node, next);
+    };
+    /** What the drag comes to once its listeners are gone: a put-back, or one drop write. */
+    const settleDrop = (outcome: "drop" | "cancel") => {
+      const order = [...items].sort((a, b) =>
+        a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+      const to = order.indexOf(item);
+      // The page can show fewer items than are stored: the drop names its neighbour, which the write finds by key.
+      const neighbour = to > 0 ? order[to - 1] : order[1];
+      const place: DropPlace | undefined =
+        neighbour?.itemKey === undefined
+          ? undefined
+          : to > 0
+            ? { after: neighbour.itemKey }
+            : { before: neighbour.itemKey };
+      if (outcome === "cancel" || to === from || !place || !host.isConnected) {
+        putBack();
+        record.paint();
+        return;
+      }
+      // Nothing written (offline, a refusal, a write that threw): the page shows the stored order again.
+      const restore = () => {
+        if (!host.isConnected) return;
+        putBack();
+        record.paint();
+      };
+      void handlers.drop(item, place, putBack).then((written) => {
+        if (!written) restore();
+      }, restore);
     };
     host.addEventListener("pointermove", onMove);
     host.addEventListener("lostpointercapture", onCancel);
@@ -448,30 +487,11 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         // Already released.
       }
       node.classList.remove("cms-item--dragging");
-      const order = [...items].sort((a, b) =>
-        a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
-      );
-      const to = order.indexOf(item);
-      // The page can show fewer items than are stored: the drop names its neighbour, which the write finds by key.
-      const neighbour = to > 0 ? order[to - 1] : order[1];
-      const place: DropPlace | undefined =
-        neighbour?.itemKey === undefined
-          ? undefined
-          : to > 0
-            ? { after: neighbour.itemKey }
-            : { before: neighbour.itemKey };
-      if (outcome === "cancel" || to === from || !place || !host.isConnected) {
-        putBack();
-        record.paint();
-        return;
+      try {
+        settleDrop(outcome);
+      } finally {
+        handlers.dragEnd();
       }
-      void handlers.drop(item, place, putBack).then((written) => {
-        // Nothing written (offline, a refusal): the page shows the stored order again.
-        if (!written && host.isConnected) {
-          putBack();
-          record.paint();
-        }
-      });
     };
   };
   items.forEach((item, index) => {
@@ -506,6 +526,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     const buttons: HTMLButtonElement[] = [];
     if (info.order === "manual") {
       const grip = toolButton("grip", format(strings.itemDrag, placement), false);
+      grip.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown");
       grip.addEventListener("pointerdown", (event) => startDrag(event, item));
       buttons.push(
         grip,
