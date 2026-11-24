@@ -324,8 +324,10 @@ chrome creates (see docs/paths.md).
   neither). In a row or grid, give the Add row a line of its own (`.my-list > .cms-list__add { flex-basis: 100%; }` or
   `grid-column: 1 / -1`); otherwise it is laid out as a cell of the last line.
 - Drag to reorder: press the handle (`.cms-item__grip`) with a pointer and move. The item follows the pointer on the
-  page and nothing is written until you let go. The drop is one `move` write, like Move up and Move down. Dropping it
-  where it started writes nothing. Escape, a cancelled pointer or a failed write puts it back. Move up and Move down
+  page and nothing is written until you let go. The drop is one `move` write, like Move up and Move down, placed next
+  to the item it now sits after (by `_key`), so items stored but not shown keep their places. Markup of yours between
+  items ends up where Move up and Move down would leave it. Only the pointer that started the drag moves it or ends
+  it. Dropping it where it started writes nothing. Escape, a cancelled pointer or a failed write puts it back. Move up and Move down
   stay as the single-pointer alternative (WCAG 2.5.7). With focus on the handle, Arrow Up and Arrow Down move the item
   one place. While the list is updating, a drag is refused with `listBusy`.
 - Each item has a toolbar on its top line: the drag handle and Move up and Move down (in a `manual` list), Duplicate
@@ -352,10 +354,11 @@ chrome creates (see docs/paths.md).
   restored item's toolbar. Each one is announced in the polite live region (`itemMoved`, `itemAdded`,
   `itemDuplicated`, `itemRemoved`, `itemRestored`).
 - In an `order="data"` list you sort the items. Once a field save inside one of its items has settled, the chrome
-  reloads the list's markup from the page (as Add does). If the item changed place, the new place is announced
-  (`itemSorted`: "Winter Warehouse is now at position 3 of 4, in date order.") and focus follows the field. If it
-  didn't move, nothing is said. While another field in that list is open, the reload waits for a later save, so the
-  open editor isn't closed.
+  reloads the list's markup from the page in the background. Several saves give one reload. The reload never makes the
+  list busy, and it waits while a field is open in any of that document's lists, so it never closes an editor. If the
+  item changed place, the new place is announced (`itemSorted`: "Winter Warehouse is now at position 3 of 4."). Focus
+  stays on what had it, in the new markup, or else goes to the saved field. A reload that fails or times out is
+  dropped without a message. The order on screen then catches up at the next save or page load.
 - Every operation is an `array` write (`insert`, `move` or `remove`) on the document's write chain, after the saves
   queued before it, with `expectedVersion`. Its index is read from the stored array at that moment, by `_key` when the
   item has one. A conflict writes nothing, shows `actionConflict` and catches the page up, as Discard does.

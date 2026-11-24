@@ -14,8 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `touch-action: none`). A drop makes one `move` write, like Move up and Move down, which stay as the single-pointer
   alternative. Escape or a cancelled pointer puts the item back. Arrow Up and Down on the focused handle move the item
   too, and focus stays on the handle. Lists laid out in a row or a wrapping grid draw their lines on the axis read from
-  the items' boxes. In an `order="data"` list, a saved field whose item changes place in the host's order is announced
-  (`itemSorted`), and focus follows the field: the chrome reloads the list's markup from the page after such a save.
+  the items' boxes. In an `order="data"` list, the chrome reloads the list's markup from the page after a save, in the
+  background. The reload never makes the list busy or closes an open editor. A saved field whose item changed place is
+  announced (`itemSorted`), and focus follows the field.
   New `defaultStrings` keys: `itemDrag` and `itemSorted`.
 - `keyedItems(itemSchema)` and `addListKeys(payload, paths)` from `@yl/editor` (#28, edit lists: add, remove and
   reorder keyed array items). `keyedItems` requires a usable, unique `_key` on every item, so the store refuses an
