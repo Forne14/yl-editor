@@ -372,10 +372,16 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   //   in it (or was the end); otherwise the markup has been replaced and is the page's. A drop that writes puts it
   //   back on the write chain before the items are arranged in the stored order (`ListHandlers.drop`), so a drop and
   //   a move leave the same markup.
+  // - Detached: `detached` is set once `record.detach` has run (after it cancels a running drag, whose put-back is
+  //   still this attachment's). From then on no late callback of this attachment (`restore`, after a drop that wrote
+  //   nothing) touches the host: its markup is the page's, or another attachment's. The `putBack` handed to the write
+  //   is the write's own step and keeps its guards above: it runs before the write arranges the items, whatever
+  //   dresses them by then.
   // - Bound: a drop sends at most one move, placed by the neighbour's `_key`, never by a page index.
   // Pointer capture sits on the list, which never moves (capture on the handle would be lost when the item is
   // re-inserted).
   let endDrag: ((outcome: "drop" | "cancel") => void) | undefined;
+  let detached = false;
   const startDrag = (event: PointerEvent, item: ItemRecord) => {
     if (event.button !== 0 || endDrag || !handlers.dragStart()) return;
     event.preventDefault();
@@ -459,7 +465,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       }
       // Nothing written (offline, a refusal, a write that threw): the page shows the stored order again.
       const restore = () => {
-        if (!host.isConnected) return;
+        if (detached || !host.isConnected) return;
         putBack();
         record.paint();
       };
@@ -770,6 +776,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
 
   record.detach = () => {
     endDrag?.("cancel");
+    detached = true;
     observer?.disconnect();
     window.removeEventListener("resize", schedule);
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);

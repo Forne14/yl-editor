@@ -1121,6 +1121,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   //   shown in what it replaces has a new version since the fetch started. Otherwise it is dropped and the refresh
   //   stays pending. A failed fetch, or a page missing a list, drops the refresh it was for, and only that one: an
   //   entry that replaced it during the flight stays pending and is re-checked.
+  // - Bound on pending entries: a refresh whose document has no list on the page any more (`swapTargets` empty), when
+  //   it is checked before or after its fetch, is dropped: nothing is left for it to sort, and it is never re-checked.
+  // - Announcement: the item's place before the refresh is read from the markup just before `applySwap`, never when
+  //   the save settled, so a swap in between (Add, Duplicate, Move) is not announced as a sort.
   // - Re-checks happen on a trigger, when the open field closes, when an opening field's read settles, when a drag
   //   ends, when a key's last lock is released, when a save of a pending key changes state, and when a fetch ends.
   //   They are batched into one microtask (`recheckQueued`), never a timer. Each fetch follows one of those events, so
@@ -1133,8 +1137,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     /** Which copy of the list the field was saved in. */
     copy: number;
     itemKey: string;
-    /** The item's index on the page before the refresh. */
-    before: number;
   }
   const dataRefreshes = new Map<string, DataRefresh>();
   const refreshing = new Set<string>();
@@ -1171,7 +1173,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       listId: list.id,
       copy: copiesOf(list.id).indexOf(list),
       itemKey: item.itemKey,
-      before: list.items.indexOf(item),
     });
     queueRecheck();
   }
@@ -1213,6 +1214,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const started = dataRefreshes.get(key);
     if (!started) return;
     const targets = swapTargets(keys);
+    if (targets.length === 0) {
+      // The document's lists have left the page: nothing is left to sort.
+      dataRefreshes.delete(key);
+      return;
+    }
     if (!refreshReady(key, targets)) return;
     const epoch = refreshEpoch;
     const versions = versionsWithin(targets);
@@ -1240,6 +1246,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       return;
     }
     const now = swapTargets(keys);
+    if (now.length === 0) {
+      dataRefreshes.delete(key);
+      return;
+    }
     if (!refreshReady(key, now) || versionsWithin(now) !== versions) {
       // Dropped: the refresh stays pending, and runs again once it can.
       queueRecheck();
@@ -1254,10 +1264,13 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       focused instanceof HTMLElement && now.some((list) => list.element.contains(focused))
         ? focusCounterpart(focused)
         : undefined;
+    // Where the page shows the item now: a swap since the save settled may have moved it.
+    const shown = copiesOf(wanted.listId)[wanted.copy];
+    const before = shown?.items.findIndex((entry) => entry.itemKey === wanted.itemKey) ?? -1;
     applySwap(pairs);
     const fresh = copiesOf(wanted.listId)[wanted.copy];
     const moved = itemByKey(fresh, wanted.itemKey);
-    if (fresh && moved && fresh.items.indexOf(moved) !== wanted.before) {
+    if (fresh && moved && before >= 0 && fresh.items.indexOf(moved) !== before) {
       toast.announce(
         format(strings.itemSorted, {
           item: itemName(fresh, moved, strings),

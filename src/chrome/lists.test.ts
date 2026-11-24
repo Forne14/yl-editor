@@ -1648,6 +1648,51 @@ describe("drag to reorder and date order (#43)", () => {
           expect(names()).toEqual(["Ines", "Tom", "Zed"]);
         });
       });
+
+      describe("code review round 3 (#52)", () => {
+        test("a refresh whose lists have left the page is dropped, and doesn't run when they come back", async () => {
+          crew = [{ _key: "x", name: "Cy" }];
+          document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          const open = field(0, crewItems);
+          open.click();
+          await settle();
+          expect(pageFetches).toBe(0);
+          // The host takes the document's lists off the page, then the field closes: nothing to refresh.
+          const main = document.querySelector("#page") as HTMLElement;
+          main.remove();
+          escape(open);
+          await settle();
+          expect(pageFetches).toBe(0);
+          document.body.prepend(main);
+          field(0, crewItems).click();
+          escape(field(0, crewItems));
+          await settle();
+          expect(pageFetches).toBe(0);
+        });
+
+        test("an item that another swap moved before the refresh ran is not announced as sorted", async () => {
+          listAttrs = { ...listAttrs, duplicate: true, max: undefined };
+          crew = [{ _key: "x", name: "Cy" }];
+          document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+          await mount();
+          rename(2, "Ivy");
+          // The open field holds the refresh until Duplicate, whose swap puts Ines one place down, has run.
+          field(0, crewItems).click();
+          await settle();
+          expect(pageFetches).toBe(0);
+          toolButton(0, "duplicate").click();
+          await settle();
+          expect(items().at(-1)?.dataset.editItem).toBe(`${KEY}:artists[_key=c]`);
+          // Duplicate opened the copy's first field, which holds the refresh too.
+          escape(document.activeElement as HTMLElement);
+          await settle();
+          expect(pageFetches).toBe(3);
+          expect(liveText()).not.toContain("is now at position");
+        });
+      });
     });
   });
 
@@ -1863,6 +1908,87 @@ describe("drag to reorder and date order (#43)", () => {
       expect(ends).toEqual([1]);
       record.detach?.();
       expect(ends).toEqual([1]);
+    });
+  });
+
+  describe("code review round 3 (#52)", () => {
+    /** The list attached on its own, laid out as a row, whose drop answers only when the test says so. */
+    const attachHeld = () => {
+      const [record] = scanLists(document.body);
+      if (!record) throw new Error("no list");
+      let answer: (written: boolean) => void = () => undefined;
+      let fail: () => void = () => undefined;
+      attachList(record, defaultStrings, {
+        actions: true,
+        canAdd: false,
+        add() {},
+        canUndo: false,
+        undo() {},
+        act() {},
+        dragStart: () => true,
+        dragEnd() {},
+        drop: () =>
+          new Promise<boolean>((resolve, reject) => {
+            answer = resolve;
+            fail = () => reject(new Error("boom"));
+          }),
+      });
+      list().getBoundingClientRect = () => new DOMRect(0, 0, 600, 100);
+      items().forEach((item, index) => {
+        item.getBoundingClientRect = () => new DOMRect(index * 200, 0, 180, 100);
+        item.querySelectorAll<HTMLElement>("[data-edit-field]").forEach((field, at) => {
+          field.getBoundingClientRect = () => new DOMRect(index * 200, at * 40, 180, 20);
+        });
+      });
+      return { record, answer: (written: boolean) => answer(written), fail: () => fail() };
+    };
+    /** Two fields per item, so a paint draws a line between them. */
+    const twoFields = () => {
+      three();
+      for (const item of items()) {
+        const name = item.querySelector("h3") as HTMLElement;
+        const role = name.cloneNode(true) as HTMLElement;
+        role.setAttribute("data-edit-field", (name.getAttribute("data-edit-field") ?? "").replace(/name$/, "role"));
+        item.append(role);
+      }
+    };
+    const dragFirstToEnd = () => {
+      grip(0).dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+      list().dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 590, clientY: 50 }));
+      list().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    };
+
+    for (const [how, end] of [
+      ["writes nothing", (held: ReturnType<typeof attachHeld>) => held.answer(false)],
+      ["rejects", (held: ReturnType<typeof attachHeld>) => held.fail()],
+    ] as const) {
+      test(`a drop that ${how} once the list was detached leaves the host's markup alone`, async () => {
+        twoFields();
+        const held = attachHeld();
+        dragFirstToEnd();
+        expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+        held.record.detach?.();
+        end(held);
+        await settle();
+        expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+        expect(list().querySelector(".cms-root, .cms-item__sep")).toBeNull();
+        expect(list().hasAttribute("class")).toBe(false);
+      });
+    }
+
+    test("a drop that writes nothing once the list was dressed again leaves the new dressing alone", async () => {
+      twoFields();
+      const held = attachHeld();
+      dragFirstToEnd();
+      held.record.detach?.();
+      const fresh = attachHeld();
+      const before = list().innerHTML;
+      held.answer(false);
+      await settle();
+      expect(list().innerHTML).toBe(before);
+      fresh.record.detach?.();
+      expect(list().querySelector(".cms-root, .cms-item__sep")).toBeNull();
+      expect(list().hasAttribute("class")).toBe(false);
     });
   });
 });
