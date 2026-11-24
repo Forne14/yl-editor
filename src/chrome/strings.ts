@@ -136,7 +136,7 @@ export const defaultStrings = {
   itemIsFirst: "{item} is already first.",
   itemIsLast: "{item} is already last.",
   itemMoved: "{item} moved to position {position} of {count}.",
-  itemSorted: "{item} is now at position {position} of {count}, in date order.",
+  itemSorted: "{item} is now at position {position} of {count}.",
   itemAdded: "{item} added at position {position} of {count}.",
   itemDuplicated: "{item} duplicated. The copy is at position {position} of {count}.",
   itemRemoved:
