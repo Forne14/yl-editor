@@ -216,6 +216,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /** Removals that Undo puts back, newest last. */
   const removals: Removal[] = [];
   let active: ActiveWidget | null = null;
+  /**
+   * A popover field between its click and `active`: it waits for its stored value. Set before that read, cleared as it
+   * settles (whatever the open then does), and counted as open only while its ticket is the newest: an open that has
+   * been superseded gives up on its own.
+   */
+  let opening: { record: FieldRecord; ticket: number } | undefined;
+  /** Running drags per list element: one added when `dragStart` grants a drag, taken off by its `dragEnd`. */
+  const drags = new Map<HTMLElement, number>();
   let editing = true;
   let destroyed = false;
   let openTicket = 0;
@@ -398,6 +406,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       // when there is no stored value to read: the path is missing, or the fetch failed (which the next open retries).
       let stored: unknown;
       let failure: { error: unknown } | undefined;
+      const mine = { record, ticket };
+      opening = mine;
       try {
         const read = await session.document(info.key);
         stored = valueAtPath(read.payload, info.path);
@@ -410,6 +420,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         }
       } catch (error) {
         failure = { error };
+      } finally {
+        if (opening === mine) opening = undefined;
+        // From here to `active` (or giving up) runs in one go: the re-check runs after, and sees which.
+        queueRecheck();
       }
       if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
       // A swap replaced the element meanwhile.
@@ -573,6 +587,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         undo() {},
         act() {},
         dragStart: () => false,
+        dragEnd() {},
         drop: async () => false,
       });
       return;
@@ -584,7 +599,17 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       undo: () => void undoRemoval(list.id, undefined, list),
       add: () => void addItem(list),
       act: (item, action, pressed, focusOn) => void actOnItem(list, item, action, pressed, focusOn),
-      dragStart: () => !refuseBusy(list.element),
+      dragStart: () => {
+        if (refuseBusy(list.element)) return false;
+        drags.set(list.element, (drags.get(list.element) ?? 0) + 1);
+        return true;
+      },
+      dragEnd: () => {
+        const left = (drags.get(list.element) ?? 1) - 1;
+        if (left <= 0) drags.delete(list.element);
+        else drags.set(list.element, left);
+        queueRecheck();
+      },
       drop: (item, place, putBack) => dropItem(list, item, place, putBack),
     });
   }
@@ -1081,14 +1106,25 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   // - Data-order refresh: `dataRefreshes` holds at most one pending refresh per document key, the last saved field's.
   //   It never takes a lock, so nothing is refused because of it, and it never offers Reload.
   // - It fetches only when `refreshReady`: editing, no fetch of its own in flight for the key (`refreshing` has the key
-  //   from the fetch's start to its end, removed in a `finally`), no save of the key queued or on the wire, no field
-  //   open in what its swap would replace, and nothing there busy. So at most one fetch per key at a time.
-  // - The page applies only if `refreshReady` still holds when it lands, and no document shown in what it replaces
-  //   has a new version since the fetch started (a write in between: the page may predate it). Otherwise it is
-  //   dropped and the refresh stays pending. A failed fetch, or a page missing a list, drops the refresh.
-  // - Re-checks happen on a trigger, when the open field closes, when a key's last lock is released, when a save of a
-  //   pending key changes state, and when a fetch ends. They are batched into one microtask (`recheckQueued`), never
-  //   a timer. Each fetch follows one of those events, so fetches are bounded by triggers plus writes during flights.
+  //   from the fetch's start to its end, removed in a `finally`), no save of the key queued or on the wire, no
+  //   interaction in progress in what its swap would replace, and nothing there busy. So at most one fetch per key at
+  //   a time.
+  // - An interaction in progress (ruled on #43: a refresh waits for it, never locks) is one of three, each with one
+  //   claim and one release:
+  //   - an open field: `active`, set when its widget mounts, cleared by `closeActive`;
+  //   - a field still opening: `opening`, set before a popover's read of its stored value, cleared in that read's
+  //     `finally`, and counted only while its ticket is `openTicket` (a superseded open gives up on its own);
+  //   - a drag: `drags`, one per list element, added when `dragStart` grants it, taken off by its one `dragEnd`
+  //     (lists.ts pairs them). A drag's list element counts as inside the target holding it.
+  // - The page applies only if `refreshReady` still holds when it lands, the pending entry is still the one the fetch
+  //   started for (identity: a newer save settled during the flight, and the page may predate it), and no document
+  //   shown in what it replaces has a new version since the fetch started. Otherwise it is dropped and the refresh
+  //   stays pending. A failed fetch, or a page missing a list, drops the refresh it was for, and only that one: an
+  //   entry that replaced it during the flight stays pending and is re-checked.
+  // - Re-checks happen on a trigger, when the open field closes, when an opening field's read settles, when a drag
+  //   ends, when a key's last lock is released, when a save of a pending key changes state, and when a fetch ends.
+  //   They are batched into one microtask (`recheckQueued`), never a timer. Each fetch follows one of those events, so
+  //   fetches are bounded by triggers plus writes during flights.
   // - Teardown (`destroy`, leaving edit mode) clears `dataRefreshes` and bumps `refreshEpoch`; a fetch that started
   //   under an older epoch applies nothing.
   interface DataRefresh {
@@ -1113,7 +1149,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /**
    * A field saved inside an item of an `order="data"` list can change the host's order, and only the page knows that
    * order: once the save has settled (nothing newer queued, which `saved` state means) a refresh of the document's
-   * lists is pending until it can run without touching an open field or a list waiting on a write.
+   * lists is pending until it can run without touching an interaction in progress (an open field, one still opening,
+   * a drag) or a list waiting on a write.
    */
   function settleDataOrder(slot: SaveSlot): void {
     if (!editing || destroyed) return;
@@ -1152,8 +1189,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   function refreshReady(key: string, targets: readonly ListRecord[]): boolean {
     if (!editing || destroyed || refreshing.has(key) || session.isSaving(key) || locks.has(key)) return false;
     if (targets.length === 0) return false;
-    const open = active?.record.element;
-    if (open && targets.some((list) => list.element.contains(open))) return false;
+    const inProgress = [
+      active?.record.element,
+      opening?.ticket === openTicket ? opening.record.element : undefined,
+      ...drags.keys(),
+    ].filter((node): node is HTMLElement => node !== undefined);
+    if (targets.some((list) => inProgress.some((node) => list.element.contains(node)))) return false;
     return !targets.some((list) => isBusy(list.element));
   }
 
@@ -1169,7 +1210,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   async function refreshDataOrder(key: string): Promise<void> {
     const keys = new Set([key]);
-    if (!dataRefreshes.has(key)) return;
+    const started = dataRefreshes.get(key);
+    if (!started) return;
     const targets = swapTargets(keys);
     if (!refreshReady(key, targets)) return;
     const epoch = refreshEpoch;
@@ -1188,6 +1230,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     const wanted = dataRefreshes.get(key);
     if (!wanted) return;
+    if (wanted !== started) {
+      // A newer save settled during the flight: this page may predate it, and that refresh is still to run.
+      queueRecheck();
+      return;
+    }
     if (!page) {
       dataRefreshes.delete(key);
       return;
@@ -1199,6 +1246,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       return;
     }
     const { pairs, missing } = matchSwap(page, now);
+    // `wanted` is `started` here (checked above, nothing awaited since): only the refresh this page was for goes.
     dataRefreshes.delete(key);
     if (missing) return;
     const focused = document.activeElement;

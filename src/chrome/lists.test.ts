@@ -4,6 +4,8 @@ import { editable, itemPath, type EditableListAttrs } from "../editable.ts";
 import { applyArrayOp, parsePath } from "../path.ts";
 import type { ArrayOp } from "../types.ts";
 import { mountEditor } from "./index.ts";
+import { attachList, scanLists } from "./lists.ts";
+import { defaultStrings } from "./strings.ts";
 import type { EditorHandle, EditorOptions } from "./types.ts";
 
 interface Artist {
@@ -1552,6 +1554,100 @@ describe("drag to reorder and date order (#43)", () => {
         expect(pageFetches).toBe(1);
         expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
       });
+
+      describe("code review round 2 (#52)", () => {
+        /** The crew list in manual order, beside the artists list in data order. */
+        const manualCrew = () => {
+          const kept = listAttrs;
+          listAttrs = { ...kept, order: "manual" };
+          try {
+            return renderOne("crew", crew ?? []);
+          } finally {
+            listAttrs = kept;
+          }
+        };
+        const crewGrip = (index: number) =>
+          crewItems()[index]?.querySelector<HTMLButtonElement>(`.cms-item__tools [data-action="grip"]`) as HTMLElement;
+
+        test("a drag in another list of the same document holds the refresh until it ends", async () => {
+          crew = [
+            { _key: "x", name: "Cy" },
+            { _key: "y", name: "Dee" },
+          ];
+          document.body.innerHTML = `<main id="page">${renderOne("artists", artists)}${manualCrew()}</main>`;
+          await mount();
+          const page = `<!doctype html><html><body><main id="page">${renderOne("artists", zedFirst)}${manualCrew()}</main></body></html>`;
+          pageAnswer = () => new Response(page);
+          rename(0, "Zed");
+          pointer("pointerdown", crewGrip(0));
+          await settle();
+          expect(pageFetches).toBe(0);
+          expect(crewItems()[0]?.classList.contains("cms-item--dragging")).toBe(true);
+          pointer("pointerup", crewList());
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(liveText()).toBe("Zed is now at position 3 of 3.");
+        });
+
+        test("a popover field still reading its value holds the refresh, which runs once it closes", async () => {
+          guests = [];
+          document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+          const note = document.createElement("span");
+          for (const [name, value] of Object.entries(editable(OTHER)("note", "number"))) note.setAttribute(name, value);
+          items()[1]?.append(note);
+          await mount();
+          sorted(zedFirst);
+          const realFetch = globalThis.fetch;
+          let readOther: () => void = () => undefined;
+          const otherRead = new Promise<void>((resolve) => {
+            readOther = resolve;
+          });
+          vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+            if (String(input).includes("/api/content/document?") && String(input).includes("other")) await otherRead;
+            return realFetch(input, init);
+          });
+          rename(0, "Zed");
+          note.click();
+          await settle();
+          expect(pageFetches).toBe(0);
+          readOther();
+          await settle();
+          expect(note.isConnected).toBe(true);
+          expect(note.classList.contains("cms-field--editing")).toBe(true);
+          expect(pageFetches).toBe(0);
+          escape(document.activeElement as HTMLElement);
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+        });
+
+        test("a failed page fetch keeps a refresh asked for during its flight, which then runs", async () => {
+          await mount();
+          const answers = [
+            () => new Response("down", { status: 500 }),
+            () =>
+              new Response(
+                `<!doctype html><html><body><main id="page">${renderOne("artists", [
+                  { _key: "c", name: "Ines" },
+                  { _key: "b", name: "Tom" },
+                  { _key: "a", name: "Zed" },
+                ])}</main></body></html>`,
+              ),
+          ];
+          pageAnswer = () => (answers.shift() ?? (answers[0] as () => Response))();
+          held = true;
+          rename(0, "Zed");
+          await settle();
+          expect(pageFetches).toBe(1);
+          rename(1, "Tom");
+          await settle();
+          release();
+          await settle();
+          expect(pageFetches).toBe(2);
+          expect(names()).toEqual(["Ines", "Tom", "Zed"]);
+        });
+      });
     });
   });
 
@@ -1688,6 +1784,85 @@ describe("drag to reorder and date order (#43)", () => {
       press("pointerup", list());
       await settle();
       expect(toast?.textContent).toContain(`Move Ines up failed for ${KEY}`);
+    });
+  });
+
+  describe("code review round 2 (#52)", () => {
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+    /** Each item in a wrapper of the host's: `<div class="col"><article item/></div>`. */
+    const wrapped = () => {
+      const edit = editable(KEY);
+      const cells = artists
+        .map(
+          (artist, index) =>
+            `<div class="col"><article${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></article></div>`,
+        )
+        .join("");
+      document.body.innerHTML = `<main id="page"><div${attrs(edit.list("artists", listAttrs))}>${cells}</div></main>`;
+    };
+    const columns = () => [...list().querySelectorAll<HTMLElement>(":scope > .col")];
+    const wrapperNames = () => columns().map((column) => [...column.querySelectorAll("h3")].map((h) => h.textContent));
+
+    test("Escape puts an item dragged into another wrapper back in its own", async () => {
+      wrapped();
+      await mount();
+      lay();
+      pointer("pointerdown", grip(0));
+      pointer("pointermove", list(), { clientY: 160 });
+      expect(wrapperNames()).toEqual([[], ["Tobias", "Mara"]]);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await settle();
+      expect(wrapperNames()).toEqual([["Mara"], ["Tobias"]]);
+      expect(arrayCalls).toEqual([]);
+    });
+
+    test("a drop into another wrapper that writes nothing puts the item back in its own", async () => {
+      wrapped();
+      await mount();
+      lay();
+      arrayAnswer = () => json({ error: { code: "internal", message: "down" } }, 500);
+      pointer("pointerdown", grip(0));
+      pointer("pointermove", list(), { clientY: 160 });
+      pointer("pointerup", list());
+      await settle();
+      expect(arrayCalls).toHaveLength(1);
+      expect(wrapperNames()).toEqual([["Mara"], ["Tobias"]]);
+    });
+
+    test("the handle names its Arrow Up and Down shortcut", async () => {
+      await mount();
+      expect(grip(0).getAttribute("aria-keyshortcuts")).toBe("ArrowUp ArrowDown");
+    });
+
+    test("a drop whose write rejects puts the item back, and the drag's end is reported once", async () => {
+      three();
+      const [record] = scanLists(document.body);
+      if (!record) throw new Error("no list");
+      const ends: number[] = [];
+      attachList(record, defaultStrings, {
+        actions: true,
+        canAdd: false,
+        add() {},
+        canUndo: false,
+        undo() {},
+        act() {},
+        dragStart: () => true,
+        dragEnd: () => ends.push(1),
+        drop: () => Promise.reject(new Error("boom")),
+      });
+      lay();
+      pointer("pointerdown", grip(0));
+      pointer("pointermove", list(), { clientY: 260 });
+      expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+      pointer("pointerup", list());
+      await settle();
+      expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+      expect(ends).toEqual([1]);
+      record.detach?.();
+      expect(ends).toEqual([1]);
     });
   });
 });
