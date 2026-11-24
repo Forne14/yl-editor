@@ -1355,7 +1355,7 @@ describe("drag to reorder and date order (#43)", () => {
       rename(0, "Zed");
       await settle();
       expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
-      expect(liveText()).toBe("Zed is now at position 3 of 3, in date order.");
+      expect(liveText()).toBe("Zed is now at position 3 of 3.");
       expect(document.activeElement).toBe(items()[2]?.querySelector("h3"));
     });
 
@@ -1366,7 +1366,7 @@ describe("drag to reorder and date order (#43)", () => {
       await settle();
       expect(fieldCalls).toEqual(["artists[_key=b].name"]);
       expect(names()).toEqual(["Mara", "Tom", "Ines"]);
-      expect(liveText()).not.toContain("date order");
+      expect(liveText()).not.toContain("is now at position");
     });
 
     test("focus is left alone when the editor has moved it elsewhere meanwhile", async () => {
@@ -1377,8 +1377,181 @@ describe("drag to reorder and date order (#43)", () => {
       document.body.append(other);
       other.focus();
       await settle();
-      expect(liveText()).toBe("Zed is now at position 3 of 3, in date order.");
+      expect(liveText()).toBe("Zed is now at position 3 of 3.");
       expect(document.activeElement).toBe(other);
+    });
+
+    describe("refreshing in the background (ruled on #43)", () => {
+      const field = (index: number, within: () => HTMLElement[] = items) =>
+        within()[index]?.querySelector("h3") as HTMLElement;
+      const crewList = () => document.querySelector<HTMLElement>(`[data-edit-list="${KEY}:crew"]`) as HTMLElement;
+      const crewItems = () => [...crewList().querySelectorAll<HTMLElement>("[data-edit-item]")];
+      const escape = (target: HTMLElement) =>
+        target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      const toastText = () => document.querySelector(".cms-toast")?.textContent ?? "";
+      /** Counts the page fetches; while `held`, each waits until `release()`. */
+      let pageFetches: number;
+      let held: boolean;
+      let releases: (() => void)[];
+      const release = () => {
+        held = false;
+        for (const go of releases.splice(0)) go();
+      };
+      beforeEach(() => {
+        pageFetches = 0;
+        held = false;
+        releases = [];
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+          if (!String(input).includes("/api/")) {
+            pageFetches += 1;
+            if (held) await new Promise<void>((resolve) => releases.push(resolve));
+          }
+          return realFetch(input, init);
+        });
+      });
+
+      test("an item that didn't move keeps focus on the saved field", async () => {
+        await mount();
+        sorted(artists.map((artist) => (artist._key === "b" ? { ...artist, name: "Tom" } : artist)));
+        rename(1, "Tom");
+        await settle();
+        expect(pageFetches).toBe(1);
+        expect(names()).toEqual(["Mara", "Tom", "Ines"]);
+        expect(document.activeElement).toBe(field(1));
+        expect(liveText()).not.toContain("is now at position");
+      });
+
+      test("a field open in another list of the same document stays open, and the refresh runs once it closes", async () => {
+        crew = [{ _key: "x", name: "Cy" }];
+        document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+        await mount();
+        pageAnswer = () =>
+          new Response(
+            `<!doctype html><html><body><main id="page">${renderOne("artists", zedFirst)}${renderOne("crew", crew ?? [])}</main></body></html>`,
+          );
+        rename(0, "Zed");
+        // Opened before the save has settled.
+        const open = field(0, crewItems);
+        open.click();
+        await settle();
+        expect(open.isConnected).toBe(true);
+        expect(open.classList.contains("cms-field--editing")).toBe(true);
+        expect(pageFetches).toBe(0);
+        expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+        escape(open);
+        await settle();
+        expect(pageFetches).toBe(1);
+        expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+        expect(liveText()).toBe("Zed is now at position 3 of 3.");
+      });
+
+      test("a field opened in the list while the page is on its way opens, with no listBusy", async () => {
+        await mount();
+        sorted(zedFirst);
+        held = true;
+        rename(0, "Zed");
+        await settle();
+        expect(pageFetches).toBe(1);
+        field(1).click();
+        await settle();
+        expect(field(1).classList.contains("cms-field--editing")).toBe(true);
+        expect(liveText()).not.toBe("Updating the list…");
+        release();
+        await settle();
+      });
+
+      test("a field opened while the page is on its way drops that page, and the refresh runs once it closes", async () => {
+        await mount();
+        sorted(zedFirst);
+        held = true;
+        rename(0, "Zed");
+        await settle();
+        const open = field(1);
+        open.click();
+        release();
+        await settle();
+        expect(open.isConnected).toBe(true);
+        expect(open.classList.contains("cms-field--editing")).toBe(true);
+        expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+        expect(liveText()).not.toContain("is now at position");
+        escape(open);
+        await settle();
+        expect(pageFetches).toBe(2);
+        expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+        expect(liveText()).toBe("Zed is now at position 3 of 3.");
+      });
+
+      test("a failed page fetch shows no toast and leaves the list as it is", async () => {
+        await mount();
+        pageAnswer = () => new Response("down", { status: 500 });
+        rename(0, "Zed");
+        await settle();
+        expect(pageFetches).toBe(1);
+        expect(toastText()).not.toContain("Reload");
+        expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+        expect(document.activeElement).toBe(field(0));
+      });
+
+      test("a page without the list shows no toast", async () => {
+        await mount();
+        pageAnswer = () => new Response(`<!doctype html><html><body><main id="page"></main></body></html>`);
+        rename(0, "Zed");
+        await settle();
+        expect(toastText()).not.toContain("Reload");
+        expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+      });
+
+      test("several saves in a row give one page fetch", async () => {
+        await mount();
+        sorted([
+          { _key: "c", name: "Ines" },
+          { _key: "b", name: "Tom" },
+          { _key: "a", name: "Zed" },
+        ]);
+        rename(0, "Zed");
+        rename(1, "Tom");
+        await settle();
+        expect(fieldCalls).toEqual(["artists[_key=a].name", "artists[_key=b].name"]);
+        expect(pageFetches).toBe(1);
+        expect(names()).toEqual(["Ines", "Tom", "Zed"]);
+        // The last saved field: Tom went from 2 to 2, so nothing moved for it.
+        expect(liveText()).not.toContain("is now at position");
+        expect(document.activeElement).toBe(field(1));
+      });
+
+      test("destroy while the page is on its way leaves the host's markup alone", async () => {
+        await mount();
+        sorted(zedFirst);
+        held = true;
+        rename(0, "Zed");
+        await settle();
+        handle?.destroy();
+        handle = undefined;
+        const before = list().outerHTML;
+        release();
+        await settle();
+        expect(list().outerHTML).toBe(before);
+      });
+
+      test("Done while the page is on its way drops it, and nothing is pending on return", async () => {
+        await mount();
+        sorted(zedFirst);
+        held = true;
+        rename(0, "Zed");
+        await settle();
+        const done = [...document.querySelectorAll<HTMLButtonElement>(".cms-bar button")].find(
+          (button) => button.textContent === "Done",
+        );
+        done?.click();
+        release();
+        await settle();
+        expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+        document.querySelector<HTMLButtonElement>(".cms-enter")?.click();
+        await settle();
+        expect(pageFetches).toBe(1);
+        expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+      });
     });
   });
 

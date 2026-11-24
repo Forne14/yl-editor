@@ -179,8 +179,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const lock = (key: string) => locks.set(key, (locks.get(key) ?? 0) + 1);
   const unlock = (key: string) => {
     const left = (locks.get(key) ?? 1) - 1;
-    if (left <= 0) locks.delete(key);
-    else locks.set(key, left);
+    if (left <= 0) {
+      locks.delete(key);
+      queueRecheck();
+    } else locks.set(key, left);
   };
   /** An element Undo puts back in one copy of a list, and where it was: its markup is the host's. */
   interface Restore {
@@ -231,6 +233,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         for (const record of recordsFor(slot)) showState(record, slot.state);
         if (slot.state === "saving") toast.show(strings.saving, "saving");
         updateBar();
+        // A refresh waiting for the document's saves to settle.
+        if (dataRefreshes.has(slot.key)) queueRecheck();
       },
       saved(slot, value) {
         if (destroyed) return;
@@ -367,6 +371,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     current.handle?.destroy();
     current.record.element.classList.remove("cms-field--editing");
     if (returnFocus && !destroyed) current.record.element.focus();
+    queueRecheck();
   }
 
   async function openField(record: FieldRecord): Promise<void> {
@@ -515,6 +520,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       enterButton.blur();
     } else {
       openTicket += 1;
+      dropRefreshes();
       closeActive(false, true);
       sheet.close(false);
       badge.hide();
@@ -826,57 +832,81 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /** How long a list's page fetch may take before the chrome gives up and offers Reload. */
   const SWAP_TIMEOUT_MS = 15000;
 
-  async function swapOnce(keys: ReadonlySet<string>): Promise<void> {
-    if (!lists.some((list) => keys.has(list.info.key))) return;
-    let page: Document | undefined;
+  /** The page as it is now, never a cached copy (it would lack the write just made); undefined when it can't be had. */
+  async function fetchPage(): Promise<Document | undefined> {
     try {
-      // Never a cached copy: it would lack the write just made. A page that never answers frees the lists after 15 s.
+      // A page that never answers frees whoever waits on it after 15 s.
       const response = await fetch(location.href, {
         credentials: "same-origin",
         cache: "no-store",
         headers: { Accept: "text/html" },
         signal: AbortSignal.timeout(SWAP_TIMEOUT_MS),
       });
-      if (response.ok) page = new DOMParser().parseFromString(await response.text(), "text/html");
+      return response.ok ? new DOMParser().parseFromString(await response.text(), "text/html") : undefined;
     } catch {
-      // Reported below.
+      return undefined;
     }
-    if (destroyed) return;
-    // Every copy of a list, in page order: the page's first copy replaces this page's first copy, and so on.
+  }
+
+  /**
+   * What a swap of these documents replaces: the outermost list each of their lists on the page sits in, in page order.
+   * A list inside another (of any document) comes with its outermost list.
+   */
+  function swapTargets(keys: ReadonlySet<string>): ListRecord[] {
+    const own = lists
+      .filter((list) => keys.has(list.info.key) && list.element.isConnected)
+      .map((list) => lists.find((outer) => outer.element === outermostList(list.element)) ?? list);
+    return [...new Set(own)].sort(byPageOrder);
+  }
+
+  /**
+   * Each target matched to its markup on the fetched page: its place among the outermost copies of its list on this
+   * page, matched to the same place among the outermost copies there. `missing` when a target has none.
+   */
+  function matchSwap(
+    page: Document | undefined,
+    targets: readonly ListRecord[],
+  ): { pairs: [ListRecord, Element][]; missing: boolean } {
     const fresh = new Map<string, Element[]>();
     for (const node of page?.querySelectorAll("[data-edit-list]") ?? []) {
       const id = node.getAttribute("data-edit-list") ?? "";
       fresh.set(id, [...(fresh.get(id) ?? []), node]);
     }
-    // Read after the fetch: the lists on the page now. A list inside another (of any document) comes with its
-    // outermost list, which is the one swapped.
-    const own = lists
-      .filter((list) => keys.has(list.info.key) && list.element.isConnected)
-      .map((list) => lists.find((outer) => outer.element === outermostList(list.element)) ?? list);
-    const targets = [...new Set(own)].sort(byPageOrder);
-    const swapped: HTMLElement[] = [];
-    let missing = false;
-    // Each target's place among the outermost copies of its list on this page, matched to the same place among the
-    // outermost copies on the fetched page; taken before any of them is replaced.
     const topLevel = (id: string) =>
       lists.filter((list) => list.id === id && outermostList(list.element) === list.element).sort(byPageOrder);
-    const places = new Map(targets.map((list) => [list, topLevel(list.id).indexOf(list)]));
+    const pairs: [ListRecord, Element][] = [];
+    let missing = false;
     for (const list of targets) {
-      const index = places.get(list) ?? 0;
+      const index = topLevel(list.id).indexOf(list);
       const node = fresh.get(list.id)?.filter((candidate) => !candidate.parentElement?.closest("[data-edit-list]"))[
         index
       ];
-      if (!node) {
-        missing = true;
-        continue;
-      }
+      if (node) pairs.push([list, node]);
+      else missing = true;
+    }
+    return { pairs, missing };
+  }
+
+  /** Puts the fetched markup in, every place matched before any is replaced, then dresses only what is new. */
+  function applySwap(pairs: readonly [ListRecord, Element][]): void {
+    const swapped: HTMLElement[] = [];
+    for (const [list, node] of pairs) {
       list.detach?.();
       const imported = document.importNode(node, true) as HTMLElement;
       list.element.replaceWith(imported);
       swapped.push(imported);
     }
-    if (missing) showListReload();
     if (swapped.length > 0) rescanWithin(swapped);
+  }
+
+  async function swapOnce(keys: ReadonlySet<string>): Promise<void> {
+    if (!lists.some((list) => keys.has(list.info.key))) return;
+    const page = await fetchPage();
+    if (destroyed) return;
+    // Read after the fetch: the lists on the page now.
+    const { pairs, missing } = matchSwap(page, swapTargets(keys));
+    if (missing) showListReload();
+    applySwap(pairs);
   }
 
   /**
@@ -1038,12 +1068,52 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (focusIsFree(fresh)) await openFirstField(fresh, item);
   }
 
+  // The list swap machinery, and the background refresh of `order="data"` lists (ruled on #43, 2026-11-24).
+  // Invariants:
+  // - Locks: `locks` counts holders per document key. `withLock` (a list write and its settling) and `swapLists` (from
+  //   the call until its run is over) each take one and give it back in a `finally`, so every lock is released however
+  //   the task ends. `isBusy`/`refuseBusy` read only `locks`: a node inside the outermost list of a locked list, or
+  //   holding one, is busy.
+  // - Swaps: `swapLists` runs every swap on one chain (`swapChain`), so an older page never lands after a newer one.
+  //   Calls made while a run is going share the next run (`swapWanted`, cleared when a run takes it). A failed or
+  //   partial swap offers Reload. A swap replaces every outermost list of its documents (`swapTargets`), and
+  //   `rescanWithin` closes a widget whose element left the page.
+  // - Data-order refresh: `dataRefreshes` holds at most one pending refresh per document key, the last saved field's.
+  //   It never takes a lock, so nothing is refused because of it, and it never offers Reload.
+  // - It fetches only when `refreshReady`: editing, no fetch of its own in flight for the key (`refreshing` has the key
+  //   from the fetch's start to its end, removed in a `finally`), no save of the key queued or on the wire, no field
+  //   open in what its swap would replace, and nothing there busy. So at most one fetch per key at a time.
+  // - The page applies only if `refreshReady` still holds when it lands, and no document shown in what it replaces
+  //   has a new version since the fetch started (a write in between: the page may predate it). Otherwise it is
+  //   dropped and the refresh stays pending. A failed fetch, or a page missing a list, drops the refresh.
+  // - Re-checks happen on a trigger, when the open field closes, when a key's last lock is released, when a save of a
+  //   pending key changes state, and when a fetch ends. They are batched into one microtask (`recheckQueued`), never
+  //   a timer. Each fetch follows one of those events, so fetches are bounded by triggers plus writes during flights.
+  // - Teardown (`destroy`, leaving edit mode) clears `dataRefreshes` and bumps `refreshEpoch`; a fetch that started
+  //   under an older epoch applies nothing.
+  interface DataRefresh {
+    slotId: string;
+    listId: string;
+    /** Which copy of the list the field was saved in. */
+    copy: number;
+    itemKey: string;
+    /** The item's index on the page before the refresh. */
+    before: number;
+  }
+  const dataRefreshes = new Map<string, DataRefresh>();
+  const refreshing = new Set<string>();
+  let refreshEpoch = 0;
+  let recheckQueued = false;
+
+  function dropRefreshes(): void {
+    dataRefreshes.clear();
+    refreshEpoch += 1;
+  }
+
   /**
    * A field saved inside an item of an `order="data"` list can change the host's order, and only the page knows that
-   * order: once the save has settled (nothing newer queued, which `saved` state means) the chrome swaps the list in
-   * from the page, as Add does. An item that changed place is announced, and the field gets focus in its new place.
-   * One swap per settled save at most, and swaps coalesce (`swapLists`). A field open in the list keeps its widget: the
-   * swap would close it, so the page's order is then shown by the next save or reload.
+   * order: once the save has settled (nothing newer queued, which `saved` state means) a refresh of the document's
+   * lists is pending until it can run without touching an open field or a list waiting on a write.
    */
   function settleDataOrder(slot: SaveSlot): void {
     if (!editing || destroyed) return;
@@ -1059,23 +1129,143 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     );
     const item = list?.items.find((entry) => entry.element.contains(record.element));
     if (!list || !item || item.itemKey === undefined) return;
-    if (active && list.element.contains(active.record.element)) return;
-    const copy = copiesOf(list.id).indexOf(list);
-    const before = list.items.indexOf(item);
-    const itemKey = item.itemKey;
-    void swapLists(list.info.key).then(() => {
-      if (destroyed) return;
-      const fresh = copiesOf(list.id)[copy];
-      const moved = itemByKey(fresh, itemKey);
-      if (!fresh || !moved) return;
-      const position = fresh.items.indexOf(moved) + 1;
-      if (position === before + 1) return;
-      toast.announce(
-        format(strings.itemSorted, { item: itemName(fresh, moved, strings), position, count: fresh.items.length }),
-      );
-      if (!focusIsFree(fresh)) return;
-      fields.find((entry) => entry.id === slot.id && moved.element.contains(entry.element))?.element.focus();
+    dataRefreshes.set(slot.key, {
+      slotId: slot.id,
+      listId: list.id,
+      copy: copiesOf(list.id).indexOf(list),
+      itemKey: item.itemKey,
+      before: list.items.indexOf(item),
     });
+    queueRecheck();
+  }
+
+  function queueRecheck(): void {
+    if (recheckQueued || dataRefreshes.size === 0) return;
+    recheckQueued = true;
+    queueMicrotask(() => {
+      recheckQueued = false;
+      for (const key of [...dataRefreshes.keys()]) void refreshDataOrder(key);
+    });
+  }
+
+  /** Whether a refresh of `key` may fetch now, or apply what it fetched. */
+  function refreshReady(key: string, targets: readonly ListRecord[]): boolean {
+    if (!editing || destroyed || refreshing.has(key) || session.isSaving(key) || locks.has(key)) return false;
+    if (targets.length === 0) return false;
+    const open = active?.record.element;
+    if (open && targets.some((list) => list.element.contains(open))) return false;
+    return !targets.some((list) => isBusy(list.element));
+  }
+
+  /** The version of every document with a field or a list inside `targets`, as one comparable string. */
+  function versionsWithin(targets: readonly ListRecord[]): string {
+    const inside = (node: HTMLElement) => targets.some((list) => list.element.contains(node));
+    const keys = new Set([
+      ...fields.filter((record) => inside(record.element)).map((record) => record.info.key),
+      ...lists.filter((list) => inside(list.element)).map((list) => list.info.key),
+    ]);
+    return JSON.stringify([...keys].sort().map((key) => [key, session.documents.get(key)?.version]));
+  }
+
+  async function refreshDataOrder(key: string): Promise<void> {
+    const keys = new Set([key]);
+    if (!dataRefreshes.has(key)) return;
+    const targets = swapTargets(keys);
+    if (!refreshReady(key, targets)) return;
+    const epoch = refreshEpoch;
+    const versions = versionsWithin(targets);
+    refreshing.add(key);
+    let page: Document | undefined;
+    try {
+      page = await fetchPage();
+    } finally {
+      refreshing.delete(key);
+    }
+    // Torn down meanwhile: this page is for nobody. A refresh pending since then may now fetch.
+    if (epoch !== refreshEpoch) {
+      queueRecheck();
+      return;
+    }
+    const wanted = dataRefreshes.get(key);
+    if (!wanted) return;
+    if (!page) {
+      dataRefreshes.delete(key);
+      return;
+    }
+    const now = swapTargets(keys);
+    if (!refreshReady(key, now) || versionsWithin(now) !== versions) {
+      // Dropped: the refresh stays pending, and runs again once it can.
+      queueRecheck();
+      return;
+    }
+    const { pairs, missing } = matchSwap(page, now);
+    dataRefreshes.delete(key);
+    if (missing) return;
+    const focused = document.activeElement;
+    const counterpart =
+      focused instanceof HTMLElement && now.some((list) => list.element.contains(focused))
+        ? focusCounterpart(focused)
+        : undefined;
+    applySwap(pairs);
+    const fresh = copiesOf(wanted.listId)[wanted.copy];
+    const moved = itemByKey(fresh, wanted.itemKey);
+    if (fresh && moved && fresh.items.indexOf(moved) !== wanted.before) {
+      toast.announce(
+        format(strings.itemSorted, {
+          item: itemName(fresh, moved, strings),
+          position: fresh.items.indexOf(moved) + 1,
+          count: fresh.items.length,
+        }),
+      );
+    }
+    // Focus moves only when the element holding it was replaced, and nothing else has taken the editor's attention.
+    if (!counterpart || active || sheet.isOpen) return;
+    if (counterpart()) return;
+    fields.find((entry) => entry.id === wanted.slotId && moved?.element.contains(entry.element))?.element.focus();
+  }
+
+  /**
+   * Taken before a swap replaces `focused`: after it, focuses the same field (same document and path, the same one of
+   * its copies) or the same toolbar button of the same item, and says whether it found one.
+   */
+  function focusCounterpart(focused: HTMLElement): () => boolean {
+    const inPageOrder = (records: FieldRecord[]) =>
+      records.sort((a, b) =>
+        a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+    const record = byElement.get(focused);
+    if (record) {
+      const same = () =>
+        inPageOrder(
+          fields.filter((entry) => entry.info.key === record.info.key && entry.info.path === record.info.path),
+        );
+      const index = same().indexOf(record);
+      return () => {
+        const target = same()[index];
+        target?.element.focus();
+        return target !== undefined;
+      };
+    }
+    const tools = focused.closest(".cms-item__tools");
+    const itemElement = tools?.parentElement?.closest<HTMLElement>("[data-edit-item]");
+    const list = itemElement
+      ? lists.find((entry) => entry.items.some((item) => item.element === itemElement))
+      : undefined;
+    const itemKey = list?.items.find((item) => item.element === itemElement)?.itemKey;
+    if (!list || itemKey === undefined) return () => false;
+    const copy = copiesOf(list.id).indexOf(list);
+    const chip = focused.classList.contains("cms-item__chip");
+    const action = focused.dataset.action as ItemAction | undefined;
+    return () => {
+      const item = itemByKey(copiesOf(list.id)[copy], itemKey);
+      if (!item) return false;
+      const freshChip = chip
+        ? item.element.querySelector<HTMLElement>(":scope > .cms-item__tools .cms-item__chip")
+        : null;
+      if (freshChip) freshChip.focus();
+      else focusTools(item, action);
+      return item.element.contains(document.activeElement);
+    };
   }
 
   /**
@@ -2250,6 +2440,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      dropRefreshes();
       closeActive(false, true);
       sheet.close(false);
       toast.clearTimer();
