@@ -227,12 +227,12 @@ describe("a list while editing", () => {
     expect(addButton()?.textContent).toBe("Add artist");
   });
 
-  test("its toolbar is one tab stop, with arrow keys between the buttons", async () => {
+  test("its toolbar is one tab stop, on its first button other than the handle, with arrow keys between the buttons", async () => {
     await mount();
     const up = toolButton(1, "up");
     const remove = toolButton(1, "remove");
     expect([toolButton(1, "grip").tabIndex, up.tabIndex, toolButton(1, "down").tabIndex, remove.tabIndex]).toEqual([
-      0, -1, -1, -1,
+      -1, 0, -1, -1,
     ]);
     up.focus();
     up.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));

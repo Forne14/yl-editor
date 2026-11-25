@@ -28,6 +28,8 @@ test.describe("a keyed list", () => {
     // The toolbar comes before the item's fields: one Shift+Tab from Ana's name reaches it.
     await page.locator("#team-list .team__name").first().focus();
     await page.keyboard.press(shiftTab(browserName));
+    await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Move Ana up");
+    await page.keyboard.press("ArrowLeft");
     await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Drag to reorder Ana, or use the move buttons");
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Move Ana up");

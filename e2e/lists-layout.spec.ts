@@ -169,6 +169,8 @@ test.describe("a column list", () => {
     await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
     await page.mouse.down();
     await page.mouse.move(second.x + second.width / 2, second.y + second.height - 2, { steps: 15 });
+    // The press drags the item, not a text selection across the names it passes.
+    expect(await page.evaluate(() => getSelection()?.toString() ?? "")).toBe("");
     await page.mouse.up();
     await expect.poll(() => page.locator("#team-list .team__name").allTextContents()).toEqual(["Ben", "Ana"]);
     await expectDraft(demo, TEAM, "team", ["Ben", "Ana"]);

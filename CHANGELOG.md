@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Chrome: list items can be dragged to reorder (#43, lists: drag to reorder, row and grid lists, data-order
-  announcement). In a `manual` list, each item's toolbar starts with a drag handle (`.cms-item__grip`, pointer only,
+  announcement). In a `manual` list, each item's toolbar starts with a drag handle (`.cms-item__grip`, dragged with a pointer,
   `touch-action: none`). A drop makes one `move` write, like Move up and Move down, which stay as the single-pointer
   alternative. Escape or a cancelled pointer puts the item back. Arrow Up and Down on the focused handle move the item
   too, and focus stays on the handle. Lists laid out in a row or a wrapping grid draw their lines on the axis read from

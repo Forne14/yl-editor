@@ -583,7 +583,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (info.duplicate)
       buttons.push(toolButton("duplicate", format(strings.itemDuplicate, placement), full, fullReason));
     buttons.push(toolButton("remove", format(strings.itemRemove, placement), atMin, minReason));
-    const first = buttons[0];
+    // The handle acts only on a pointer or the arrow keys: Tab lands on the first button that does something on Enter.
+    const first = buttons.find((button) => button.dataset.action !== "grip") ?? buttons[0];
     if (first) first.tabIndex = 0;
     // Touch: the only way in without hover. Hidden on devices that hover (chrome.css).
     const chip = element(
