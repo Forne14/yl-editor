@@ -584,7 +584,7 @@
 
 /* ---------- Lists: [data-edit-list] and its items ----------
  * One dashed outline per list (.cms-list__frame). Inside it a single dashed line separates one item from the next
- * (each band's top edge) and one field from the next inside an item (.cms-item__sep). Nothing nests or crosses: fields
+ * (each cell's top and left edge, by the list's axis) and one field from the next inside an item (.cms-item__sep). Nothing nests or crosses: fields
  * in a list lose their own outline, and their states are solid and inset, inside their cell. Every position comes from
  * custom properties the chrome sets from the boxes on the page. */
 
@@ -626,8 +626,10 @@
   isolation: isolate;
 }
 
-/* From the line above the item to the line below it, the full width of the outline. */
+/* The item's cell: from the line above it to the line below, and from the line on its left to the one on its right (the
+ * outline's edge at the ends). A column's cells are the full width of the outline. */
 :where(.cms-item__band) {
+  box-sizing: border-box;
   position: absolute;
   top: var(--cms-band-top, 0);
   bottom: var(--cms-band-bottom, 0);
@@ -637,8 +639,14 @@
   pointer-events: none;
 }
 
-:where(.cms-item + .cms-item, .cms-item + .cms-list__add) > .cms-item__band {
+/* The chrome sets these from the boxes: --top on every cell below the first line, --left on every cell but the first
+ * of its line. A cell's two borders meet at its corner and cells tile, so no line doubles or crosses another. */
+:where(.cms-item__band--top) {
   border-top: var(--cms-list-line);
+}
+
+:where(.cms-item__band--left) {
+  border-left: var(--cms-list-line);
 }
 
 :where(.cms-item:hover, .cms-item:focus-within, .cms-item[data-cms-open]) > .cms-item__band {
@@ -689,10 +697,12 @@
   outline-offset: calc(-3 * var(--cms-space-1) / 4);
 }
 
-/* An item's toolbar sits on its top line, at the right, centred on it. */
+/* An item's toolbar sits on its top line, centred on it: at the right of the outline in a column, at the item's top left
+ * in a row or grid (the chrome sets `left`, and `right: auto`). */
 :where(.cms-item__tools) {
   position: absolute;
   right: var(--cms-tools-right, 0);
+  left: var(--cms-tools-left, auto);
   bottom: calc(100% + var(--cms-tools-above, 0) - var(--cms-control-h) / 2);
   z-index: 2;
   display: flex;
@@ -716,6 +726,19 @@
 
 :where(.cms-item__remove) {
   color: var(--cms-danger);
+}
+
+:where(.cms-item__grip) {
+  cursor: grab;
+  touch-action: none;
+}
+
+:where(.cms-item--dragging) {
+  opacity: 0.6;
+}
+
+:where(.cms-item--dragging) > .cms-item__band {
+  background: color-mix(in srgb, var(--cms-accent) 16%, transparent);
 }
 
 :where(.cms-btn[aria-disabled="true"]) {

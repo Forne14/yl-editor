@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Data-order list refresh</title>
+    <style>
+      :root {
+        --bg: #f4f5f8;
+        --card: #fff;
+        --fg: #16181d;
+        --muted: #5b6170;
+        --line: #e3e5eb;
+        --pick: #2557d6;
+        --pick-bg: #e8edfb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1116;
+          --card: #1b1d24;
+          --fg: #f3f4f8;
+          --muted: #aab0bf;
+          --line: #2a2d36;
+          --pick: #6b9bff;
+          --pick-bg: #1f2a44;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 64px;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.55 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      h2 {
+        font-size: 1.15rem;
+        margin: 40px 0 6px;
+      }
+      p,
+      li {
+        max-width: 76ch;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      table {
+        border-collapse: collapse;
+        background: var(--card);
+        font-size: 0.92rem;
+        margin: 8px 0;
+      }
+      th,
+      td {
+        border: 1px solid var(--line);
+        padding: 6px 10px;
+        text-align: left;
+      }
+      .options {
+        display: grid;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .opt {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px 16px;
+      }
+      .opt.pick {
+        border: 2px solid var(--pick);
+      }
+      .opt h3 {
+        margin: 0 0 6px;
+        font-size: 1rem;
+      }
+      .opt p {
+        margin: 4px 0;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        background: var(--pick-bg);
+        color: var(--pick);
+        font-weight: 600;
+      }
+      .who {
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      code {
+        font-size: 0.88em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>When may a date-ordered list re-sort itself under the editor?</h1>
+      <p class="muted">
+        #43 (lists: drag, row/grid, data-order announcement), PR #52. Drag and row/grid lists are done and green; this
+        is only about <code>order="data"</code> lists (events by date). No visual or copy change in any option.
+      </p>
+
+      <h2>Where it stands</h2>
+      <p>
+        Only the page knows a data-order list's sort, so after a save the chrome fetches the page and swaps the list's
+        markup in (your ruling this morning: in the background, no lock, wait while an interaction is in progress). Each
+        review round finds another interaction the swap lands on:
+      </p>
+      <table>
+        <tr>
+          <th>Round</th>
+          <th>Refresh findings</th>
+          <th>What the swap landed on</th>
+        </tr>
+        <tr>
+          <td>1</td>
+          <td>3 important</td>
+          <td>a field open in another list; fields refused while it ran; focus dropped to the page</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>1 important, 2 nits</td>
+          <td>a drag in progress; a field still opening; a newer request dropped</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>1 important, 2 nits</td>
+          <td>focus on Add pulled back to the saved field; an open chip menu closed; a wrong position announced</td>
+        </tr>
+      </table>
+      <p>
+        Waiting for "an interaction in progress" means listing every kind of interaction (open, opening, drag, chip, a
+        pressed button, a link, a text selection…) and that list never ends. The question is what the swap may touch.
+      </p>
+
+      <h2>Options</h2>
+      <div class="options">
+        <div class="opt pick">
+          <h3>A · Re-sort only what the editor is still on <span class="tag">recommended</span></h3>
+          <p>
+            Right after the save, the refresh runs only if focus is still on the saved field (Enter in a date, the usual
+            case) or on nothing, and no pointer is down. Then the event moves, focus follows the field, and the new
+            place is announced, as the prototype shows. If the editor has moved on to anything else in that document's
+            lists, the refresh waits until focus and pointer have left those lists, then swaps without moving focus and
+            announces the new place.
+          </p>
+          <p>
+            One rule, checked in one place:
+            <em>the swap never replaces markup holding focus or a pressed pointer, except the saved field itself.</em>
+            No list of interaction kinds to keep up to date.
+          </p>
+          <p class="who">
+            Editor: the Enter case works as designed. Tab on into the next event's fields and the list re-sorts once you
+            leave it. Site developer: nothing.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>B · Re-sort only once the editor leaves the list</h3>
+          <p>
+            Same rule without the exception: nothing re-sorts while focus is inside the lists. Simplest and safest, but
+            the Enter case no longer moves the event in front of the editor, so "focus follows the field" is dropped
+            from #43.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>C · No live re-sort: ship #43 without it</h3>
+          <p>
+            A data-order list keeps its order on screen until the next page load; the saved date shows straight away,
+            but the event doesn't move and nothing is announced. The re-sort becomes its own <code>later</code> ticket.
+            Drag and row/grid lists merge now.
+          </p>
+        </div>
+        <div class="opt">
+          <h3>D · Keep patching</h3>
+          <p>Round 4: also wait for an open chip menu, keep focus on Add. On the trend so far, more rounds follow.</p>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

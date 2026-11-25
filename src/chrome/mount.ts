@@ -12,6 +12,7 @@ import {
   newItemKey,
   scanLists,
   storedIndex,
+  type DropPlace,
   type ItemAction,
   type ItemRecord,
   type ListRecord,
@@ -178,8 +179,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const lock = (key: string) => locks.set(key, (locks.get(key) ?? 0) + 1);
   const unlock = (key: string) => {
     const left = (locks.get(key) ?? 1) - 1;
-    if (left <= 0) locks.delete(key);
-    else locks.set(key, left);
+    if (left <= 0) {
+      locks.delete(key);
+      queueRecheck();
+    } else locks.set(key, left);
   };
   /** An element Undo puts back in one copy of a list, and where it was: its markup is the host's. */
   interface Restore {
@@ -213,6 +216,17 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /** Removals that Undo puts back, newest last. */
   const removals: Removal[] = [];
   let active: ActiveWidget | null = null;
+  /**
+   * Per slot, the element whose widget last opened on it: the copy of a field shown more than once that was edited. One
+   * entry per slot (the session keeps its slots), replaced by each open, never read after the slot is gone.
+   */
+  const editedIn = new WeakMap<SaveSlot, HTMLElement>();
+  /**
+   * A popover field between its click and `active`: it waits for its stored value. Set before that read, cleared as it
+   * settles (whatever the open then does), and counted as open only while its ticket is the newest: an open that has
+   * been superseded gives up on its own.
+   */
+  let opening: { record: FieldRecord; ticket: number } | undefined;
   let editing = true;
   let destroyed = false;
   let openTicket = 0;
@@ -230,6 +244,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         for (const record of recordsFor(slot)) showState(record, slot.state);
         if (slot.state === "saving") toast.show(strings.saving, "saving");
         updateBar();
+        // A refresh waiting for the document's saves to settle.
+        if (dataRefreshes.has(slot.key)) queueRecheck();
       },
       saved(slot, value) {
         if (destroyed) return;
@@ -237,7 +253,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           record.cleared = undefined;
           if (!TEXT_TYPES.has(record.info.type)) render(record, value);
         }
-        if (slot.state === "saved") toast.show(strings.saved, "saved");
+        if (slot.state === "saved") {
+          toast.show(strings.saved, "saved");
+          settleDataOrder(slot);
+        }
       },
       failed(slot, error) {
         if (destroyed) return;
@@ -363,6 +382,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     current.handle?.destroy();
     current.record.element.classList.remove("cms-field--editing");
     if (returnFocus && !destroyed) current.record.element.focus();
+    queueRecheck();
   }
 
   async function openField(record: FieldRecord): Promise<void> {
@@ -389,6 +409,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       // when there is no stored value to read: the path is missing, or the fetch failed (which the next open retries).
       let stored: unknown;
       let failure: { error: unknown } | undefined;
+      const mine = { record, ticket };
+      opening = mine;
       try {
         const read = await session.document(info.key);
         stored = valueAtPath(read.payload, info.path);
@@ -401,6 +423,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         }
       } catch (error) {
         failure = { error };
+      } finally {
+        if (opening === mine) opening = undefined;
+        // From here to `active` (or giving up) runs in one go: the re-check runs after, and sees which.
+        queueRecheck();
       }
       if (ticket !== openTicket || destroyed || !editing || !record.editable) return;
       // A swap replaced the element meanwhile.
@@ -491,6 +517,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       else toast.show(message, "info");
     });
     active = opened;
+    editedIn.set(slot, record.element);
     record.element.classList.add("cms-field--editing");
     try {
       opened.handle = widget.mount(context);
@@ -511,6 +538,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       enterButton.blur();
     } else {
       openTicket += 1;
+      dropRefreshes();
       closeActive(false, true);
       sheet.close(false);
       badge.hide();
@@ -555,7 +583,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             : `[yl-editor] ${list.id} has no Add, Remove or Move: its field ${byPosition} is addressed by position inside a keyed item. Render an item's fields with editable(docKey).itemFields(path, item, index). See docs/chrome.md → Lists.`,
         );
       }
-      attachList(list, strings, { actions: false, canAdd: false, canUndo: false, add() {}, undo() {}, act() {} });
+      attachList(list, strings, {
+        actions: false,
+        canAdd: false,
+        canUndo: false,
+        add() {},
+        undo() {},
+        act() {},
+        dragStart: () => false,
+        drop: async () => false,
+      });
       return;
     }
     attachList(list, strings, {
@@ -564,7 +601,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       canUndo: removals.some((removal) => removal.listId === list.id),
       undo: () => void undoRemoval(list.id, undefined, list),
       add: () => void addItem(list),
-      act: (item, action, pressed) => void actOnItem(list, item, action, pressed),
+      act: (item, action, pressed, focusOn) => void actOnItem(list, item, action, pressed, focusOn),
+      dragStart: () => !refuseBusy(list.element),
+      drop: (item, place, putBack) => dropItem(list, item, place, putBack),
     });
   }
 
@@ -676,7 +715,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     list.detach?.();
     // One place per item that stays, marked where it is now, plus the place a restored element came from.
     const places: Comment[] = [];
-    for (const item of list.items) {
+    // In the page's order as it is now. A drop's put-back has run by then (`onWritten`), so the dragged element is
+    // where it started, unless the guard refused it: the sort covers that, and the items still end in stored order.
+    const standing = [...list.items].sort((a, b) =>
+      a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+    );
+    for (const item of standing) {
       if (item.itemKey === undefined || !order.includes(item.itemKey)) continue;
       const place = document.createComment("");
       item.element.before(place);
@@ -807,57 +851,81 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /** How long a list's page fetch may take before the chrome gives up and offers Reload. */
   const SWAP_TIMEOUT_MS = 15000;
 
-  async function swapOnce(keys: ReadonlySet<string>): Promise<void> {
-    if (!lists.some((list) => keys.has(list.info.key))) return;
-    let page: Document | undefined;
+  /** The page as it is now, never a cached copy (it would lack the write just made); undefined when it can't be had. */
+  async function fetchPage(): Promise<Document | undefined> {
     try {
-      // Never a cached copy: it would lack the write just made. A page that never answers frees the lists after 15 s.
+      // A page that never answers frees whoever waits on it after 15 s.
       const response = await fetch(location.href, {
         credentials: "same-origin",
         cache: "no-store",
         headers: { Accept: "text/html" },
         signal: AbortSignal.timeout(SWAP_TIMEOUT_MS),
       });
-      if (response.ok) page = new DOMParser().parseFromString(await response.text(), "text/html");
+      return response.ok ? new DOMParser().parseFromString(await response.text(), "text/html") : undefined;
     } catch {
-      // Reported below.
+      return undefined;
     }
-    if (destroyed) return;
-    // Every copy of a list, in page order: the page's first copy replaces this page's first copy, and so on.
+  }
+
+  /**
+   * What a swap of these documents replaces: the outermost list each of their lists on the page sits in, in page order.
+   * A list inside another (of any document) comes with its outermost list.
+   */
+  function swapTargets(keys: ReadonlySet<string>): ListRecord[] {
+    const own = lists
+      .filter((list) => keys.has(list.info.key) && list.element.isConnected)
+      .map((list) => lists.find((outer) => outer.element === outermostList(list.element)) ?? list);
+    return [...new Set(own)].sort(byPageOrder);
+  }
+
+  /**
+   * Each target matched to its markup on the fetched page: its place among the outermost copies of its list on this
+   * page, matched to the same place among the outermost copies there. `missing` when a target has none.
+   */
+  function matchSwap(
+    page: Document | undefined,
+    targets: readonly ListRecord[],
+  ): { pairs: [ListRecord, Element][]; missing: boolean } {
     const fresh = new Map<string, Element[]>();
     for (const node of page?.querySelectorAll("[data-edit-list]") ?? []) {
       const id = node.getAttribute("data-edit-list") ?? "";
       fresh.set(id, [...(fresh.get(id) ?? []), node]);
     }
-    // Read after the fetch: the lists on the page now. A list inside another (of any document) comes with its
-    // outermost list, which is the one swapped.
-    const own = lists
-      .filter((list) => keys.has(list.info.key) && list.element.isConnected)
-      .map((list) => lists.find((outer) => outer.element === outermostList(list.element)) ?? list);
-    const targets = [...new Set(own)].sort(byPageOrder);
-    const swapped: HTMLElement[] = [];
-    let missing = false;
-    // Each target's place among the outermost copies of its list on this page, matched to the same place among the
-    // outermost copies on the fetched page; taken before any of them is replaced.
     const topLevel = (id: string) =>
       lists.filter((list) => list.id === id && outermostList(list.element) === list.element).sort(byPageOrder);
-    const places = new Map(targets.map((list) => [list, topLevel(list.id).indexOf(list)]));
+    const pairs: [ListRecord, Element][] = [];
+    let missing = false;
     for (const list of targets) {
-      const index = places.get(list) ?? 0;
+      const index = topLevel(list.id).indexOf(list);
       const node = fresh.get(list.id)?.filter((candidate) => !candidate.parentElement?.closest("[data-edit-list]"))[
         index
       ];
-      if (!node) {
-        missing = true;
-        continue;
-      }
+      if (node) pairs.push([list, node]);
+      else missing = true;
+    }
+    return { pairs, missing };
+  }
+
+  /** Puts the fetched markup in, every place matched before any is replaced, then dresses only what is new. */
+  function applySwap(pairs: readonly [ListRecord, Element][]): void {
+    const swapped: HTMLElement[] = [];
+    for (const [list, node] of pairs) {
       list.detach?.();
       const imported = document.importNode(node, true) as HTMLElement;
       list.element.replaceWith(imported);
       swapped.push(imported);
     }
-    if (missing) showListReload();
     if (swapped.length > 0) rescanWithin(swapped);
+  }
+
+  async function swapOnce(keys: ReadonlySet<string>): Promise<void> {
+    if (!lists.some((list) => keys.has(list.info.key))) return;
+    const page = await fetchPage();
+    if (destroyed) return;
+    // Read after the fetch: the lists on the page now.
+    const { pairs, missing } = matchSwap(page, swapTargets(keys));
+    if (missing) showListReload();
+    applySwap(pairs);
   }
 
   /**
@@ -927,14 +995,23 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return itemKey === undefined ? undefined : list?.items.find((item) => item.itemKey === itemKey);
   }
 
-  /** Focus an item's toolbar: `preferred` if it is there and not inert, else its first button that isn't. */
+  /**
+   * Focus an item's toolbar: `preferred` if it is there and not inert, else its first button that isn't, the handle
+   * last: Enter and Space do nothing on it.
+   */
   function focusTools(item: ItemRecord | undefined, preferred?: ItemAction): void {
     const tools = item?.element.querySelector<HTMLElement>(":scope > .cms-item__tools");
     if (!tools) return;
     const buttons = [...tools.querySelectorAll<HTMLButtonElement>("button[data-action]")];
+    const enabled = buttons.filter((node) => node.getAttribute("aria-disabled") !== "true");
+    const free = (action: ItemAction | undefined) => enabled.find((node) => node.dataset.action === action);
+    // A move button inert now that the item reached an end: the opposite move, before the handle.
+    const opposite = preferred === "up" ? "down" : preferred === "down" ? "up" : undefined;
     const target =
-      buttons.find((node) => node.dataset.action === preferred && node.getAttribute("aria-disabled") !== "true") ??
-      buttons.find((node) => node.getAttribute("aria-disabled") !== "true") ??
+      free(preferred) ??
+      free(opposite) ??
+      enabled.find((node) => node.dataset.action !== "grip") ??
+      enabled[0] ??
       buttons[0];
     if (!target) return;
     for (const node of buttons) node.tabIndex = node === target ? 0 : -1;
@@ -1014,11 +1091,373 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (focusIsFree(fresh)) await openFirstField(fresh, item);
   }
 
+  // The list swap machinery, and the background refresh of `order="data"` lists (ruled on #43, 2026-11-24: rule A of
+  // docs/specs/artefacts/2026-11-data-order-refresh.html).
+  // Invariants:
+  // - Locks: `locks` counts holders per document key. `withLock` (a list write and its settling) and `swapLists` (from
+  //   the call until its run is over) each take one and give it back in a `finally`, so every lock is released however
+  //   the task ends. `isBusy`/`refuseBusy` read only `locks`: a node inside the outermost list of a locked list, or
+  //   holding one, is busy.
+  // - Swaps: `swapLists` runs every swap on one chain (`swapChain`), so an older page never lands after a newer one.
+  //   Calls made while a run is going share the next run (`swapWanted`, cleared when a run takes it). A failed or
+  //   partial swap offers Reload. A swap replaces every outermost list of its documents (`swapTargets`), and
+  //   `rescanWithin` closes a widget whose element left the page.
+  // - Data-order refresh: `dataRefreshes` holds at most one pending refresh per document key, the last saved field's.
+  //   It never takes a lock, so nothing is refused because of it, and it never offers Reload.
+  // - Rule A, checked in one place (`refreshReady`), before the fetch and again when the page arrives: the swap never
+  //   replaces markup holding focus or a pressed pointer, except the saved field itself. It may run only if
+  //   - no field is open or opening inside its targets: `active` (set when a widget mounts, cleared by `closeActive`)
+  //     and `opening` (set before a popover's read of its stored value, cleared in that read's `finally`, counted
+  //     only while its ticket is `openTicket`). An open widget holds focus, wherever its popover sits;
+  //   - no pointer is down inside its targets: `pressed` maps a pointer id to where it went down and its kind, set by
+  //     every pointerdown with a button down. A drag runs only while its pointer is down, so it counts as down. An
+  //     entry goes on that pointer's pointerup or pointercancel, on a pointermove or pointerdown of that pointer with
+  //     `buttons === 0` (its release was lost), on a first (`isPrimary`) pointerdown of the same kind with another id
+  //     (no other contact of that kind is down then), and with every other entry on window `blur` or the page turning
+  //     hidden (a release then may never arrive). All on the document or window, capture phase. Bound: at most one
+  //     entry per pointer id, and a lost release holds a refresh at most until that pointer moves or presses again,
+  //     the next first contact of its kind, or the window losing focus or the page being hidden, whichever is first;
+  //   - `document.activeElement` is the saved field's element, or body/null, or outside every target;
+  //   - and editing, no fetch of its own in flight for the key (`refreshing` has the key from the fetch's start to its
+  //     end, removed in a `finally`), no save of the key queued or on the wire, no lock on the key, nothing in the
+  //     targets busy.
+  // - Pending entry: `settleDataOrder` looks at every connected element of the saved slot, the one edited first
+  //   (`editedIn`: per slot, the element its widget last opened on, replaced by each open), then the others in scan
+  //   order, and takes the first inside a keyed item of an `order="data"` list of the slot's document. That element
+  //   is the one stored: another copy of the field outside the list, or in another copy of it, never stands in for it.
+  // - Saved field: resolved when it is needed, never kept from the save: the element stored above, while it is still
+  //   in a copy of the list, else the slot's field in the first copy (page order) showing the item's `_key`.
+  // - Focus: moved only when it was on the saved field, to that field in the new markup. Otherwise rule A means it was
+  //   outside the targets, and it is not moved.
+  // - Announcement: whenever an applied swap changed the saved item's index in its copy, read just before `applySwap`
+  //   (never when the save settled, so a swap in between is not announced as a sort), whether focus moved or not.
+  // - Arrival: the page applies only if rule A still holds, the pending entry is still the one the fetch started for
+  //   (identity: a newer save settled during the flight, and the page may predate it), and no document shown in what
+  //   it replaces has a new version since the fetch started. Otherwise it is dropped and the refresh stays pending. A
+  //   failed fetch, or a page missing a list, drops the refresh it was for, and only that one.
+  // - Bound on pending entries: a refresh whose document has no list on the page any more (`swapTargets` empty), when
+  //   it is checked before or after its fetch, is dropped: nothing is left for it to sort, and it is never re-checked.
+  // - Bound on fetches: at most one per key in flight (`refreshing`), and each one follows a trigger: a save of a
+  //   pending key changing state, the open field closing, an opening field's read settling, a key's last lock going,
+  //   focus moving in or out (focusin on the document; focusout too, unless its `relatedTarget` is inside a waiting
+  //   refresh's targets: focus is then moving within them, the focusin that follows re-checks, and a re-check in
+  //   between would see body focused and start a fetch rule A drops), a pointer coming up or cancelled, a `pressed`
+  //   entry dropped as stale, a fetch ending.
+  //   Triggers are batched into one microtask (`recheckQueued`), never a timer, and with nothing pending they cost
+  //   nothing.
+  // - Teardown (`destroy`, leaving edit mode) clears `dataRefreshes` and bumps `refreshEpoch`; a fetch that started
+  //   under an older epoch applies nothing. `pressed`'s listeners go with the disposer.
+  interface DataRefresh {
+    slotId: string;
+    listId: string;
+    itemKey: string;
+    /** The field's element when it was saved: a swap since may have replaced it. */
+    element: HTMLElement;
+  }
+  const dataRefreshes = new Map<string, DataRefresh>();
+  const refreshing = new Set<string>();
+  let refreshEpoch = 0;
+  let recheckQueued = false;
+  const pressed = new Map<number, { target: EventTarget; type: string }>();
+  /** Entries whose release can no longer reach the page go, and a refresh they held may run. */
+  const forgetPresses = (stale: (entry: { type: string }, id: number) => boolean) => {
+    let gone = false;
+    for (const [id, entry] of pressed) {
+      if (!stale(entry, id)) continue;
+      pressed.delete(id);
+      gone = true;
+    }
+    if (gone) queueRecheck();
+  };
+  for (const type of ["pointerdown", "pointermove"]) {
+    disposer.listen(
+      document,
+      type,
+      (event) => {
+        const { pointerId, pointerType, isPrimary, buttons } = event as PointerEvent;
+        // No button down: whatever this pointer pressed was released where the page didn't hear it.
+        if (buttons === 0) forgetPresses((_, id) => id === pointerId);
+        if (type !== "pointerdown" || buttons === 0 || !event.target) return;
+        // A first contact of its kind means no other of that kind is down: older entries of that kind are stale.
+        if (isPrimary) forgetPresses((entry, id) => entry.type === pointerType && id !== pointerId);
+        pressed.set(pointerId, { target: event.target, type: pointerType });
+      },
+      { capture: true },
+    );
+  }
+  // A release while the window has no focus, or the page is hidden, may never arrive: no press outlasts either.
+  disposer.listen(window, "blur", () => forgetPresses(() => true));
+  disposer.listen(document, "visibilitychange", () => {
+    if (document.visibilityState === "hidden") forgetPresses(() => true);
+  });
+  for (const type of ["pointerup", "pointercancel"]) {
+    disposer.listen(
+      document,
+      type,
+      (event) => {
+        pressed.delete((event as PointerEvent).pointerId);
+        queueRecheck();
+      },
+      { capture: true },
+    );
+  }
+  disposer.listen(document, "focusin", () => queueRecheck(), { capture: true });
+  // Between a focusout and its focusin focus sits on body, and the re-check would see rule A pass: a fetch would start
+  // on every Tab within the lists, only for the focusin to drop its page. Focus moving into a waiting refresh's lists
+  // is left to that focusin.
+  disposer.listen(
+    document,
+    "focusout",
+    (event) => {
+      const next = (event as FocusEvent).relatedTarget;
+      const intoTargets =
+        next instanceof Node &&
+        [...dataRefreshes.keys()].some((key) =>
+          swapTargets(new Set([key])).some((list) => list.element.contains(next)),
+        );
+      if (!intoTargets) queueRecheck();
+    },
+    { capture: true },
+  );
+
+  function dropRefreshes(): void {
+    dataRefreshes.clear();
+    refreshEpoch += 1;
+  }
+
+  /**
+   * A field saved inside an item of an `order="data"` list can change the host's order, and only the page knows that
+   * order: once the save has settled (nothing newer queued, which `saved` state means) a refresh of the document's
+   * lists is pending until rule A lets it run.
+   */
+  function settleDataOrder(slot: SaveSlot): void {
+    if (!editing || destroyed) return;
+    // Every copy of the field on the page, the one edited first: another copy can sit outside the list, or in another
+    // copy of it, earlier on the page.
+    const edited = editedIn.get(slot);
+    const candidates = recordsFor(slot)
+      .map((record) => record.element)
+      .filter((node) => node.isConnected)
+      .sort((a, b) => (a === edited ? -1 : b === edited ? 1 : 0));
+    for (const node of candidates) {
+      const list = lists.find(
+        (entry) =>
+          entry.info.order === "data" &&
+          entry.info.key === slot.key &&
+          !entry.nested &&
+          entry.detach !== undefined &&
+          entry.items.some((item) => item.itemKey !== undefined && item.element.contains(node)),
+      );
+      const item = list?.items.find((entry) => entry.element.contains(node));
+      if (!list || !item || item.itemKey === undefined) continue;
+      dataRefreshes.set(slot.key, { slotId: slot.id, listId: list.id, itemKey: item.itemKey, element: node });
+      queueRecheck();
+      return;
+    }
+  }
+
+  function queueRecheck(): void {
+    if (recheckQueued || dataRefreshes.size === 0) return;
+    recheckQueued = true;
+    queueMicrotask(() => {
+      recheckQueued = false;
+      for (const key of [...dataRefreshes.keys()]) void refreshDataOrder(key);
+    });
+  }
+
+  /** The saved field as the page shows it now: its copy of the list, its item, and its element if it has one. */
+  function savedField(
+    refresh: DataRefresh,
+  ): { list: ListRecord; item: ItemRecord; element: HTMLElement | undefined } | undefined {
+    const copies = copiesOf(refresh.listId);
+    const holding = refresh.element.isConnected
+      ? copies.find((list) => list.element.contains(refresh.element))
+      : undefined;
+    const list = holding ?? copies.find((copy) => itemByKey(copy, refresh.itemKey) !== undefined);
+    const item = itemByKey(list, refresh.itemKey);
+    if (!list || !item) return undefined;
+    const element = holding
+      ? refresh.element
+      : fields.find((record) => record.id === refresh.slotId && item.element.contains(record.element))?.element;
+    return { list, item, element };
+  }
+
+  /** Rule A: whether a refresh of `key` may fetch now, or apply what it fetched. */
+  function refreshReady(key: string, targets: readonly ListRecord[], refresh: DataRefresh): boolean {
+    if (!editing || destroyed || refreshing.has(key) || session.isSaving(key) || locks.has(key)) return false;
+    if (targets.length === 0) return false;
+    const inside = (node: unknown) => node instanceof Node && targets.some((list) => list.element.contains(node));
+    const open = [active?.record.element, opening?.ticket === openTicket ? opening.record.element : undefined];
+    if (open.some(inside) || [...pressed.values()].some((entry) => inside(entry.target))) return false;
+    const focused = document.activeElement;
+    if (focused !== null && focused !== document.body && inside(focused) && focused !== savedField(refresh)?.element)
+      return false;
+    return !targets.some((list) => isBusy(list.element));
+  }
+
+  /** The version of every document with a field or a list inside `targets`, as one comparable string. */
+  function versionsWithin(targets: readonly ListRecord[]): string {
+    const inside = (node: HTMLElement) => targets.some((list) => list.element.contains(node));
+    const keys = new Set([
+      ...fields.filter((record) => inside(record.element)).map((record) => record.info.key),
+      ...lists.filter((list) => inside(list.element)).map((list) => list.info.key),
+    ]);
+    return JSON.stringify([...keys].sort().map((key) => [key, session.documents.get(key)?.version]));
+  }
+
+  async function refreshDataOrder(key: string): Promise<void> {
+    const keys = new Set([key]);
+    const started = dataRefreshes.get(key);
+    if (!started) return;
+    const targets = swapTargets(keys);
+    if (targets.length === 0) {
+      // The document's lists have left the page: nothing is left to sort.
+      dataRefreshes.delete(key);
+      return;
+    }
+    if (!refreshReady(key, targets, started)) return;
+    const epoch = refreshEpoch;
+    const versions = versionsWithin(targets);
+    refreshing.add(key);
+    let page: Document | undefined;
+    try {
+      page = await fetchPage();
+    } finally {
+      refreshing.delete(key);
+    }
+    // Torn down meanwhile: this page is for nobody. A refresh pending since then may now fetch.
+    if (epoch !== refreshEpoch) {
+      queueRecheck();
+      return;
+    }
+    const wanted = dataRefreshes.get(key);
+    if (!wanted) return;
+    if (wanted !== started) {
+      // A newer save settled during the flight: this page may predate it, and that refresh is still to run.
+      queueRecheck();
+      return;
+    }
+    if (!page) {
+      dataRefreshes.delete(key);
+      return;
+    }
+    const now = swapTargets(keys);
+    if (now.length === 0) {
+      dataRefreshes.delete(key);
+      return;
+    }
+    if (!refreshReady(key, now, wanted) || versionsWithin(now) !== versions) {
+      // Dropped: the refresh stays pending, and runs on the next trigger that finds rule A holding.
+      queueRecheck();
+      return;
+    }
+    const { pairs, missing } = matchSwap(page, now);
+    // `wanted` is `started` here (checked above, nothing awaited since): only the refresh this page was for goes.
+    dataRefreshes.delete(key);
+    if (missing) return;
+    // Where the page shows the item now, just before the swap: one since the save settled may have moved it.
+    const shown = savedField(wanted);
+    const copy = shown ? copiesOf(wanted.listId).indexOf(shown.list) : -1;
+    const before = shown ? shown.list.items.indexOf(shown.item) : -1;
+    const hadFocus = shown?.element !== undefined && document.activeElement === shown.element;
+    applySwap(pairs);
+    const fresh = copiesOf(wanted.listId)[copy];
+    const moved = itemByKey(fresh, wanted.itemKey);
+    if (!fresh || !moved) return;
+    if (before >= 0 && fresh.items.indexOf(moved) !== before) {
+      toast.announce(
+        format(strings.itemSorted, {
+          item: itemName(fresh, moved, strings),
+          position: fresh.items.indexOf(moved) + 1,
+          count: fresh.items.length,
+        }),
+      );
+    }
+    if (!hadFocus) return;
+    fields.find((entry) => entry.id === wanted.slotId && moved.element.contains(entry.element))?.element.focus();
+  }
+
+  /**
+   * One move write: a step from the stored index (Move up and down, the handle's arrow keys), or next to a neighbour
+   * named by `_key` (a drop). Both are resolved against the stored array as the write goes out: the page can show fewer
+   * items than are stored, so a page index would name the wrong stored place. A neighbour no longer stored writes
+   * nothing. Held until the page shows the move: a swap or another press meanwhile would act on the old order. The
+   * announcement and focus are the same for every route. Resolves false when nothing was written.
+   */
+  async function moveItem(
+    list: ListRecord,
+    item: ItemRecord,
+    place: number | DropPlace,
+    label: string,
+    focusOn: ItemAction,
+    /** Runs right after the write, before the copies are arranged: a drop puts its element back here. */
+    onWritten?: () => void,
+  ): Promise<boolean> {
+    const name = itemName(list, item, strings);
+    const copy = copiesOf(list.id).indexOf(list);
+    const outcome = await listWriteAndSettle(
+      list,
+      label,
+      (items) => {
+        const from = storedIndex(items, item);
+        let to: number;
+        if (typeof place === "number") {
+          to = from + place;
+        } else {
+          const after = "after" in place;
+          const at = items.findIndex((entry) => itemKeyOf(entry) === (after ? place.after : place.before));
+          // `move` takes the index the item ends at, counted once it is out of the array.
+          const shifted = at > from ? at - 1 : at;
+          to = at < 0 ? -1 : after ? shifted + 1 : shifted;
+        }
+        return from < 0 || to < 0 || to >= items.length || to === from ? undefined : { kind: "move", from, to };
+      },
+      onWritten,
+    );
+    if (!outcome.written) return false;
+    const fresh = copiesOf(list.id)[copy];
+    const moved = itemByKey(fresh, item.itemKey);
+    if (!fresh || !moved) return true;
+    toast.announce(
+      format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
+    );
+    if (focusIsFree(fresh)) focusTools(moved, focusOn);
+    return true;
+  }
+
+  /**
+   * A drop, named in messages as Move up or Move down by where it went on the page. One that wrote nothing puts the
+   * element back; when the markup it came from has gone, the list is arranged in the stored order instead (once, from
+   * what the session holds, or from the page when its markup can't show that). Not while the document is locked: what
+   * holds the lock arranges or swaps every copy when it is done.
+   */
+  async function dropItem(
+    list: ListRecord,
+    item: ItemRecord,
+    place: DropPlace,
+    putBack: () => boolean,
+  ): Promise<boolean> {
+    const from = list.items.indexOf(item);
+    const up = "before" in place || list.items.findIndex((other) => other.itemKey === place.after) < from;
+    const placement = { item: itemName(list, item, strings), position: from + 1, count: list.items.length };
+    const label = format(up ? strings.itemMoveUp : strings.itemMoveDown, placement);
+    const written = await moveItem(list, item, place, label, "grip", putBack);
+    if (written || destroyed || putBack() || locks.has(list.info.key)) return written;
+    // By element: a re-dress since the drag may have made a newer record for the same list.
+    const current = lists.find((entry) => entry.element === list.element);
+    if (!current?.element.isConnected) return written;
+    const stored = valueAtPath(session.documents.get(list.info.key)?.payload, list.info.path);
+    if (!Array.isArray(stored) || !arrangeList(current, stored)) void swapLists(list.info.key);
+    return written;
+  }
+
   async function actOnItem(
     list: ListRecord,
     item: ItemRecord,
     action: ItemAction,
     pressed: HTMLButtonElement,
+    /** The button focus returns to after a move, when it isn't `action`'s: the drag handle, for an arrow key. */
+    focusOn?: ItemAction,
   ): Promise<void> {
     const reason = pressed.dataset.reason;
     if (pressed.getAttribute("aria-disabled") === "true") {
@@ -1030,21 +1469,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const label = pressed.getAttribute("aria-label") ?? action;
     const copy = copiesOf(list.id).indexOf(list);
     if (action === "up" || action === "down") {
-      const step = action === "up" ? -1 : 1;
-      // Held until the page shows the move: a swap or another press meanwhile would act on the old order.
-      const outcome = await listWriteAndSettle(list, label, (items) => {
-        const from = storedIndex(items, item);
-        const to = from + step;
-        return from < 0 || to < 0 || to >= items.length ? undefined : { kind: "move", from, to };
-      });
-      if (!outcome.written) return;
-      const fresh = copiesOf(list.id)[copy];
-      const moved = itemByKey(fresh, item.itemKey);
-      if (!fresh || !moved) return;
-      toast.announce(
-        format(strings.itemMoved, { item: name, position: fresh.items.indexOf(moved) + 1, count: fresh.items.length }),
-      );
-      if (focusIsFree(fresh)) focusTools(moved, action);
+      await moveItem(list, item, action === "up" ? -1 : 1, label, focusOn ?? action);
       return;
     }
     if (action === "duplicate") {
@@ -2141,6 +2566,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      dropRefreshes();
       closeActive(false, true);
       sheet.close(false);
       toast.clearTimer();

@@ -63,6 +63,39 @@ body {
   margin-top: 3.5rem;
 }
 
+/* The crew: items side by side on one line, wrapping into a grid when the page narrows (`?rowlist=1`). */
+.crew {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  margin: 2rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crew__member {
+  flex: 1 1 8rem;
+}
+
+.crew__name,
+.crew__role {
+  display: block;
+}
+
+.crew__name {
+  font-weight: bold;
+}
+
+/* While editing, room between lines for each item's toolbar, and the Add row on a line of its own. */
+.crew.cms-list {
+  gap: 3.75rem 1.5rem;
+  margin-top: 3.5rem;
+}
+
+.crew > .cms-list__add {
+  flex: 0 0 100%;
+}
+
 .team__name {
   font-weight: bold;
 }

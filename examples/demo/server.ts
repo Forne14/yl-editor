@@ -81,15 +81,22 @@ async function renderHome(request: Request, tenant: Tenant): Promise<Response> {
   // Editors see drafts; visitors see what is live. Unvalidated, so a broken row renders instead of failing the page.
   const read = (key: string) => tenant.store.get(key, { draft: editing, unvalidated: true, includeRetired: editing });
   const lists = url.searchParams.get("lists") === "1";
-  const [home, about, settings, team] = await Promise.all([
+  const rowlist = url.searchParams.get("rowlist") === "1";
+  const [home, about, settings, team, crew] = await Promise.all([
     read("pages/home"),
     read("pages/about"),
     read("settings/site"),
     lists ? read("pages/team") : null,
+    rowlist ? read("pages/crew") : null,
   ]);
   const scheduling = url.searchParams.get("scheduling") === "1";
   const richtextFallback = url.searchParams.get("richtext") === "fallback";
-  return html(renderPage({ home, about, settings, team }, { session, editing, scheduling, richtextFallback, lists }));
+  return html(
+    renderPage(
+      { home, about, settings, team, crew },
+      { session, editing, scheduling, richtextFallback, lists, rowlist },
+    ),
+  );
 }
 
 async function recordCspReport(request: Request): Promise<Response> {

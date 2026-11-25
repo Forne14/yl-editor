@@ -19,6 +19,8 @@ export const pageSchema = z.object({
   body: z.string().optional(),
   // A keyed list: the chrome adds, removes, reorders and duplicates its items.
   team: keyedItems(z.object({ name: z.string(), role: z.string().optional() })).optional(),
+  // A second keyed list, laid out as a row that wraps into a grid (`?rowlist=1`).
+  crew: keyedItems(z.object({ name: z.string(), role: z.string().optional() })).optional(),
 });
 
 export const settingsSchema = z.object({ footer: z.string() });
@@ -69,6 +71,19 @@ export const defaultSeed: readonly SeedContent[] = [
       team: [
         { _key: "ana", name: "Ana", role: "Baker" },
         { _key: "ben", name: "Ben", role: "Front of house" },
+      ],
+    },
+  },
+  {
+    type: "page",
+    slug: "crew",
+    payload: {
+      title: "Crew",
+      crew: [
+        { _key: "ana", name: "Ana", role: "Baker" },
+        { _key: "ben", name: "Ben", role: "Front of house" },
+        { _key: "cleo", name: "Cleo", role: "Pastry" },
+        { _key: "dee", name: "Dee", role: "Deliveries" },
       ],
     },
   },

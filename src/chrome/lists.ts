@@ -29,7 +29,7 @@ export interface ItemRecord {
   itemKey: string | undefined;
 }
 
-export type ItemAction = "up" | "down" | "duplicate" | "remove";
+export type ItemAction = "grip" | "up" | "down" | "duplicate" | "remove";
 
 export interface ListHandlers {
   /**
@@ -43,8 +43,26 @@ export interface ListHandlers {
   /** Whether a removal from this list can still be undone: the Add row then offers Undo too. */
   canUndo: boolean;
   undo(): void;
-  act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement): void;
+  /** `focusOn`: the button focus returns to after a move, when it isn't the one pressed (the handle, for an arrow key). */
+  act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement, focusOn?: ItemAction): void;
+  /**
+   * A drag is about to start: false (and said) while the list waits for the page. A drag runs only while its pointer
+   * is down, so the host learns it is over from that pointer's up or cancel.
+   */
+  dragStart(): boolean;
+  /**
+   * The item was dropped next to `place`'s item, by `_key`: after it, or before it when the item is now first. The
+   * page can show fewer items than are stored, so only a neighbour's key, not a page index, names a stored place.
+   * `putBack` returns the element to where the drag took it from, and says whether it could; the write calls it before
+   * the items are arranged in the stored order, so a drop leaves the host's markup between items where Move up and
+   * down leave it. Resolves false when nothing was written; the host then shows the stored order itself if `putBack`
+   * can't.
+   */
+  drop(item: ItemRecord, place: DropPlace, putBack: () => boolean): Promise<boolean>;
 }
+
+/** Where a drop left an item: after the item with this `_key`, or before it when the dropped item is now first. */
+export type DropPlace = { after: string } | { before: string };
 
 export interface ListRecord {
   element: HTMLElement;
@@ -174,6 +192,7 @@ export function storedIndex(items: readonly unknown[], item: ItemRecord): number
 
 const SVG = "http://www.w3.org/2000/svg";
 const ICONS: Record<ItemAction | "add", string[]> = {
+  grip: ["M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01"],
   up: ["m6 15 6-6 6 6"],
   down: ["m6 9 6 6 6-6"],
   duplicate: ["M9 9h11v11H9z", "M5 15V6a2 2 0 0 1 2-2h9"],
@@ -213,7 +232,10 @@ interface Box {
   b: number;
 }
 
-function boxOf(node: Element, origin: DOMRect): Box {
+/** The viewport as an origin: boxes in client coordinates, as a pointer event's are. */
+const VIEWPORT = { left: 0, top: 0 } as const;
+
+function boxOf(node: Element, origin: { left: number; top: number }): Box {
   const rect = node.getBoundingClientRect();
   return {
     l: rect.left - origin.left,
@@ -260,6 +282,72 @@ function cellLines(fields: readonly Box[], edge: { left: number; right: number }
   return { vertical: xs, horizontal };
 }
 
+type Axis = "column" | "row" | "grid";
+
+interface Cell {
+  row: HTMLElement;
+  band: HTMLElement;
+  tools: HTMLElement | undefined;
+  /** An item, not the Add row. */
+  item: boolean;
+  box: Box;
+}
+
+interface Line {
+  top: number;
+  bottom: number;
+  /** Left to right. */
+  cells: Cell[];
+}
+
+/**
+ * Cells grouped into lines, and the list's axis from its items' boxes (ruling D10 on #28). A cell joins a line when
+ * it shares more than a pixel of height with it; lines run top to bottom, cells left to right, whatever the order of
+ * the DOM (a drag moves an item's element before anything is written). A column has one item per line, a row has
+ * every item on one line, a grid wraps. Fewer than two items is a column.
+ */
+function group<T extends { box: Box }>(all: readonly T[]): { top: number; bottom: number; cells: T[] }[] {
+  const lines: { top: number; bottom: number; cells: T[] }[] = [];
+  for (const cell of [...all].sort((a, b) => a.box.t - b.box.t || a.box.l - b.box.l)) {
+    const last = lines.at(-1);
+    if (last && cell.box.t < last.bottom - 1) {
+      last.cells.push(cell);
+      last.bottom = Math.max(last.bottom, cell.box.b);
+    } else {
+      lines.push({ top: cell.box.t, bottom: cell.box.b, cells: [cell] });
+    }
+  }
+  for (const line of lines) line.cells.sort((a, b) => a.box.l - b.box.l);
+  return lines;
+}
+
+function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Line[]; axis: Axis } {
+  const across = group(itemBoxes.map((box) => ({ box })));
+  const crowded = across.some((line) => line.cells.length > 1);
+  const axis: Axis = !crowded ? "column" : across.length === 1 ? "row" : "grid";
+  return { lines: group(cells), axis };
+}
+
+/** One of the chrome's own nodes: they come and go with each dressing. */
+function isChrome(node: Node | null): node is Element {
+  return node instanceof Element && node.classList.contains("cms-root");
+}
+
+/** The first sibling after `node` that is the host's (an item or the host's own markup), or null at the end. */
+function hostSibling(node: Node): Node | null {
+  let next = node.nextSibling;
+  while (isChrome(next)) next = next.nextSibling;
+  return next;
+}
+
+/** The host's element next to `node` on that side, chrome `.cms-root` nodes and text skipped, or null. */
+function hostElementBeside(node: Element, side: "previous" | "next"): Element | null {
+  const step = (from: Element) => (side === "next" ? from.nextElementSibling : from.previousElementSibling);
+  let beside = step(node);
+  while (isChrome(beside)) beside = step(beside);
+  return beside;
+}
+
 /** Adds the outline, the tag, each item's toolbar and band, and the Add row. */
 export function attachList(record: ListRecord, strings: Strings, handlers: ListHandlers): void {
   record.detach?.();
@@ -287,6 +375,166 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
 
   const toolbars: (HTMLElement | undefined)[] = [];
   const bands: HTMLElement[] = [];
+  // The drag. Invariants:
+  // - Claim: at most one drag per list at a time. `endDrag` is set exactly while one runs; a pointerdown while it is
+  //   set, or one `dragStart` refuses (the list waits for the page), starts nothing.
+  // - One pointer: the drag belongs to the pointerdown's `pointerId`. Moves, ups, cancels and lost capture of any
+  //   other pointer are ignored.
+  // - Page only: until the drop nothing is written. A drag moves only the dragged item's own element, next to another
+  //   item (which can sit in another wrapper of the host's); every other node (host markup between items, the
+  //   chrome's rows) stays where it is. A move inserts the element only when its host element neighbour on that side
+  //   (text and chrome `.cms-root` nodes skipped) isn't already it, so a pointer held over one place inserts nothing.
+  // - Release: `endDrag` runs at most once (it clears itself first), from the drag's pointerup or pointercancel
+  //   anywhere in the document, the list losing its capture (`lostpointercapture` whose target is the list), Escape,
+  //   or detach. It removes every listener it added (on the list and on the document) and releases the capture,
+  //   whatever the outcome.
+  // - Put back: a cancel, a drop where it started, or a drop that wrote nothing (resolved false, or rejected) returns
+  //   the element to the place it had at pointerdown, from wherever the drag left it, another wrapper of the host's
+  //   included. The place is `parent` and `next`, the first following sibling that is the host's (chrome `.cms-root`
+  //   nodes skipped: a re-dress replaces them, the Add row after the last item among them), or null for the end,
+  //   which means after the host's last node and before the chrome's rows closing `parent`. It does so only while
+  //   `parent` is still in the list and `next` still in `parent` (or was the end), and says whether it did;
+  //   otherwise the markup there has been replaced. A drop that writes puts it back on the write chain before the
+  //   items are arranged in the stored order (`ListHandlers.drop`), so a drop and a move leave the same markup; if
+  //   the guard refuses, that arrangement still ends in the stored order. A drop that wrote nothing and could not be
+  //   put back is arranged in the stored order by the host (`dropItem` in mount.ts).
+  // - Detached: a drop that wrote nothing (resolved false, or rejected) puts the element back whenever the host is
+  //   still on the page, attached or not: nothing was stored, so the stored order is what the page shows. The guards
+  //   of `putBack` above still apply. Only the repaint is the dressing's: `record.paint`, a no-op once detached, the
+  //   new dressing's own paint once the list was dressed again. The `putBack` handed to the write is the write's own
+  //   step and keeps the same guards: it runs before the write arranges the items, whatever dresses them by then.
+  // - Bound: a drop sends at most one move, placed by the neighbour's `_key`, never by a page index.
+  // Pointer capture sits on the list, which never moves (capture on the handle would be lost when the item is
+  // re-inserted). A touch or pen starts captured to the handle implicitly; the list's capture takes it over, and the
+  // `lostpointercapture` that fires at the handle and bubbles to the list is that hand-over, not an end.
+  let endDrag: ((outcome: "drop" | "cancel") => void) | undefined;
+  const startDrag = (event: PointerEvent, item: ItemRecord) => {
+    if (event.button !== 0 || endDrag || !handlers.dragStart()) return;
+    event.preventDefault();
+    const pointer = event.pointerId;
+    const node = item.element;
+    const parent = node.parentNode;
+    // The host's node it sat before: the chrome's rows (the Add row after the last item) are replaced by a re-dress.
+    const next = hostSibling(node);
+    const from = items.indexOf(item);
+    node.classList.add("cms-item--dragging");
+    try {
+      host.setPointerCapture(pointer);
+    } catch {
+      // No capture (a synthetic pointer): moves arrive while the pointer is over the list, and the up from anywhere.
+    }
+    const ours = (other: PointerEvent) => other.pointerId === pointer;
+    const onMove = (move: PointerEvent) => {
+      if (!ours(move)) return;
+      const others = items.filter((other) => other !== item).map((other) => other.element);
+      let before: HTMLElement | undefined;
+      if (axis === "column") {
+        before = others.find((other) => {
+          const box = other.getBoundingClientRect();
+          return move.clientY < box.top + box.height / 2;
+        });
+      } else {
+        // Along a line: above it, or within it and left of an item's middle. The line's top and bottom, not the item's
+        // own box: an item shorter than its line still holds the pointer anywhere within the line.
+        const lines = group(others.map((other) => ({ element: other, box: boxOf(other, VIEWPORT) })));
+        for (const line of lines) {
+          const cell = line.cells.find(
+            ({ box }) => move.clientY < line.top || (move.clientY < line.bottom && move.clientX < (box.l + box.r) / 2),
+          );
+          if (cell) {
+            before = cell.element;
+            break;
+          }
+        }
+      }
+      // Already there, whatever text or chrome sits between: no insert (server HTML has whitespace between items).
+      if (before) {
+        if (hostElementBeside(before, "previous") !== node) before.before(node);
+      } else {
+        const last = others.at(-1);
+        if (last && hostElementBeside(last, "next") !== node) last.after(node);
+      }
+      record.paint();
+    };
+    const onUp = (up: PointerEvent) => {
+      if (ours(up)) endDrag?.("drop");
+    };
+    const onCancel = (cancel: PointerEvent) => {
+      if (ours(cancel)) endDrag?.("cancel");
+    };
+    // Only the list's own capture going ends the drag. A touch or pen is captured to the handle implicitly; taking it
+    // for the list fires `lostpointercapture` at the handle, which bubbles here and is the hand-over, not an end.
+    const onLost = (lost: PointerEvent) => {
+      if (lost.target === host) onCancel(lost);
+    };
+    const onKey = (key: KeyboardEvent) => {
+      if (key.key !== "Escape") return;
+      key.stopPropagation();
+      endDrag?.("cancel");
+    };
+    /** True when the element is back where it was at pointerdown; false when the markup there has been replaced. */
+    const putBack = (): boolean => {
+      if (!parent || !parent.isConnected || !host.contains(parent)) return false;
+      if (next !== null && next.parentNode !== parent) return false;
+      if (node.parentNode === parent && hostSibling(node) === next) return true;
+      // At the end: after the host's last node, before the chrome's rows that close the parent.
+      let anchor = next;
+      if (anchor === null) for (let last = parent.lastChild; isChrome(last); last = last.previousSibling) anchor = last;
+      parent.insertBefore(node, anchor);
+      return true;
+    };
+    /** What the drag comes to once its listeners are gone: a put-back, or one drop write. */
+    const settleDrop = (outcome: "drop" | "cancel") => {
+      const order = [...items].sort((a, b) =>
+        a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+      const to = order.indexOf(item);
+      // The page can show fewer items than are stored: the drop names its neighbour, which the write finds by key.
+      const neighbour = to > 0 ? order[to - 1] : order[1];
+      const place: DropPlace | undefined =
+        neighbour?.itemKey === undefined
+          ? undefined
+          : to > 0
+            ? { after: neighbour.itemKey }
+            : { before: neighbour.itemKey };
+      if (outcome === "cancel" || to === from || !place || !host.isConnected) {
+        putBack();
+        record.paint();
+        return;
+      }
+      // Nothing written (offline, a refusal, a write that threw): the page shows the stored order again.
+      const restore = () => {
+        if (!host.isConnected) return;
+        putBack();
+        record.paint();
+      };
+      void handlers.drop(item, place, putBack).then((written) => {
+        if (!written) restore();
+      }, restore);
+    };
+    host.addEventListener("pointermove", onMove);
+    host.addEventListener("lostpointercapture", onLost);
+    // On the document, so an up or cancel outside the list ends the drag when capture failed. A captured one reaches
+    // the document too, by way of the list.
+    document.addEventListener("pointerup", onUp, true);
+    document.addEventListener("pointercancel", onCancel, true);
+    document.addEventListener("keydown", onKey, true);
+    endDrag = (outcome) => {
+      endDrag = undefined;
+      host.removeEventListener("pointermove", onMove);
+      host.removeEventListener("lostpointercapture", onLost);
+      document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", onCancel, true);
+      document.removeEventListener("keydown", onKey, true);
+      try {
+        host.releasePointerCapture(pointer);
+      } catch {
+        // Already released.
+      }
+      node.classList.remove("cms-item--dragging");
+      settleDrop(outcome);
+    };
+  };
   items.forEach((item, index) => {
     if (!handlers.actions) {
       // Still a row of the grid: a band for its line and the tint, but nothing to act with.
@@ -313,12 +561,16 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         tabindex: "-1",
       });
       node.append(icon(action));
-      node.addEventListener("click", () => handlers.act(item, action, node));
+      if (action !== "grip") node.addEventListener("click", () => handlers.act(item, action, node));
       return node;
     };
     const buttons: HTMLButtonElement[] = [];
     if (info.order === "manual") {
+      const grip = toolButton("grip", format(strings.itemDrag, placement), false);
+      grip.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown");
+      grip.addEventListener("pointerdown", (event) => startDrag(event, item));
       buttons.push(
+        grip,
         toolButton("up", format(strings.itemMoveUp, placement), index === 0, format(strings.itemIsFirst, placement)),
         toolButton(
           "down",
@@ -331,7 +583,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (info.duplicate)
       buttons.push(toolButton("duplicate", format(strings.itemDuplicate, placement), full, fullReason));
     buttons.push(toolButton("remove", format(strings.itemRemove, placement), atMin, minReason));
-    const first = buttons[0];
+    // The handle acts only on a pointer or the arrow keys: Tab lands on the first button that does something on Enter.
+    const first = buttons.find((button) => button.dataset.action !== "grip") ?? buttons[0];
     if (first) first.tabIndex = 0;
     // Touch: the only way in without hover. Hidden on devices that hover (chrome.css).
     const chip = element(
@@ -368,6 +621,14 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         return;
       }
       const at = buttons.indexOf(target);
+      if (target.dataset.action === "grip" && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        // The same as Move up / Move down, with focus staying on the handle.
+        event.preventDefault();
+        const step = event.key === "ArrowUp" ? "up" : "down";
+        const mover = buttons.find((node) => node.dataset.action === step);
+        if (mover) handlers.act(item, step, mover, "grip");
+        return;
+      }
       const to =
         event.key === "ArrowRight"
           ? (at + 1) % buttons.length
@@ -444,57 +705,86 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   }
 
   const separators: HTMLElement[] = [];
+  let axis: Axis = "column";
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
     const origin = host.getBoundingClientRect();
     const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
-    const rows = [...items.map((item) => item.element), ...(addRow ? [addRow] : [])];
-    const boxes = rows.map((row) => boxOf(row, origin));
-    const halves = boxes.slice(0, -1).map((box, index) => Math.max(((boxes[index + 1]?.t ?? box.b) - box.b) / 2, 0));
+    const cells: Cell[] = [
+      ...items.map((item, index) => ({ row: item.element, band: bands[index], tools: toolbars[index], item: true })),
+      ...(addRow ? [{ row: addRow, band: addBand, tools: undefined, item: false }] : []),
+    ].flatMap((cell) => (cell.band ? [{ ...cell, band: cell.band, box: boxOf(cell.row, origin) }] : []));
+    const { lines, axis: found } = layOut(
+      cells.filter((cell) => cell.item).map((cell) => cell.box),
+      cells,
+    );
+    axis = found;
+    host.classList.toggle("cms-list--row", axis === "row");
+    host.classList.toggle("cms-list--grid", axis === "grid");
+    // Halfway to the next line, or the outline's padding at the ends.
+    const halves = lines.map((line, index) => {
+      const next = lines[index + 1];
+      return next ? Math.max((next.top - line.bottom) / 2, 0) : pad;
+    });
     const lead = Math.max(halves[0] ?? pad, pad);
-    const firstTop = (boxes[0]?.t ?? 0) - lead;
+    const firstTop = (lines[0]?.top ?? 0) - lead;
     frame.style.setProperty("--cms-frame-top", px(firstTop));
-    frame.style.setProperty("--cms-frame-height", px((boxes.at(-1)?.b ?? 0) + pad - firstTop));
-    rows.forEach((row, index) => {
-      const box = boxes[index] as Box;
-      const above = index === 0 ? lead : (halves[index - 1] ?? 0);
-      const below = halves[index] ?? pad;
-      const band = index < bands.length ? bands[index] : addBand;
-      if (!band) return;
-      // Inside the outline's 2px border on each side.
-      const left = -pad + 2 - box.l;
-      const width = origin.width + 2 * pad - 4;
-      band.style.setProperty("--cms-band-top", px(-above));
-      band.style.setProperty("--cms-band-bottom", px(-below));
-      band.style.setProperty("--cms-band-left", px(left));
-      band.style.setProperty("--cms-band-width", px(width));
-      const tools = toolbars[index];
-      if (tools) {
-        tools.style.setProperty("--cms-tools-above", px(above));
-        tools.style.setProperty("--cms-tools-right", px(origin.width - box.r));
-      }
-      if (index >= items.length) return;
-      const itemOrigin = row.getBoundingClientRect();
-      const fields = [...row.querySelectorAll("[data-edit-field]")]
-        .filter((node) => node.closest(".cms-item") === row)
-        .map((node) => boxOf(node, itemOrigin));
-      const lines = cellLines(fields, { left, right: left + width });
-      for (const x of lines.vertical) {
-        const line = element("span", { class: "cms-root cms-item__sep cms-item__sep--v", "aria-hidden": "true" });
-        line.style.setProperty("--cms-sep-x", px(x));
-        line.style.setProperty("--cms-sep-top", px(-above + 1));
-        line.style.setProperty("--cms-sep-length", px(box.b - box.t + above + below - 1));
-        row.append(line);
-        separators.push(line);
-      }
-      for (const { x, y, w } of lines.horizontal) {
-        const line = element("span", { class: "cms-root cms-item__sep cms-item__sep--h", "aria-hidden": "true" });
-        line.style.setProperty("--cms-sep-x", px(x));
-        line.style.setProperty("--cms-sep-top", px(y));
-        line.style.setProperty("--cms-sep-length", px(w));
-        row.append(line);
-        separators.push(line);
-      }
+    frame.style.setProperty("--cms-frame-height", px((lines.at(-1)?.bottom ?? 0) + pad - firstTop));
+    // Inside the outline's 2px border on each side.
+    const innerLeft = -pad + 2;
+    const innerRight = origin.width + pad - 2;
+    lines.forEach((line, lineIndex) => {
+      const above = lineIndex === 0 ? lead : (halves[lineIndex - 1] ?? 0);
+      const below = halves[lineIndex] ?? pad;
+      const top = line.top - above;
+      const bottom = line.bottom + below;
+      line.cells.forEach((cell, at) => {
+        const { box, band, row, tools } = cell;
+        const previous = line.cells[at - 1];
+        const next = line.cells[at + 1];
+        const left = previous ? (previous.box.r + box.l) / 2 : innerLeft;
+        const right = next ? (box.r + next.box.l) / 2 : innerRight;
+        const hasTop = lineIndex > 0;
+        const hasLeft = at > 0;
+        band.classList.toggle("cms-item__band--top", hasTop);
+        band.classList.toggle("cms-item__band--left", hasLeft);
+        band.style.setProperty("--cms-band-top", px(top - box.t));
+        band.style.setProperty("--cms-band-bottom", px(box.b - bottom));
+        band.style.setProperty("--cms-band-left", px(left - box.l));
+        band.style.setProperty("--cms-band-width", px(right - left));
+        if (tools) {
+          // On the item's leading line: the top left in a row or grid, the top right of the outline in a column.
+          tools.style.setProperty("--cms-tools-above", px(box.t - top));
+          tools.style.setProperty("--cms-tools-right", axis === "column" ? px(origin.width - box.r) : "auto");
+          tools.style.setProperty("--cms-tools-left", axis === "column" ? "auto" : px(left + pad - box.l));
+        }
+        if (!cell.item) return;
+        const itemOrigin = row.getBoundingClientRect();
+        const fields = [...row.querySelectorAll("[data-edit-field]")]
+          .filter((node) => node.closest(".cms-item") === row)
+          .map((node) => boxOf(node, itemOrigin));
+        // The cell's own top and left borders take a pixel; field lines start past them.
+        const lineTop = top - box.t + (hasTop ? 1 : 0);
+        const cellLeft = left - box.l + (hasLeft ? 1 : 0);
+        const cellRight = right - box.l;
+        const inside = cellLines(fields, { left: cellLeft, right: cellRight });
+        for (const x of inside.vertical) {
+          const sep = element("span", { class: "cms-root cms-item__sep cms-item__sep--v", "aria-hidden": "true" });
+          sep.style.setProperty("--cms-sep-x", px(x));
+          sep.style.setProperty("--cms-sep-top", px(lineTop));
+          sep.style.setProperty("--cms-sep-length", px(bottom - top - (hasTop ? 1 : 0)));
+          row.append(sep);
+          separators.push(sep);
+        }
+        for (const { x, y, w } of inside.horizontal) {
+          const sep = element("span", { class: "cms-root cms-item__sep cms-item__sep--h", "aria-hidden": "true" });
+          sep.style.setProperty("--cms-sep-x", px(x));
+          sep.style.setProperty("--cms-sep-top", px(y));
+          sep.style.setProperty("--cms-sep-length", px(w));
+          row.append(sep);
+          separators.push(sep);
+        }
+      });
     });
   };
   let frameRequest: number | undefined;
@@ -521,17 +811,18 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   paint();
 
   record.detach = () => {
+    endDrag?.("cancel");
     observer?.disconnect();
     window.removeEventListener("resize", schedule);
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     for (const node of separators.splice(0)) node.remove();
     for (const node of added) node.remove();
     for (const { node, hadClass: had } of itemClasses) {
-      node.classList.remove("cms-item");
+      node.classList.remove("cms-item", "cms-item--dragging");
       node.removeAttribute("data-cms-open");
       if (!had && node.classList.length === 0) node.removeAttribute("class");
     }
-    host.classList.remove("cms-list");
+    host.classList.remove("cms-list", "cms-list--row", "cms-list--grid");
     if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
     record.detach = undefined;
     record.addButton = undefined;

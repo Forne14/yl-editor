@@ -29,6 +29,10 @@ test.describe("a keyed list", () => {
     await page.locator("#team-list .team__name").first().focus();
     await page.keyboard.press(shiftTab(browserName));
     await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Move Ana up");
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Drag to reorder Ana, or use the move buttons");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Move Ana up");
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(":focus")).toHaveAttribute("aria-label", "Move Ana down");
     await page.keyboard.press("Enter");

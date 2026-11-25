@@ -37,6 +37,8 @@ export interface PageDocuments {
   about: StoredDocument | null;
   /** Rendered only with `lists`, so the specs that walk the whole page see the page they expect. */
   team?: StoredDocument | null;
+  /** Rendered only with `rowlist`. */
+  crew?: StoredDocument | null;
   settings: StoredDocument | null;
 }
 
@@ -47,6 +49,8 @@ export interface RenderOptions {
   scheduling: boolean;
   /** Render the `pages/team` keyed list (`?lists=1`). */
   lists?: boolean;
+  /** Render the `pages/crew` keyed list, laid out as a row that wraps into a grid (`?rowlist=1`). */
+  rowlist?: boolean;
   /** Leave `richtext` to the default widget, the plain-text fallback, instead of `@yl/editor/richtext`. */
   richtextFallback?: boolean;
 }
@@ -75,6 +79,25 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
     noun: "member",
     plural: "members",
     max: 4,
+    duplicate: true,
+    itemLabel: "name",
+  });
+
+  const crewField = editable(editing ? "pages/crew" : undefined);
+  const crewPayload = payloadOf(documents.crew ?? null);
+  const crew = Array.isArray(crewPayload["crew"]) ? (crewPayload["crew"] as unknown[]) : [];
+  const crewItems = crew
+    .map((member, index) => {
+      const record = typeof member === "object" && member !== null ? (member as Record<string, unknown>) : {};
+      const memberField = crewField.itemFields("crew", member, index);
+      return `<li class="crew__member"${attributes(crewField.item("crew", member, index))}><span class="crew__name"${attributes(memberField("name", "text", { label: "Name" }))}>${escapeHtml(text(record["name"]))}</span><span class="crew__role"${attributes(memberField("role", "text", { label: "Role" }))}>${escapeHtml(text(record["role"]))}</span></li>`;
+    })
+    .join("");
+  const crewList = crewField.list("crew", {
+    label: "Crew",
+    noun: "member",
+    plural: "members",
+    max: 6,
     duplicate: true,
     itemLabel: "name",
   });
@@ -131,6 +154,13 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
           ? `
       <section class="team-section" aria-label="Team">
         <ul class="team" id="team-list"${attributes(teamList)}>${teamItems}</ul>
+      </section>`
+          : ""
+      }${
+        options.rowlist
+          ? `
+      <section class="crew-section" aria-label="Crew">
+        <ul class="crew" id="crew-list"${attributes(crewList)}>${crewItems}</ul>
       </section>`
           : ""
       }
