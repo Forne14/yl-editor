@@ -45,10 +45,11 @@ export interface ListHandlers {
   undo(): void;
   /** `focusOn`: the button focus returns to after a move, when it isn't the one pressed (the handle, for an arrow key). */
   act(item: ItemRecord, action: ItemAction, button: HTMLButtonElement, focusOn?: ItemAction): void;
-  /** A drag is about to start: false (and said) while the list waits for the page. */
+  /**
+   * A drag is about to start: false (and said) while the list waits for the page. A drag runs only while its pointer
+   * is down, so the host learns it is over from that pointer's up or cancel.
+   */
   dragStart(): boolean;
-  /** The drag `dragStart` granted is over (dropped, cancelled or detached): called exactly once per granted drag. */
-  dragEnd(): void;
   /**
    * The item was dropped next to `place`'s item, by `_key`: after it, or before it when the item is now first. The
    * page can show fewer items than are stored, so only a neighbour's key, not a page index, names a stored place.
@@ -364,24 +365,21 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   // - Release: `endDrag` runs at most once (it clears itself first), from the drag's pointerup or pointercancel
   //   anywhere in the document, lost capture, Escape, or detach. It removes every listener it added (on the list and
   //   on the document) and releases the capture, whatever the outcome.
-  // - Report: a granted `dragStart` is paired with exactly one `dragEnd`, from `endDrag`'s `finally` (after the drop's
-  //   write has been asked for, so its lock is already held), so the host's count of running drags returns to zero.
   // - Put back: a cancel, a drop where it started, or a drop that wrote nothing (resolved false, or rejected) returns
   //   the element to the place (`parent`, `next`) it had at pointerdown, from wherever the drag left it, another
   //   wrapper of the host's included. It does so only while `parent` is still in the list and `next` still follows
   //   in it (or was the end); otherwise the markup has been replaced and is the page's. A drop that writes puts it
   //   back on the write chain before the items are arranged in the stored order (`ListHandlers.drop`), so a drop and
   //   a move leave the same markup.
-  // - Detached: `detached` is set once `record.detach` has run (after it cancels a running drag, whose put-back is
-  //   still this attachment's). From then on no late callback of this attachment (`restore`, after a drop that wrote
-  //   nothing) touches the host: its markup is the page's, or another attachment's. The `putBack` handed to the write
-  //   is the write's own step and keeps its guards above: it runs before the write arranges the items, whatever
-  //   dresses them by then.
+  // - Detached: a drop that wrote nothing (resolved false, or rejected) puts the element back whenever the host is
+  //   still on the page, attached or not: nothing was stored, so the stored order is what the page shows. The guards
+  //   of `putBack` above still apply. Only the repaint is the dressing's: `record.paint`, a no-op once detached, the
+  //   new dressing's own paint once the list was dressed again. The `putBack` handed to the write is the write's own
+  //   step and keeps the same guards: it runs before the write arranges the items, whatever dresses them by then.
   // - Bound: a drop sends at most one move, placed by the neighbour's `_key`, never by a page index.
   // Pointer capture sits on the list, which never moves (capture on the handle would be lost when the item is
   // re-inserted).
   let endDrag: ((outcome: "drop" | "cancel") => void) | undefined;
-  let detached = false;
   const startDrag = (event: PointerEvent, item: ItemRecord) => {
     if (event.button !== 0 || endDrag || !handlers.dragStart()) return;
     event.preventDefault();
@@ -465,7 +463,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       }
       // Nothing written (offline, a refusal, a write that threw): the page shows the stored order again.
       const restore = () => {
-        if (detached || !host.isConnected) return;
+        if (!host.isConnected) return;
         putBack();
         record.paint();
       };
@@ -493,11 +491,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         // Already released.
       }
       node.classList.remove("cms-item--dragging");
-      try {
-        settleDrop(outcome);
-      } finally {
-        handlers.dragEnd();
-      }
+      settleDrop(outcome);
     };
   };
   items.forEach((item, index) => {
@@ -776,7 +770,6 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
 
   record.detach = () => {
     endDrag?.("cancel");
-    detached = true;
     observer?.disconnect();
     window.removeEventListener("resize", schedule);
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);

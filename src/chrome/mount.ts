@@ -222,8 +222,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    * been superseded gives up on its own.
    */
   let opening: { record: FieldRecord; ticket: number } | undefined;
-  /** Running drags per list element: one added when `dragStart` grants a drag, taken off by its `dragEnd`. */
-  const drags = new Map<HTMLElement, number>();
   let editing = true;
   let destroyed = false;
   let openTicket = 0;
@@ -587,7 +585,6 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         undo() {},
         act() {},
         dragStart: () => false,
-        dragEnd() {},
         drop: async () => false,
       });
       return;
@@ -599,17 +596,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       undo: () => void undoRemoval(list.id, undefined, list),
       add: () => void addItem(list),
       act: (item, action, pressed, focusOn) => void actOnItem(list, item, action, pressed, focusOn),
-      dragStart: () => {
-        if (refuseBusy(list.element)) return false;
-        drags.set(list.element, (drags.get(list.element) ?? 0) + 1);
-        return true;
-      },
-      dragEnd: () => {
-        const left = (drags.get(list.element) ?? 1) - 1;
-        if (left <= 0) drags.delete(list.element);
-        else drags.set(list.element, left);
-        queueRecheck();
-      },
+      dragStart: () => !refuseBusy(list.element),
       drop: (item, place, putBack) => dropItem(list, item, place, putBack),
     });
   }
@@ -1093,7 +1080,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (focusIsFree(fresh)) await openFirstField(fresh, item);
   }
 
-  // The list swap machinery, and the background refresh of `order="data"` lists (ruled on #43, 2026-11-24).
+  // The list swap machinery, and the background refresh of `order="data"` lists (ruled on #43, 2026-11-24: rule A of
+  // docs/specs/artefacts/2026-11-data-order-refresh.html).
   // Invariants:
   // - Locks: `locks` counts holders per document key. `withLock` (a list write and its settling) and `swapLists` (from
   //   the call until its run is over) each take one and give it back in a `finally`, so every lock is released however
@@ -1105,43 +1093,70 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   //   `rescanWithin` closes a widget whose element left the page.
   // - Data-order refresh: `dataRefreshes` holds at most one pending refresh per document key, the last saved field's.
   //   It never takes a lock, so nothing is refused because of it, and it never offers Reload.
-  // - It fetches only when `refreshReady`: editing, no fetch of its own in flight for the key (`refreshing` has the key
-  //   from the fetch's start to its end, removed in a `finally`), no save of the key queued or on the wire, no
-  //   interaction in progress in what its swap would replace, and nothing there busy. So at most one fetch per key at
-  //   a time.
-  // - An interaction in progress (ruled on #43: a refresh waits for it, never locks) is one of three, each with one
-  //   claim and one release:
-  //   - an open field: `active`, set when its widget mounts, cleared by `closeActive`;
-  //   - a field still opening: `opening`, set before a popover's read of its stored value, cleared in that read's
-  //     `finally`, and counted only while its ticket is `openTicket` (a superseded open gives up on its own);
-  //   - a drag: `drags`, one per list element, added when `dragStart` grants it, taken off by its one `dragEnd`
-  //     (lists.ts pairs them). A drag's list element counts as inside the target holding it.
-  // - The page applies only if `refreshReady` still holds when it lands, the pending entry is still the one the fetch
-  //   started for (identity: a newer save settled during the flight, and the page may predate it), and no document
-  //   shown in what it replaces has a new version since the fetch started. Otherwise it is dropped and the refresh
-  //   stays pending. A failed fetch, or a page missing a list, drops the refresh it was for, and only that one: an
-  //   entry that replaced it during the flight stays pending and is re-checked.
+  // - Rule A, checked in one place (`refreshReady`), before the fetch and again when the page arrives: the swap never
+  //   replaces markup holding focus or a pressed pointer, except the saved field itself. It may run only if
+  //   - no field is open or opening inside its targets: `active` (set when a widget mounts, cleared by `closeActive`)
+  //     and `opening` (set before a popover's read of its stored value, cleared in that read's `finally`, counted
+  //     only while its ticket is `openTicket`). An open widget holds focus, wherever its popover sits;
+  //   - no pointer is down inside its targets: `pressed` maps a pointer id to where it went down, set by every
+  //     pointerdown and deleted by that pointer's pointerup or pointercancel (all three on the document, capture
+  //     phase). A drag runs only while its pointer is down, so it counts as down. A pointer whose up never reached the
+  //     page is replaced by its next pointerdown, so the map holds at most one entry per pointer id;
+  //   - `document.activeElement` is the saved field's element, or body/null, or outside every target;
+  //   - and editing, no fetch of its own in flight for the key (`refreshing` has the key from the fetch's start to its
+  //     end, removed in a `finally`), no save of the key queued or on the wire, no lock on the key, nothing in the
+  //     targets busy.
+  // - Saved field: resolved when it is needed, never kept from the save: the element saved, while it is still in a
+  //   copy of the list, else the slot's field in the first copy (page order) showing the item's `_key`.
+  // - Focus: moved only when it was on the saved field, to that field in the new markup. Otherwise rule A means it was
+  //   outside the targets, and it is not moved.
+  // - Announcement: whenever an applied swap changed the saved item's index in its copy, read just before `applySwap`
+  //   (never when the save settled, so a swap in between is not announced as a sort), whether focus moved or not.
+  // - Arrival: the page applies only if rule A still holds, the pending entry is still the one the fetch started for
+  //   (identity: a newer save settled during the flight, and the page may predate it), and no document shown in what
+  //   it replaces has a new version since the fetch started. Otherwise it is dropped and the refresh stays pending. A
+  //   failed fetch, or a page missing a list, drops the refresh it was for, and only that one.
   // - Bound on pending entries: a refresh whose document has no list on the page any more (`swapTargets` empty), when
   //   it is checked before or after its fetch, is dropped: nothing is left for it to sort, and it is never re-checked.
-  // - Announcement: the item's place before the refresh is read from the markup just before `applySwap`, never when
-  //   the save settled, so a swap in between (Add, Duplicate, Move) is not announced as a sort.
-  // - Re-checks happen on a trigger, when the open field closes, when an opening field's read settles, when a drag
-  //   ends, when a key's last lock is released, when a save of a pending key changes state, and when a fetch ends.
-  //   They are batched into one microtask (`recheckQueued`), never a timer. Each fetch follows one of those events, so
-  //   fetches are bounded by triggers plus writes during flights.
+  // - Bound on fetches: at most one per key in flight (`refreshing`), and each one follows a trigger: a save of a
+  //   pending key changing state, the open field closing, an opening field's read settling, a key's last lock going,
+  //   focus moving in or out (focusin/focusout on the document), a pointer coming up or cancelled, a fetch ending.
+  //   Triggers are batched into one microtask (`recheckQueued`), never a timer, and with nothing pending they cost
+  //   nothing.
   // - Teardown (`destroy`, leaving edit mode) clears `dataRefreshes` and bumps `refreshEpoch`; a fetch that started
-  //   under an older epoch applies nothing.
+  //   under an older epoch applies nothing. `pressed`'s listeners go with the disposer.
   interface DataRefresh {
     slotId: string;
     listId: string;
-    /** Which copy of the list the field was saved in. */
-    copy: number;
     itemKey: string;
+    /** The field's element when it was saved: a swap since may have replaced it. */
+    element: HTMLElement;
   }
   const dataRefreshes = new Map<string, DataRefresh>();
   const refreshing = new Set<string>();
   let refreshEpoch = 0;
   let recheckQueued = false;
+  const pressed = new Map<number, EventTarget>();
+  disposer.listen(
+    document,
+    "pointerdown",
+    (event) => {
+      if (event.target) pressed.set((event as PointerEvent).pointerId, event.target);
+    },
+    { capture: true },
+  );
+  for (const type of ["pointerup", "pointercancel"]) {
+    disposer.listen(
+      document,
+      type,
+      (event) => {
+        pressed.delete((event as PointerEvent).pointerId);
+        queueRecheck();
+      },
+      { capture: true },
+    );
+  }
+  for (const type of ["focusin", "focusout"]) disposer.listen(document, type, () => queueRecheck(), { capture: true });
 
   function dropRefreshes(): void {
     dataRefreshes.clear();
@@ -1151,8 +1166,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   /**
    * A field saved inside an item of an `order="data"` list can change the host's order, and only the page knows that
    * order: once the save has settled (nothing newer queued, which `saved` state means) a refresh of the document's
-   * lists is pending until it can run without touching an interaction in progress (an open field, one still opening,
-   * a drag) or a list waiting on a write.
+   * lists is pending until rule A lets it run.
    */
   function settleDataOrder(slot: SaveSlot): void {
     if (!editing || destroyed) return;
@@ -1168,12 +1182,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     );
     const item = list?.items.find((entry) => entry.element.contains(record.element));
     if (!list || !item || item.itemKey === undefined) return;
-    dataRefreshes.set(slot.key, {
-      slotId: slot.id,
-      listId: list.id,
-      copy: copiesOf(list.id).indexOf(list),
-      itemKey: item.itemKey,
-    });
+    dataRefreshes.set(slot.key, { slotId: slot.id, listId: list.id, itemKey: item.itemKey, element: record.element });
     queueRecheck();
   }
 
@@ -1186,16 +1195,33 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     });
   }
 
-  /** Whether a refresh of `key` may fetch now, or apply what it fetched. */
-  function refreshReady(key: string, targets: readonly ListRecord[]): boolean {
+  /** The saved field as the page shows it now: its copy of the list, its item, and its element if it has one. */
+  function savedField(
+    refresh: DataRefresh,
+  ): { list: ListRecord; item: ItemRecord; element: HTMLElement | undefined } | undefined {
+    const copies = copiesOf(refresh.listId);
+    const holding = refresh.element.isConnected
+      ? copies.find((list) => list.element.contains(refresh.element))
+      : undefined;
+    const list = holding ?? copies.find((copy) => itemByKey(copy, refresh.itemKey) !== undefined);
+    const item = itemByKey(list, refresh.itemKey);
+    if (!list || !item) return undefined;
+    const element = holding
+      ? refresh.element
+      : fields.find((record) => record.id === refresh.slotId && item.element.contains(record.element))?.element;
+    return { list, item, element };
+  }
+
+  /** Rule A: whether a refresh of `key` may fetch now, or apply what it fetched. */
+  function refreshReady(key: string, targets: readonly ListRecord[], refresh: DataRefresh): boolean {
     if (!editing || destroyed || refreshing.has(key) || session.isSaving(key) || locks.has(key)) return false;
     if (targets.length === 0) return false;
-    const inProgress = [
-      active?.record.element,
-      opening?.ticket === openTicket ? opening.record.element : undefined,
-      ...drags.keys(),
-    ].filter((node): node is HTMLElement => node !== undefined);
-    if (targets.some((list) => inProgress.some((node) => list.element.contains(node)))) return false;
+    const inside = (node: unknown) => node instanceof Node && targets.some((list) => list.element.contains(node));
+    const open = [active?.record.element, opening?.ticket === openTicket ? opening.record.element : undefined];
+    if (open.some(inside) || [...pressed.values()].some(inside)) return false;
+    const focused = document.activeElement;
+    if (focused !== null && focused !== document.body && inside(focused) && focused !== savedField(refresh)?.element)
+      return false;
     return !targets.some((list) => isBusy(list.element));
   }
 
@@ -1219,7 +1245,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       dataRefreshes.delete(key);
       return;
     }
-    if (!refreshReady(key, targets)) return;
+    if (!refreshReady(key, targets, started)) return;
     const epoch = refreshEpoch;
     const versions = versionsWithin(targets);
     refreshing.add(key);
@@ -1250,8 +1276,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       dataRefreshes.delete(key);
       return;
     }
-    if (!refreshReady(key, now) || versionsWithin(now) !== versions) {
-      // Dropped: the refresh stays pending, and runs again once it can.
+    if (!refreshReady(key, now, wanted) || versionsWithin(now) !== versions) {
+      // Dropped: the refresh stays pending, and runs on the next trigger that finds rule A holding.
       queueRecheck();
       return;
     }
@@ -1259,18 +1285,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     // `wanted` is `started` here (checked above, nothing awaited since): only the refresh this page was for goes.
     dataRefreshes.delete(key);
     if (missing) return;
-    const focused = document.activeElement;
-    const counterpart =
-      focused instanceof HTMLElement && now.some((list) => list.element.contains(focused))
-        ? focusCounterpart(focused)
-        : undefined;
-    // Where the page shows the item now: a swap since the save settled may have moved it.
-    const shown = copiesOf(wanted.listId)[wanted.copy];
-    const before = shown?.items.findIndex((entry) => entry.itemKey === wanted.itemKey) ?? -1;
+    // Where the page shows the item now, just before the swap: one since the save settled may have moved it.
+    const shown = savedField(wanted);
+    const copy = shown ? copiesOf(wanted.listId).indexOf(shown.list) : -1;
+    const before = shown ? shown.list.items.indexOf(shown.item) : -1;
+    const hadFocus = shown?.element !== undefined && document.activeElement === shown.element;
     applySwap(pairs);
-    const fresh = copiesOf(wanted.listId)[wanted.copy];
+    const fresh = copiesOf(wanted.listId)[copy];
     const moved = itemByKey(fresh, wanted.itemKey);
-    if (fresh && moved && before >= 0 && fresh.items.indexOf(moved) !== before) {
+    if (!fresh || !moved) return;
+    if (before >= 0 && fresh.items.indexOf(moved) !== before) {
       toast.announce(
         format(strings.itemSorted, {
           item: itemName(fresh, moved, strings),
@@ -1279,54 +1303,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         }),
       );
     }
-    // Focus moves only when the element holding it was replaced, and nothing else has taken the editor's attention.
-    if (!counterpart || active || sheet.isOpen) return;
-    if (counterpart()) return;
-    fields.find((entry) => entry.id === wanted.slotId && moved?.element.contains(entry.element))?.element.focus();
-  }
-
-  /**
-   * Taken before a swap replaces `focused`: after it, focuses the same field (same document and path, the same one of
-   * its copies) or the same toolbar button of the same item, and says whether it found one.
-   */
-  function focusCounterpart(focused: HTMLElement): () => boolean {
-    const inPageOrder = (records: FieldRecord[]) =>
-      records.sort((a, b) =>
-        a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
-      );
-    const record = byElement.get(focused);
-    if (record) {
-      const same = () =>
-        inPageOrder(
-          fields.filter((entry) => entry.info.key === record.info.key && entry.info.path === record.info.path),
-        );
-      const index = same().indexOf(record);
-      return () => {
-        const target = same()[index];
-        target?.element.focus();
-        return target !== undefined;
-      };
-    }
-    const tools = focused.closest(".cms-item__tools");
-    const itemElement = tools?.parentElement?.closest<HTMLElement>("[data-edit-item]");
-    const list = itemElement
-      ? lists.find((entry) => entry.items.some((item) => item.element === itemElement))
-      : undefined;
-    const itemKey = list?.items.find((item) => item.element === itemElement)?.itemKey;
-    if (!list || itemKey === undefined) return () => false;
-    const copy = copiesOf(list.id).indexOf(list);
-    const chip = focused.classList.contains("cms-item__chip");
-    const action = focused.dataset.action as ItemAction | undefined;
-    return () => {
-      const item = itemByKey(copiesOf(list.id)[copy], itemKey);
-      if (!item) return false;
-      const freshChip = chip
-        ? item.element.querySelector<HTMLElement>(":scope > .cms-item__tools .cms-item__chip")
-        : null;
-      if (freshChip) freshChip.focus();
-      else focusTools(item, action);
-      return item.element.contains(document.activeElement);
-    };
+    if (!hadFocus) return;
+    fields.find((entry) => entry.id === wanted.slotId && moved.element.contains(entry.element))?.element.focus();
   }
 
   /**
