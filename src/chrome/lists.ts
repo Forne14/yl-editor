@@ -340,6 +340,14 @@ function hostSibling(node: Node): Node | null {
   return next;
 }
 
+/** The host's element next to `node` on that side, chrome `.cms-root` nodes and text skipped, or null. */
+function hostElementBeside(node: Element, side: "previous" | "next"): Element | null {
+  const step = (from: Element) => (side === "next" ? from.nextElementSibling : from.previousElementSibling);
+  let beside = step(node);
+  while (isChrome(beside)) beside = step(beside);
+  return beside;
+}
+
 /** Adds the outline, the tag, each item's toolbar and band, and the Add row. */
 export function attachList(record: ListRecord, strings: Strings, handlers: ListHandlers): void {
   record.detach?.();
@@ -374,10 +382,12 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   //   other pointer are ignored.
   // - Page only: until the drop nothing is written. A drag moves only the dragged item's own element, next to another
   //   item (which can sit in another wrapper of the host's); every other node (host markup between items, the
-  //   chrome's rows) stays where it is.
+  //   chrome's rows) stays where it is. A move inserts the element only when its host element neighbour on that side
+  //   (text and chrome `.cms-root` nodes skipped) isn't already it, so a pointer held over one place inserts nothing.
   // - Release: `endDrag` runs at most once (it clears itself first), from the drag's pointerup or pointercancel
-  //   anywhere in the document, lost capture, Escape, or detach. It removes every listener it added (on the list and
-  //   on the document) and releases the capture, whatever the outcome.
+  //   anywhere in the document, the list losing its capture (`lostpointercapture` whose target is the list), Escape,
+  //   or detach. It removes every listener it added (on the list and on the document) and releases the capture,
+  //   whatever the outcome.
   // - Put back: a cancel, a drop where it started, or a drop that wrote nothing (resolved false, or rejected) returns
   //   the element to the place it had at pointerdown, from wherever the drag left it, another wrapper of the host's
   //   included. The place is `parent` and `next`, the first following sibling that is the host's (chrome `.cms-root`
@@ -395,7 +405,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   //   step and keeps the same guards: it runs before the write arranges the items, whatever dresses them by then.
   // - Bound: a drop sends at most one move, placed by the neighbour's `_key`, never by a page index.
   // Pointer capture sits on the list, which never moves (capture on the handle would be lost when the item is
-  // re-inserted).
+  // re-inserted). A touch or pen starts captured to the handle implicitly; the list's capture takes it over, and the
+  // `lostpointercapture` that fires at the handle and bubbles to the list is that hand-over, not an end.
   let endDrag: ((outcome: "drop" | "cancel") => void) | undefined;
   const startDrag = (event: PointerEvent, item: ItemRecord) => {
     if (event.button !== 0 || endDrag || !handlers.dragStart()) return;
@@ -436,11 +447,12 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
           }
         }
       }
+      // Already there, whatever text or chrome sits between: no insert (server HTML has whitespace between items).
       if (before) {
-        if (before.previousSibling !== node) before.before(node);
+        if (hostElementBeside(before, "previous") !== node) before.before(node);
       } else {
         const last = others.at(-1);
-        if (last && last.nextSibling !== node) last.after(node);
+        if (last && hostElementBeside(last, "next") !== node) last.after(node);
       }
       record.paint();
     };
@@ -449,6 +461,11 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     };
     const onCancel = (cancel: PointerEvent) => {
       if (ours(cancel)) endDrag?.("cancel");
+    };
+    // Only the list's own capture going ends the drag. A touch or pen is captured to the handle implicitly; taking it
+    // for the list fires `lostpointercapture` at the handle, which bubbles here and is the hand-over, not an end.
+    const onLost = (lost: PointerEvent) => {
+      if (lost.target === host) onCancel(lost);
     };
     const onKey = (key: KeyboardEvent) => {
       if (key.key !== "Escape") return;
@@ -496,7 +513,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       }, restore);
     };
     host.addEventListener("pointermove", onMove);
-    host.addEventListener("lostpointercapture", onCancel);
+    host.addEventListener("lostpointercapture", onLost);
     // On the document, so an up or cancel outside the list ends the drag when capture failed. A captured one reaches
     // the document too, by way of the list.
     document.addEventListener("pointerup", onUp, true);
@@ -505,7 +522,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     endDrag = (outcome) => {
       endDrag = undefined;
       host.removeEventListener("pointermove", onMove);
-      host.removeEventListener("lostpointercapture", onCancel);
+      host.removeEventListener("lostpointercapture", onLost);
       document.removeEventListener("pointerup", onUp, true);
       document.removeEventListener("pointercancel", onCancel, true);
       document.removeEventListener("keydown", onKey, true);
