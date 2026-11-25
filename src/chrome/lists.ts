@@ -53,11 +53,12 @@ export interface ListHandlers {
   /**
    * The item was dropped next to `place`'s item, by `_key`: after it, or before it when the item is now first. The
    * page can show fewer items than are stored, so only a neighbour's key, not a page index, names a stored place.
-   * `putBack` returns the element to where the drag took it from; the write calls it before the items are arranged in
-   * the stored order, so a drop leaves the host's markup between items where Move up and down leave it. Resolves false
-   * when nothing was written.
+   * `putBack` returns the element to where the drag took it from, and says whether it could; the write calls it before
+   * the items are arranged in the stored order, so a drop leaves the host's markup between items where Move up and
+   * down leave it. Resolves false when nothing was written; the host then shows the stored order itself if `putBack`
+   * can't.
    */
-  drop(item: ItemRecord, place: DropPlace, putBack: () => void): Promise<boolean>;
+  drop(item: ItemRecord, place: DropPlace, putBack: () => boolean): Promise<boolean>;
 }
 
 /** Where a drop left an item: after the item with this `_key`, or before it when the dropped item is now first. */
@@ -327,6 +328,18 @@ function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Lin
   return { lines: group(cells), axis };
 }
 
+/** One of the chrome's own nodes: they come and go with each dressing. */
+function isChrome(node: Node | null): node is Element {
+  return node instanceof Element && node.classList.contains("cms-root");
+}
+
+/** The first sibling after `node` that is the host's (an item or the host's own markup), or null at the end. */
+function hostSibling(node: Node): Node | null {
+  let next = node.nextSibling;
+  while (isChrome(next)) next = next.nextSibling;
+  return next;
+}
+
 /** Adds the outline, the tag, each item's toolbar and band, and the Add row. */
 export function attachList(record: ListRecord, strings: Strings, handlers: ListHandlers): void {
   record.detach?.();
@@ -366,11 +379,15 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   //   anywhere in the document, lost capture, Escape, or detach. It removes every listener it added (on the list and
   //   on the document) and releases the capture, whatever the outcome.
   // - Put back: a cancel, a drop where it started, or a drop that wrote nothing (resolved false, or rejected) returns
-  //   the element to the place (`parent`, `next`) it had at pointerdown, from wherever the drag left it, another
-  //   wrapper of the host's included. It does so only while `parent` is still in the list and `next` still follows
-  //   in it (or was the end); otherwise the markup has been replaced and is the page's. A drop that writes puts it
-  //   back on the write chain before the items are arranged in the stored order (`ListHandlers.drop`), so a drop and
-  //   a move leave the same markup.
+  //   the element to the place it had at pointerdown, from wherever the drag left it, another wrapper of the host's
+  //   included. The place is `parent` and `next`, the first following sibling that is the host's (chrome `.cms-root`
+  //   nodes skipped: a re-dress replaces them, the Add row after the last item among them), or null for the end,
+  //   which means after the host's last node and before the chrome's rows closing `parent`. It does so only while
+  //   `parent` is still in the list and `next` still in `parent` (or was the end), and says whether it did;
+  //   otherwise the markup there has been replaced. A drop that writes puts it back on the write chain before the
+  //   items are arranged in the stored order (`ListHandlers.drop`), so a drop and a move leave the same markup; if
+  //   the guard refuses, that arrangement still ends in the stored order. A drop that wrote nothing and could not be
+  //   put back is arranged in the stored order by the host (`dropItem` in mount.ts).
   // - Detached: a drop that wrote nothing (resolved false, or rejected) puts the element back whenever the host is
   //   still on the page, attached or not: nothing was stored, so the stored order is what the page shows. The guards
   //   of `putBack` above still apply. Only the repaint is the dressing's: `record.paint`, a no-op once detached, the
@@ -386,7 +403,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     const pointer = event.pointerId;
     const node = item.element;
     const parent = node.parentNode;
-    const next = node.nextSibling;
+    // The host's node it sat before: the chrome's rows (the Add row after the last item) are replaced by a re-dress.
+    const next = hostSibling(node);
     const from = items.indexOf(item);
     node.classList.add("cms-item--dragging");
     try {
@@ -437,10 +455,16 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       key.stopPropagation();
       endDrag?.("cancel");
     };
-    const putBack = () => {
-      if (!parent || !parent.isConnected || !host.contains(parent)) return;
-      if (next !== null && next.parentNode !== parent) return;
-      if (node.parentNode !== parent || node.nextSibling !== next) parent.insertBefore(node, next);
+    /** True when the element is back where it was at pointerdown; false when the markup there has been replaced. */
+    const putBack = (): boolean => {
+      if (!parent || !parent.isConnected || !host.contains(parent)) return false;
+      if (next !== null && next.parentNode !== parent) return false;
+      if (node.parentNode === parent && hostSibling(node) === next) return true;
+      // At the end: after the host's last node, before the chrome's rows that close the parent.
+      let anchor = next;
+      if (anchor === null) for (let last = parent.lastChild; isChrome(last); last = last.previousSibling) anchor = last;
+      parent.insertBefore(node, anchor);
+      return true;
     };
     /** What the drag comes to once its listeners are gone: a put-back, or one drop write. */
     const settleDrop = (outcome: "drop" | "cancel") => {

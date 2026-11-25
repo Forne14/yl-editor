@@ -4,7 +4,7 @@ import { editable, itemPath, type EditableListAttrs } from "../editable.ts";
 import { applyArrayOp, parsePath } from "../path.ts";
 import type { ArrayOp } from "../types.ts";
 import { mountEditor } from "./index.ts";
-import { attachList, scanLists } from "./lists.ts";
+import { attachList, scanLists, type ListHandlers } from "./lists.ts";
 import { defaultStrings } from "./strings.ts";
 import type { EditorHandle, EditorOptions } from "./types.ts";
 
@@ -1171,8 +1171,17 @@ describe("a field open in a list when a conflict swaps it (#48)", () => {
 
 describe("drag to reorder and date order (#43)", () => {
   const grip = (index: number) => toolButton(index, "grip");
+  // A button is down from the press until the release, as a browser reports it.
   const pointer = (type: string, target: Element, init: { clientY?: number; button?: number } = {}) =>
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init }));
+    target.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: type === "pointerdown" || type === "pointermove" ? 1 : 0,
+        ...init,
+      }),
+    );
   /** Each item is 100px tall; its midpoint is what a drag compares the pointer with. */
   const lay = () =>
     items().forEach((item, index) => {
@@ -1826,6 +1835,199 @@ describe("drag to reorder and date order (#43)", () => {
           expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
         });
       });
+
+      describe("code review round 4 (#52)", () => {
+        const copies = () => [...document.querySelectorAll<HTMLElement>(`[data-edit-list="${LIST}"]`)];
+        const secondItems = () => [...(copies()[1]?.querySelectorAll<HTMLElement>("[data-edit-item]") ?? [])];
+        const contact = (type: string, target: EventTarget, init: PointerEventInit) =>
+          target.dispatchEvent(
+            new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, isPrimary: true, ...init }),
+          );
+
+        test("a field also shown outside the list, earlier on the page, still refreshes the list it was edited in", async () => {
+          const outsideCopy = document.createElement("h3");
+          for (const [name, value] of Object.entries(editable(KEY)("artists[_key=a].name", "text")))
+            outsideCopy.setAttribute(name, value);
+          outsideCopy.textContent = "Mara";
+          document.querySelector("#page")?.prepend(outsideCopy);
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(document.activeElement).toBe(field(2));
+        });
+
+        test("an edit in the second copy of the list swaps at once, and focus follows the field in that copy", async () => {
+          document.body.innerHTML = `<main id="page">${renderOne("artists", artists)}${renderOne("artists", artists)}</main>`;
+          await mount();
+          pageAnswer = () =>
+            new Response(
+              `<!doctype html><html><body><main id="page">${renderOne("artists", zedFirst)}${renderOne("artists", zedFirst)}</main></body></html>`,
+            );
+          const edited = field(0, secondItems);
+          edited.click();
+          edited.textContent = "Zed";
+          edited.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(secondItems().map((item) => item.querySelector("h3")?.textContent)).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(document.activeElement).toBe(field(2, secondItems));
+          expect(liveText()).toBe("Zed is now at position 3 of 3.");
+        });
+
+        test("a touch whose release never reached the page stops holding the refresh when the window loses focus", async () => {
+          await mount();
+          sorted(zedFirst);
+          contact("pointerdown", toolButton(1, "remove"), { pointerId: 7, pointerType: "touch", buttons: 1 });
+          rename(0, "Zed");
+          await settle();
+          expect(pageFetches).toBe(0);
+          window.dispatchEvent(new Event("blur"));
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+        });
+
+        test("a lost touch release stops holding the refresh when the page is hidden", async () => {
+          await mount();
+          sorted(zedFirst);
+          contact("pointerdown", toolButton(1, "remove"), { pointerId: 7, pointerType: "touch", buttons: 1 });
+          rename(0, "Zed");
+          await settle();
+          expect(pageFetches).toBe(0);
+          Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+          try {
+            document.dispatchEvent(new Event("visibilitychange"));
+          } finally {
+            delete (document as { visibilityState?: unknown }).visibilityState;
+          }
+          await settle();
+          expect(pageFetches).toBe(1);
+        });
+
+        test("a lost touch release is dropped by the next first touch, which holds the refresh only while it is down", async () => {
+          await mount();
+          sorted(zedFirst);
+          contact("pointerdown", toolButton(1, "remove"), { pointerId: 7, pointerType: "touch", buttons: 1 });
+          rename(0, "Zed");
+          await settle();
+          contact("pointerdown", toolButton(2, "remove"), { pointerId: 8, pointerType: "touch", buttons: 1 });
+          await settle();
+          expect(pageFetches).toBe(0);
+          contact("pointerup", toolButton(2, "remove"), { pointerId: 8, pointerType: "touch", buttons: 0 });
+          await settle();
+          expect(pageFetches).toBe(1);
+        });
+
+        test("a pen whose release was lost stops holding the refresh once it moves with no button down", async () => {
+          await mount();
+          sorted(zedFirst);
+          contact("pointerdown", toolButton(1, "remove"), { pointerId: 3, pointerType: "pen", buttons: 1 });
+          rename(0, "Zed");
+          await settle();
+          contact("pointermove", toolButton(1, "remove"), { pointerId: 3, pointerType: "pen", buttons: 1 });
+          await settle();
+          expect(pageFetches).toBe(0);
+          contact("pointermove", document.body, { pointerId: 3, pointerType: "pen", buttons: 0 });
+          await settle();
+          expect(pageFetches).toBe(1);
+        });
+      });
+    });
+  });
+
+  describe("code review round 4 (#52)", () => {
+    const attrs = (record: Record<string, string>) =>
+      Object.entries(record)
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+
+    test("a drop of the last item that writes nothing once the list was dressed again goes back last, before the new Add row", async () => {
+      three();
+      const dress = (drop: ListHandlers["drop"]) => {
+        const [record] = scanLists(document.body);
+        if (!record) throw new Error("no list");
+        attachList(record, defaultStrings, {
+          actions: true,
+          canAdd: false,
+          add() {},
+          canUndo: false,
+          undo() {},
+          act() {},
+          dragStart: () => true,
+          drop,
+        });
+        lay();
+        return record;
+      };
+      let answer: (written: boolean) => void = () => undefined;
+      const held = dress(
+        () =>
+          new Promise<boolean>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      pointer("pointerdown", grip(2));
+      pointer("pointermove", list(), { clientY: 10 });
+      pointer("pointerup", list());
+      expect(names()).toEqual(["Ines", "Mara", "Tobias"]);
+      held.detach?.();
+      const fresh = dress(async () => false);
+      answer(false);
+      await settle();
+      expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+      expect(list().lastElementChild?.classList.contains("cms-list__add")).toBe(true);
+      fresh.detach?.();
+    });
+
+    test("a drop that writes nothing, whose put-back is refused, shows the stored order again", async () => {
+      const edit = editable(KEY);
+      const item = (artist: Artist, index: number) =>
+        `<li${attrs(edit.item("artists", artist, index))}><h3${attrs(edit(`${itemPath("artists", artist, index)}.name`, "text"))}>${artist.name}</h3></li>`;
+      document.body.innerHTML = `<main id="page"><ul${attrs(edit.list("artists", listAttrs))}>${artists.map(item).join('<li class="sep">·</li>')}</ul></main>`;
+      await mount();
+      lay();
+      const realFetch = globalThis.fetch;
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+        if (String(input).includes("/api/content/array")) await gate;
+        return realFetch(input, init);
+      });
+      arrayAnswer = () => json({ error: { code: "internal", message: "down" } }, 500);
+      pointer("pointerdown", grip(0));
+      pointer("pointermove", list(), { clientY: 160 });
+      pointer("pointerup", list());
+      await settle();
+      expect(names()).toEqual(["Tobias", "Mara"]);
+      // The host takes out the markup Mara sat before: the drag has nowhere left to put it back.
+      list().querySelector(".sep")?.remove();
+      release();
+      await settle();
+      expect(arrayCalls).toHaveLength(1);
+      expect(names()).toEqual(["Mara", "Tobias"]);
+    });
+
+    test("after Remove, focus goes to the next item's first enabled button that isn't the handle", async () => {
+      three();
+      await mount();
+      toolButton(1, "remove").click();
+      await settle();
+      expect(names()).toEqual(["Mara", "Ines"]);
+      // Ines is last now: Move down is inert, Move up is the first button that does something on Enter.
+      expect(document.activeElement).toBe(toolButton(1, "up"));
+    });
+
+    test("after Remove leaves one item with nothing else enabled, focus goes to its handle", async () => {
+      await mount();
+      toolButton(0, "remove").click();
+      await settle();
+      expect(names()).toEqual(["Tobias"]);
+      expect(document.activeElement).toBe(grip(0));
     });
   });
 

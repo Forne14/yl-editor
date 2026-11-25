@@ -217,6 +217,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const removals: Removal[] = [];
   let active: ActiveWidget | null = null;
   /**
+   * Per slot, the element whose widget last opened on it: the copy of a field shown more than once that was edited. One
+   * entry per slot (the session keeps its slots), replaced by each open, never read after the slot is gone.
+   */
+  const editedIn = new WeakMap<SaveSlot, HTMLElement>();
+  /**
    * A popover field between its click and `active`: it waits for its stored value. Set before that read, cleared as it
    * settles (whatever the open then does), and counted as open only while its ticket is the newest: an open that has
    * been superseded gives up on its own.
@@ -512,6 +517,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       else toast.show(message, "info");
     });
     active = opened;
+    editedIn.set(slot, record.element);
     record.element.classList.add("cms-field--editing");
     try {
       opened.handle = widget.mount(context);
@@ -709,7 +715,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     list.detach?.();
     // One place per item that stays, marked where it is now, plus the place a restored element came from.
     const places: Comment[] = [];
-    // In the page's order as it is now: a drop has already put the dragged element where the editor let go of it.
+    // In the page's order as it is now. A drop's put-back has run by then (`onWritten`), so the dragged element is
+    // where it started, unless the guard refused it: the sort covers that, and the items still end in stored order.
     const standing = [...list.items].sort((a, b) =>
       a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
     );
@@ -988,19 +995,23 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return itemKey === undefined ? undefined : list?.items.find((item) => item.itemKey === itemKey);
   }
 
-  /** Focus an item's toolbar: `preferred` if it is there and not inert, else its first button that isn't. */
+  /**
+   * Focus an item's toolbar: `preferred` if it is there and not inert, else its first button that isn't, the handle
+   * last: Enter and Space do nothing on it.
+   */
   function focusTools(item: ItemRecord | undefined, preferred?: ItemAction): void {
     const tools = item?.element.querySelector<HTMLElement>(":scope > .cms-item__tools");
     if (!tools) return;
     const buttons = [...tools.querySelectorAll<HTMLButtonElement>("button[data-action]")];
-    const free = (action: ItemAction | undefined) =>
-      buttons.find((node) => node.dataset.action === action && node.getAttribute("aria-disabled") !== "true");
+    const enabled = buttons.filter((node) => node.getAttribute("aria-disabled") !== "true");
+    const free = (action: ItemAction | undefined) => enabled.find((node) => node.dataset.action === action);
     // A move button inert now that the item reached an end: the opposite move, before the handle.
     const opposite = preferred === "up" ? "down" : preferred === "down" ? "up" : undefined;
     const target =
       free(preferred) ??
       free(opposite) ??
-      buttons.find((node) => node.getAttribute("aria-disabled") !== "true") ??
+      enabled.find((node) => node.dataset.action !== "grip") ??
+      enabled[0] ??
       buttons[0];
     if (!target) return;
     for (const node of buttons) node.tabIndex = node === target ? 0 : -1;
@@ -1098,16 +1109,24 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   //   - no field is open or opening inside its targets: `active` (set when a widget mounts, cleared by `closeActive`)
   //     and `opening` (set before a popover's read of its stored value, cleared in that read's `finally`, counted
   //     only while its ticket is `openTicket`). An open widget holds focus, wherever its popover sits;
-  //   - no pointer is down inside its targets: `pressed` maps a pointer id to where it went down, set by every
-  //     pointerdown and deleted by that pointer's pointerup or pointercancel (all three on the document, capture
-  //     phase). A drag runs only while its pointer is down, so it counts as down. A pointer whose up never reached the
-  //     page is replaced by its next pointerdown, so the map holds at most one entry per pointer id;
+  //   - no pointer is down inside its targets: `pressed` maps a pointer id to where it went down and its kind, set by
+  //     every pointerdown with a button down. A drag runs only while its pointer is down, so it counts as down. An
+  //     entry goes on that pointer's pointerup or pointercancel, on a pointermove or pointerdown of that pointer with
+  //     `buttons === 0` (its release was lost), on a first (`isPrimary`) pointerdown of the same kind with another id
+  //     (no other contact of that kind is down then), and with every other entry on window `blur` or the page turning
+  //     hidden (a release then may never arrive). All on the document or window, capture phase. Bound: at most one
+  //     entry per pointer id, and a lost release holds a refresh at most until that pointer moves or presses again,
+  //     the next first contact of its kind, or the window losing focus or the page being hidden, whichever is first;
   //   - `document.activeElement` is the saved field's element, or body/null, or outside every target;
   //   - and editing, no fetch of its own in flight for the key (`refreshing` has the key from the fetch's start to its
   //     end, removed in a `finally`), no save of the key queued or on the wire, no lock on the key, nothing in the
   //     targets busy.
-  // - Saved field: resolved when it is needed, never kept from the save: the element saved, while it is still in a
-  //   copy of the list, else the slot's field in the first copy (page order) showing the item's `_key`.
+  // - Pending entry: `settleDataOrder` looks at every connected element of the saved slot, the one edited first
+  //   (`editedIn`: per slot, the element its widget last opened on, replaced by each open), then the others in scan
+  //   order, and takes the first inside a keyed item of an `order="data"` list of the slot's document. That element
+  //   is the one stored: another copy of the field outside the list, or in another copy of it, never stands in for it.
+  // - Saved field: resolved when it is needed, never kept from the save: the element stored above, while it is still
+  //   in a copy of the list, else the slot's field in the first copy (page order) showing the item's `_key`.
   // - Focus: moved only when it was on the saved field, to that field in the new markup. Otherwise rule A means it was
   //   outside the targets, and it is not moved.
   // - Announcement: whenever an applied swap changed the saved item's index in its copy, read just before `applySwap`
@@ -1120,7 +1139,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   //   it is checked before or after its fetch, is dropped: nothing is left for it to sort, and it is never re-checked.
   // - Bound on fetches: at most one per key in flight (`refreshing`), and each one follows a trigger: a save of a
   //   pending key changing state, the open field closing, an opening field's read settling, a key's last lock going,
-  //   focus moving in or out (focusin/focusout on the document), a pointer coming up or cancelled, a fetch ending.
+  //   focus moving in or out (focusin/focusout on the document), a pointer coming up or cancelled, a `pressed` entry
+  //   dropped as stale, a fetch ending.
   //   Triggers are batched into one microtask (`recheckQueued`), never a timer, and with nothing pending they cost
   //   nothing.
   // - Teardown (`destroy`, leaving edit mode) clears `dataRefreshes` and bumps `refreshEpoch`; a fetch that started
@@ -1136,15 +1156,38 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   const refreshing = new Set<string>();
   let refreshEpoch = 0;
   let recheckQueued = false;
-  const pressed = new Map<number, EventTarget>();
-  disposer.listen(
-    document,
-    "pointerdown",
-    (event) => {
-      if (event.target) pressed.set((event as PointerEvent).pointerId, event.target);
-    },
-    { capture: true },
-  );
+  const pressed = new Map<number, { target: EventTarget; type: string }>();
+  /** Entries whose release can no longer reach the page go, and a refresh they held may run. */
+  const forgetPresses = (stale: (entry: { type: string }, id: number) => boolean) => {
+    let gone = false;
+    for (const [id, entry] of pressed) {
+      if (!stale(entry, id)) continue;
+      pressed.delete(id);
+      gone = true;
+    }
+    if (gone) queueRecheck();
+  };
+  for (const type of ["pointerdown", "pointermove"]) {
+    disposer.listen(
+      document,
+      type,
+      (event) => {
+        const { pointerId, pointerType, isPrimary, buttons } = event as PointerEvent;
+        // No button down: whatever this pointer pressed was released where the page didn't hear it.
+        if (buttons === 0) forgetPresses((_, id) => id === pointerId);
+        if (type !== "pointerdown" || buttons === 0 || !event.target) return;
+        // A first contact of its kind means no other of that kind is down: older entries of that kind are stale.
+        if (isPrimary) forgetPresses((entry, id) => entry.type === pointerType && id !== pointerId);
+        pressed.set(pointerId, { target: event.target, type: pointerType });
+      },
+      { capture: true },
+    );
+  }
+  // A release while the window has no focus, or the page is hidden, may never arrive: no press outlasts either.
+  disposer.listen(window, "blur", () => forgetPresses(() => true));
+  disposer.listen(document, "visibilitychange", () => {
+    if (document.visibilityState === "hidden") forgetPresses(() => true);
+  });
   for (const type of ["pointerup", "pointercancel"]) {
     disposer.listen(
       document,
@@ -1170,20 +1213,28 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   function settleDataOrder(slot: SaveSlot): void {
     if (!editing || destroyed) return;
-    const record = recordsFor(slot).find((entry) => entry.element.isConnected);
-    if (!record) return;
-    const list = lists.find(
-      (entry) =>
-        entry.info.order === "data" &&
-        entry.info.key === slot.key &&
-        !entry.nested &&
-        entry.detach !== undefined &&
-        entry.items.some((item) => item.itemKey !== undefined && item.element.contains(record.element)),
-    );
-    const item = list?.items.find((entry) => entry.element.contains(record.element));
-    if (!list || !item || item.itemKey === undefined) return;
-    dataRefreshes.set(slot.key, { slotId: slot.id, listId: list.id, itemKey: item.itemKey, element: record.element });
-    queueRecheck();
+    // Every copy of the field on the page, the one edited first: another copy can sit outside the list, or in another
+    // copy of it, earlier on the page.
+    const edited = editedIn.get(slot);
+    const candidates = recordsFor(slot)
+      .map((record) => record.element)
+      .filter((node) => node.isConnected)
+      .sort((a, b) => (a === edited ? -1 : b === edited ? 1 : 0));
+    for (const node of candidates) {
+      const list = lists.find(
+        (entry) =>
+          entry.info.order === "data" &&
+          entry.info.key === slot.key &&
+          !entry.nested &&
+          entry.detach !== undefined &&
+          entry.items.some((item) => item.itemKey !== undefined && item.element.contains(node)),
+      );
+      const item = list?.items.find((entry) => entry.element.contains(node));
+      if (!list || !item || item.itemKey === undefined) continue;
+      dataRefreshes.set(slot.key, { slotId: slot.id, listId: list.id, itemKey: item.itemKey, element: node });
+      queueRecheck();
+      return;
+    }
   }
 
   function queueRecheck(): void {
@@ -1218,7 +1269,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (targets.length === 0) return false;
     const inside = (node: unknown) => node instanceof Node && targets.some((list) => list.element.contains(node));
     const open = [active?.record.element, opening?.ticket === openTicket ? opening.record.element : undefined];
-    if (open.some(inside) || [...pressed.values()].some(inside)) return false;
+    if (open.some(inside) || [...pressed.values()].some((entry) => inside(entry.target))) return false;
     const focused = document.activeElement;
     if (focused !== null && focused !== document.body && inside(focused) && focused !== savedField(refresh)?.element)
       return false;
@@ -1355,13 +1406,30 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     return true;
   }
 
-  /** A drop, named in messages as Move up or Move down by where it went on the page. */
-  function dropItem(list: ListRecord, item: ItemRecord, place: DropPlace, putBack: () => void): Promise<boolean> {
+  /**
+   * A drop, named in messages as Move up or Move down by where it went on the page. One that wrote nothing puts the
+   * element back; when the markup it came from has gone, the list is arranged in the stored order instead (once, from
+   * what the session holds, or from the page when its markup can't show that). Not while the document is locked: what
+   * holds the lock arranges or swaps every copy when it is done.
+   */
+  async function dropItem(
+    list: ListRecord,
+    item: ItemRecord,
+    place: DropPlace,
+    putBack: () => boolean,
+  ): Promise<boolean> {
     const from = list.items.indexOf(item);
     const up = "before" in place || list.items.findIndex((other) => other.itemKey === place.after) < from;
     const placement = { item: itemName(list, item, strings), position: from + 1, count: list.items.length };
     const label = format(up ? strings.itemMoveUp : strings.itemMoveDown, placement);
-    return moveItem(list, item, place, label, "grip", putBack);
+    const written = await moveItem(list, item, place, label, "grip", putBack);
+    if (written || destroyed || putBack() || locks.has(list.info.key)) return written;
+    // By element: a re-dress since the drag may have made a newer record for the same list.
+    const current = lists.find((entry) => entry.element === list.element);
+    if (!current?.element.isConnected) return written;
+    const stored = valueAtPath(session.documents.get(list.info.key)?.payload, list.info.path);
+    if (!Array.isArray(stored) || !arrangeList(current, stored)) void swapLists(list.info.key);
+    return written;
   }
 
   async function actOnItem(
