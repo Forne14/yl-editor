@@ -1139,8 +1139,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   //   it is checked before or after its fetch, is dropped: nothing is left for it to sort, and it is never re-checked.
   // - Bound on fetches: at most one per key in flight (`refreshing`), and each one follows a trigger: a save of a
   //   pending key changing state, the open field closing, an opening field's read settling, a key's last lock going,
-  //   focus moving in or out (focusin/focusout on the document), a pointer coming up or cancelled, a `pressed` entry
-  //   dropped as stale, a fetch ending.
+  //   focus moving in or out (focusin on the document; focusout too, unless its `relatedTarget` is inside a waiting
+  //   refresh's targets: focus is then moving within them, the focusin that follows re-checks, and a re-check in
+  //   between would see body focused and start a fetch rule A drops), a pointer coming up or cancelled, a `pressed`
+  //   entry dropped as stale, a fetch ending.
   //   Triggers are batched into one microtask (`recheckQueued`), never a timer, and with nothing pending they cost
   //   nothing.
   // - Teardown (`destroy`, leaving edit mode) clears `dataRefreshes` and bumps `refreshEpoch`; a fetch that started
@@ -1199,7 +1201,24 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       { capture: true },
     );
   }
-  for (const type of ["focusin", "focusout"]) disposer.listen(document, type, () => queueRecheck(), { capture: true });
+  disposer.listen(document, "focusin", () => queueRecheck(), { capture: true });
+  // Between a focusout and its focusin focus sits on body, and the re-check would see rule A pass: a fetch would start
+  // on every Tab within the lists, only for the focusin to drop its page. Focus moving into a waiting refresh's lists
+  // is left to that focusin.
+  disposer.listen(
+    document,
+    "focusout",
+    (event) => {
+      const next = (event as FocusEvent).relatedTarget;
+      const intoTargets =
+        next instanceof Node &&
+        [...dataRefreshes.keys()].some((key) =>
+          swapTargets(new Set([key])).some((list) => list.element.contains(next)),
+        );
+      if (!intoTargets) queueRecheck();
+    },
+    { capture: true },
+  );
 
   function dropRefreshes(): void {
     dataRefreshes.clear();

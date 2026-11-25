@@ -1834,6 +1834,29 @@ describe("drag to reorder and date order (#43)", () => {
           expect(pageFetches).toBe(2);
           expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
         });
+
+        test("Tab between two fields of the list while a refresh waits starts no fetch (code review round 5, #52)", async () => {
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          field(1).focus();
+          await settle();
+          expect(pageFetches).toBe(0);
+          // A browser's Tab: focusout first, with focus on body until focusin, and microtasks run in between.
+          Object.defineProperty(document, "activeElement", { configurable: true, get: () => document.body });
+          try {
+            field(1).dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: field(2) }));
+            await Promise.resolve();
+            await Promise.resolve();
+          } finally {
+            delete (document as { activeElement?: unknown }).activeElement;
+          }
+          field(2).focus();
+          await settle();
+          expect(pageFetches).toBe(0);
+          expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+          expect(document.activeElement).toBe(field(2));
+        });
       });
 
       describe("code review round 4 (#52)", () => {
@@ -2322,6 +2345,101 @@ describe("drag to reorder and date order (#43)", () => {
       fresh.record.detach?.();
       expect(list().querySelector(".cms-root, .cms-item__sep")).toBeNull();
       expect(list().hasAttribute("class")).toBe(false);
+    });
+  });
+
+  describe("code review round 5 (#52)", () => {
+    const press = (type: string, target: EventTarget, init: PointerEventInit = {}) =>
+      target.dispatchEvent(
+        new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerId: 1, ...init }),
+      );
+
+    test("the handle losing a touch's implicit capture to the list doesn't end the drag", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(0), { pointerType: "touch", buttons: 1 });
+      // The browser had captured the touch to the handle; the list's capture takes it, and the handle hears so.
+      press("lostpointercapture", grip(0), { pointerType: "touch" });
+      press("pointermove", list(), { clientY: 260, pointerType: "touch", buttons: 1 });
+      expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+      expect(items()[2]?.classList.contains("cms-item--dragging")).toBe(true);
+      press("pointerup", list(), { pointerType: "touch" });
+      await settle();
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 2 }]);
+    });
+
+    test("the list losing the capture still ends the drag and puts the item back", async () => {
+      three();
+      await mount();
+      lay();
+      press("pointerdown", grip(0), { pointerType: "touch", buttons: 1 });
+      press("pointermove", list(), { clientY: 260, pointerType: "touch", buttons: 1 });
+      press("lostpointercapture", list(), { pointerType: "touch" });
+      await settle();
+      expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+      expect(items()[0]?.classList.contains("cms-item--dragging")).toBe(false);
+      press("pointerup", list(), { pointerType: "touch" });
+      await settle();
+      expect(arrayCalls).toEqual([]);
+    });
+
+    test("with whitespace between items, a move inserts the item only when its place changes", async () => {
+      const edit = editable(KEY);
+      artists = [
+        { _key: "a", name: "Mara" },
+        { _key: "b", name: "Tobias" },
+        { _key: "c", name: "Ines" },
+      ];
+      const item = (artist: Artist, index: number) =>
+        `<li${Object.entries(edit.item("artists", artist, index))
+          .map(([name, value]) => ` ${name}="${value}"`)
+          .join("")}><h3${Object.entries(edit(`${itemPath("artists", artist, index)}.name`, "text"))
+          .map(([name, value]) => ` ${name}="${value}"`)
+          .join("")}>${artist.name}</h3></li>`;
+      const listAttributes = Object.entries(edit.list("artists", listAttrs))
+        .map(([name, value]) => ` ${name}="${value}"`)
+        .join("");
+      // As a server renders it: a newline and indent between every item.
+      document.body.innerHTML = `<main id="page"><ul${listAttributes}>\n  ${artists.map(item).join("\n  ")}\n</ul></main>`;
+      await mount();
+      lay();
+      const dragged = items()[0] as HTMLElement;
+      // A drag inserts the item with `before` or `after` on another item.
+      const spies = items().flatMap((node) => [vi.spyOn(node, "before"), vi.spyOn(node, "after")]);
+      const insertsOfDragged = () => {
+        const count = spies.reduce(
+          (sum, spy) => sum + spy.mock.calls.filter((args) => (args as unknown[]).includes(dragged)).length,
+          0,
+        );
+        for (const spy of spies) spy.mockClear();
+        return count;
+      };
+      press("pointerdown", grip(0));
+      // Still over Mara's own place, before Tobias, with text between them: nothing to insert.
+      for (const clientY of [10, 20, 30]) press("pointermove", list(), { clientY });
+      expect(insertsOfDragged()).toBe(0);
+      // Between Tobias's middle and Ines's: one insert, before Ines, then none while it stays there.
+      for (const clientY of [160, 170, 180]) press("pointermove", list(), { clientY });
+      expect(names()).toEqual(["Tobias", "Mara", "Ines"]);
+      expect(insertsOfDragged()).toBe(1);
+      press("pointerup", list());
+      await settle();
+      expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 0, to: 1 }]);
+      // The last item held over its own place, after Ines with text between them: nothing to insert either.
+      const last = items()[2] as HTMLElement;
+      expect(last.querySelector("h3")?.textContent).toBe("Ines");
+      lay();
+      spies.push(...items().flatMap((node) => [vi.spyOn(node, "before"), vi.spyOn(node, "after")]));
+      press("pointerdown", grip(2));
+      for (const clientY of [260, 270, 280]) press("pointermove", list(), { clientY });
+      const lastInserts = spies.reduce(
+        (sum, spy) => sum + spy.mock.calls.filter((args) => (args as unknown[]).includes(last)).length,
+        0,
+      );
+      expect(lastInserts).toBe(0);
+      press("pointercancel", list());
+      for (const spy of spies) spy.mockRestore();
     });
   });
 });

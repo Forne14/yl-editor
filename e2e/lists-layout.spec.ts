@@ -175,3 +175,54 @@ test.describe("a column list", () => {
     await expect(page.locator(".cms-live")).toHaveText("Ana moved to position 2 of 2.");
   });
 });
+
+test.describe("dragging by touch", () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  // A real touch: the browser captures it to the handle, and the list's capture takes it over. Only Chromium can send
+  // one (CDP `Input.dispatchTouchEvent`); elsewhere `page.mouse` is a mouse, which the tests above already cover.
+  test("a touch drag down a column writes the new order and announces it", async ({ page, demo, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input needs CDP");
+    await demo.openEditor({ lists: true });
+    const items = page.locator("#team-list .team__member");
+    await expect(items).toHaveCount(2);
+    const grip = items.first().locator(".cms-item__grip");
+    // With no hover the toolbar shows only once the item's chip is open.
+    if (await page.evaluate(() => matchMedia("(hover: none)").matches)) {
+      const chip = items.first().locator(".cms-item__chip");
+      await chip.tap();
+      await expect(chip).toHaveAttribute("aria-expanded", "true");
+    }
+    await expect(grip).toBeVisible();
+    const start = await box(grip);
+    // The lower half of the second item: below its middle, so Ana goes after Ben.
+    const second = await box(items.nth(1));
+    const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+    const to = { x: second.x + second.width / 2, y: second.y + second.height - 4 };
+
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", point?: { x: number; y: number }) =>
+      cdp.send("Input.dispatchTouchEvent", {
+        type,
+        touchPoints: point ? [{ x: Math.round(point.x), y: Math.round(point.y), id: 1 }] : [],
+      });
+    await touch("touchStart", from);
+    const steps = 15;
+    for (let step = 1; step <= steps; step += 1) {
+      await touch("touchMove", {
+        x: from.x + ((to.x - from.x) * step) / steps,
+        y: from.y + ((to.y - from.y) * step) / steps,
+      });
+    }
+    // Still dragging after every move: the capture's hand-over at the first one didn't cancel it.
+    const ana = page.locator('#team-list [data-edit-item="pages/team:team[_key=ana]"]');
+    await expect(ana).toHaveClass(/cms-item--dragging/);
+    await touch("touchEnd");
+    await cdp.detach();
+
+    await expect.poll(() => page.locator("#team-list .team__name").allTextContents()).toEqual(["Ben", "Ana"]);
+    await expectDraft(demo, TEAM, "team", ["Ben", "Ana"]);
+    await expect(page.locator(".cms-live")).toHaveText("Ana moved to position 2 of 2.");
+    await expect(ana).not.toHaveClass(/cms-item--dragging/);
+  });
+});
