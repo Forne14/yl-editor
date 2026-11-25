@@ -1391,6 +1391,13 @@ describe("drag to reorder and date order (#43)", () => {
       const escape = (target: HTMLElement) =>
         target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
       const toastText = () => document.querySelector(".cms-toast")?.textContent ?? "";
+      /** Moves focus out of every list, to a button of the page's. */
+      const leaveLists = () => {
+        const node = document.createElement("button");
+        document.body.append(node);
+        node.focus();
+        return node;
+      };
       /** Counts the page fetches; while `held`, each waits until `release()`. */
       let pageFetches: number;
       let held: boolean;
@@ -1424,7 +1431,7 @@ describe("drag to reorder and date order (#43)", () => {
         expect(liveText()).not.toContain("is now at position");
       });
 
-      test("a field open in another list of the same document stays open, and the refresh runs once it closes", async () => {
+      test("a field open in another list of the same document stays open, and the refresh runs once focus leaves the lists", async () => {
         crew = [{ _key: "x", name: "Cy" }];
         document.body.innerHTML = `<main id="page">${renderList()}</main>`;
         await mount();
@@ -1442,6 +1449,10 @@ describe("drag to reorder and date order (#43)", () => {
         expect(pageFetches).toBe(0);
         expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
         escape(open);
+        await settle();
+        // Esc puts focus back on the crew field, inside the lists: still waiting.
+        expect(pageFetches).toBe(0);
+        leaveLists();
         await settle();
         expect(pageFetches).toBe(1);
         expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
@@ -1463,7 +1474,7 @@ describe("drag to reorder and date order (#43)", () => {
         await settle();
       });
 
-      test("a field opened while the page is on its way drops that page, and the refresh runs once it closes", async () => {
+      test("a field opened while the page is on its way drops that page, and the refresh runs once focus leaves the list", async () => {
         await mount();
         sorted(zedFirst);
         held = true;
@@ -1478,6 +1489,9 @@ describe("drag to reorder and date order (#43)", () => {
         expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
         expect(liveText()).not.toContain("is now at position");
         escape(open);
+        await settle();
+        expect(pageFetches).toBe(1);
+        leaveLists();
         await settle();
         expect(pageFetches).toBe(2);
         expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
@@ -1590,7 +1604,7 @@ describe("drag to reorder and date order (#43)", () => {
           expect(liveText()).toBe("Zed is now at position 3 of 3.");
         });
 
-        test("a popover field still reading its value holds the refresh, which runs once it closes", async () => {
+        test("a popover field still reading its value holds the refresh, which runs once focus leaves the list", async () => {
           guests = [];
           document.body.innerHTML = `<main id="page">${renderList()}</main>`;
           const note = document.createElement("span");
@@ -1617,6 +1631,9 @@ describe("drag to reorder and date order (#43)", () => {
           expect(note.classList.contains("cms-field--editing")).toBe(true);
           expect(pageFetches).toBe(0);
           escape(document.activeElement as HTMLElement);
+          await settle();
+          expect(pageFetches).toBe(0);
+          leaveLists();
           await settle();
           expect(pageFetches).toBe(1);
           expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
@@ -1686,11 +1703,127 @@ describe("drag to reorder and date order (#43)", () => {
           toolButton(0, "duplicate").click();
           await settle();
           expect(items().at(-1)?.dataset.editItem).toBe(`${KEY}:artists[_key=c]`);
-          // Duplicate opened the copy's first field, which holds the refresh too.
+          // Duplicate opened the copy's first field, which holds the refresh too, and so does its focus after Esc.
           escape(document.activeElement as HTMLElement);
+          leaveLists();
           await settle();
           expect(pageFetches).toBe(3);
           expect(liveText()).not.toContain("is now at position");
+        });
+      });
+
+      describe("rule A: the swap never replaces what holds focus or a pointer, but the saved field (#43)", () => {
+        const outside = () => {
+          const node = document.createElement("button");
+          document.body.append(node);
+          return node;
+        };
+
+        test("Enter on the saved field swaps at once, focus follows the field, and the new place is announced", async () => {
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(document.activeElement).toBe(field(2));
+          expect(liveText()).toBe("Zed is now at position 3 of 3.");
+        });
+
+        test("focus on Add holds the refresh; once focus leaves the list it swaps, leaves focus outside, and announces", async () => {
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          addButton()?.focus();
+          await settle();
+          expect(pageFetches).toBe(0);
+          expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+          expect(document.activeElement).toBe(addButton());
+          const away = outside();
+          away.focus();
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(document.activeElement).toBe(away);
+          expect(liveText()).toBe("Zed is now at position 3 of 3.");
+        });
+
+        test("an open chip menu, with focus on its chip, holds the refresh and stays open", async () => {
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          const chip = items()[1]?.querySelector<HTMLButtonElement>(".cms-item__chip") as HTMLButtonElement;
+          chip.focus();
+          chip.click();
+          await settle();
+          expect(pageFetches).toBe(0);
+          expect(chip.isConnected).toBe(true);
+          expect(chip.getAttribute("aria-expanded")).toBe("true");
+          expect(items()[1]?.hasAttribute("data-cms-open")).toBe(true);
+          expect(document.activeElement).toBe(chip);
+        });
+
+        test("a pointer held down on a toolbar button holds the refresh until it comes up", async () => {
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          const remove = toolButton(1, "remove");
+          pointer("pointerdown", remove);
+          await settle();
+          expect(pageFetches).toBe(0);
+          expect(remove.isConnected).toBe(true);
+          pointer("pointerup", remove);
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(document.activeElement).toBe(field(2));
+        });
+
+        test("focus in another list of the same document holds the refresh", async () => {
+          crew = [{ _key: "x", name: "Cy" }];
+          document.body.innerHTML = `<main id="page">${renderList()}</main>`;
+          await mount();
+          pageAnswer = () =>
+            new Response(
+              `<!doctype html><html><body><main id="page">${renderOne("artists", zedFirst)}${renderOne("crew", crew ?? [])}</main></body></html>`,
+            );
+          rename(0, "Zed");
+          const crewField = field(0, crewItems);
+          crewField.focus();
+          await settle();
+          expect(pageFetches).toBe(0);
+          expect(crewField.isConnected).toBe(true);
+          expect(document.activeElement).toBe(crewField);
+        });
+
+        test("focus elsewhere on the page lets it swap at once, and focus is left alone", async () => {
+          await mount();
+          sorted(zedFirst);
+          rename(0, "Zed");
+          const away = outside();
+          away.focus();
+          await settle();
+          expect(pageFetches).toBe(1);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
+          expect(document.activeElement).toBe(away);
+          expect(liveText()).toBe("Zed is now at position 3 of 3.");
+        });
+
+        test("a page that arrives once focus has moved into the list is dropped, and runs once focus leaves", async () => {
+          await mount();
+          sorted(zedFirst);
+          held = true;
+          rename(0, "Zed");
+          await settle();
+          expect(pageFetches).toBe(1);
+          addButton()?.focus();
+          release();
+          await settle();
+          expect(names()).toEqual(["Zed", "Tobias", "Ines"]);
+          outside().focus();
+          await settle();
+          expect(pageFetches).toBe(2);
+          expect(names()).toEqual(["Tobias", "Ines", "Zed"]);
         });
       });
     });
@@ -1882,11 +2015,10 @@ describe("drag to reorder and date order (#43)", () => {
       expect(grip(0).getAttribute("aria-keyshortcuts")).toBe("ArrowUp ArrowDown");
     });
 
-    test("a drop whose write rejects puts the item back, and the drag's end is reported once", async () => {
+    test("a drop whose write rejects puts the item back", async () => {
       three();
       const [record] = scanLists(document.body);
       if (!record) throw new Error("no list");
-      const ends: number[] = [];
       attachList(record, defaultStrings, {
         actions: true,
         canAdd: false,
@@ -1895,7 +2027,6 @@ describe("drag to reorder and date order (#43)", () => {
         undo() {},
         act() {},
         dragStart: () => true,
-        dragEnd: () => ends.push(1),
         drop: () => Promise.reject(new Error("boom")),
       });
       lay();
@@ -1905,9 +2036,8 @@ describe("drag to reorder and date order (#43)", () => {
       pointer("pointerup", list());
       await settle();
       expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
-      expect(ends).toEqual([1]);
       record.detach?.();
-      expect(ends).toEqual([1]);
+      expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
     });
   });
 
@@ -1926,7 +2056,6 @@ describe("drag to reorder and date order (#43)", () => {
         undo() {},
         act() {},
         dragStart: () => true,
-        dragEnd() {},
         drop: () =>
           new Promise<boolean>((resolve, reject) => {
             answer = resolve;
@@ -1962,7 +2091,7 @@ describe("drag to reorder and date order (#43)", () => {
       ["writes nothing", (held: ReturnType<typeof attachHeld>) => held.answer(false)],
       ["rejects", (held: ReturnType<typeof attachHeld>) => held.fail()],
     ] as const) {
-      test(`a drop that ${how} once the list was detached leaves the host's markup alone`, async () => {
+      test(`a drop that ${how} once the list was detached puts the item back, and draws nothing`, async () => {
         twoFields();
         const held = attachHeld();
         dragFirstToEnd();
@@ -1970,22 +2099,24 @@ describe("drag to reorder and date order (#43)", () => {
         held.record.detach?.();
         end(held);
         await settle();
-        expect(names()).toEqual(["Tobias", "Ines", "Mara"]);
+        // Nothing was stored: the host's markup goes back to the stored order, with no chrome drawn on it.
+        expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
         expect(list().querySelector(".cms-root, .cms-item__sep")).toBeNull();
         expect(list().hasAttribute("class")).toBe(false);
       });
     }
 
-    test("a drop that writes nothing once the list was dressed again leaves the new dressing alone", async () => {
+    test("a drop that writes nothing once the list was dressed again puts the item back inside the new dressing", async () => {
       twoFields();
       const held = attachHeld();
       dragFirstToEnd();
       held.record.detach?.();
       const fresh = attachHeld();
-      const before = list().innerHTML;
+      const toolbars = list().querySelectorAll(".cms-item__tools").length;
       held.answer(false);
       await settle();
-      expect(list().innerHTML).toBe(before);
+      expect(names()).toEqual(["Mara", "Tobias", "Ines"]);
+      expect(list().querySelectorAll(".cms-item__tools").length).toBe(toolbars);
       fresh.record.detach?.();
       expect(list().querySelector(".cms-root, .cms-item__sep")).toBeNull();
       expect(list().hasAttribute("class")).toBe(false);
