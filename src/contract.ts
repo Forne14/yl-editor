@@ -6,9 +6,16 @@ import {
   DocumentNotFoundError,
   DocumentStateError,
   PathError,
+  MediaRefusal,
   SlugError,
   type ContentStore,
+  type MaybePromise,
+  type MediaFieldRef,
+  type MediaFileInfo,
+  type MediaJobState,
+  type MediaStore,
   type RegistryEntry,
+  type ResolvedMedia,
   type SchemaRegistry,
   type WriteContext,
 } from "./types.ts";
@@ -970,6 +977,325 @@ export function runContentStoreContract(
           store.writeField("notes/first", "title", "Second editor", { expectedVersion: version }),
         ).rejects.toThrow(ConflictError);
         expect((await store.get("notes/first", { draft: true }))?.payload).toEqual({ title: "First editor", tags: [] });
+      });
+    });
+  });
+}
+
+/** A file the media store under test takes, for `runMediaStoreContract`. */
+export interface MediaContractSample {
+  bytes: Uint8Array;
+  type: string;
+  filename: string;
+}
+
+export interface MediaStoreContractOptions {
+  /** A file the store accepts and stores, such as a small PNG. */
+  sample: MediaContractSample;
+  /**
+   * The store answers `processing` for the sample, so the contract polls `job` until it settles. Without it the
+   * contract expects `ready` straight from `upload`, and the job tests are skipped.
+   */
+  processesAsync?: boolean;
+  /** The largest body the store takes, in bytes, when it enforces a limit of its own. Enables the limit tests. */
+  maxBytes?: number;
+  /** How many media items the storage holds. Enables the "stores nothing" checks. */
+  count?: () => MaybePromise<number>;
+  /** Wait between two `job` polls. Default 20 ms. */
+  pollIntervalMs?: number;
+  /** Most `job` polls before a job counts as stuck. Default 250. */
+  maxPolls?: number;
+}
+
+const contractField: MediaFieldRef = { key: "notes/first", path: "hero" };
+const otherField: MediaFieldRef = { key: "notes/second", path: "hero" };
+
+/** A stream of `bytes`, cut in a few chunks so a store sees more than one read. */
+function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  const cut = Math.max(1, Math.ceil(bytes.byteLength / 3));
+  let offset = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (offset >= bytes.byteLength) return controller.close();
+      controller.enqueue(bytes.slice(offset, offset + cut));
+      offset += cut;
+    },
+  });
+}
+
+/** `size` zero bytes in 64 KiB chunks, made as they are read. */
+function zeros(size: number): ReadableStream<Uint8Array> {
+  let left = size;
+  return new ReadableStream({
+    pull(controller) {
+      if (left <= 0) return controller.close();
+      const chunk = Math.min(left, 64 * 1024);
+      left -= chunk;
+      controller.enqueue(new Uint8Array(chunk));
+    },
+  });
+}
+
+/** Sends half of `bytes`, then errors. */
+function erroringStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  let sent = false;
+  return new ReadableStream({
+    pull(controller) {
+      if (sent) return controller.error(new Error("connection reset"));
+      sent = true;
+      controller.enqueue(bytes.slice(0, Math.max(1, Math.floor(bytes.byteLength / 2))));
+    },
+  });
+}
+
+/**
+ * Registers the `MediaStore` contract as vitest tests. `makeStore` runs before every test and must return a store over
+ * empty storage. The contract never reads `variants`.
+ */
+export function runMediaStoreContract<V>(
+  name: string,
+  makeStore: () => MaybePromise<MediaStore<V>>,
+  options: MediaStoreContractOptions,
+): void {
+  const { sample } = options;
+  const pollIntervalMs = options.pollIntervalMs ?? 20;
+  const maxPolls = options.maxPolls ?? 250;
+  const info = (overrides: Partial<MediaFileInfo> = {}): MediaFileInfo => ({
+    filename: sample.filename,
+    type: sample.type,
+    size: sample.bytes.byteLength,
+    ...overrides,
+  });
+  const live = () => ({ signal: new AbortController().signal });
+
+  describe(`MediaStore contract: ${name}`, () => {
+    let store: MediaStore<V>;
+    beforeEach(async () => {
+      store = await makeStore();
+    });
+
+    /** Polls a job until it is no longer processing. */
+    const settle = async (job: string, field = contractField): Promise<MediaJobState<V> | null> => {
+      for (let poll = 0; poll < maxPolls; poll++) {
+        const state = await store.job?.(job, field);
+        if (!state || state.status !== "processing") return state ?? null;
+        if (state.progress !== undefined) {
+          expect(state.progress).toBeGreaterThanOrEqual(0);
+          expect(state.progress).toBeLessThanOrEqual(1);
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+      throw new Error(`job ${job} still processing after ${maxPolls} polls`);
+    };
+
+    /** Uploads the sample and returns the stored media, polling when the store processes asynchronously. */
+    const uploadSample = async (file = info()): Promise<ResolvedMedia<V>> => {
+      const answer = await store.upload(streamOf(sample.bytes), file, contractField, live());
+      if (answer.status === "ready") return answer.media;
+      const state = await settle(answer.job);
+      if (state?.status !== "ready") throw new Error(`job ${answer.job} did not become ready`);
+      return state.media;
+    };
+
+    const expectRefusal = async (attempt: () => unknown, codes: readonly string[]) => {
+      const failure = await Promise.resolve()
+        .then(attempt)
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(failure).toBeInstanceOf(MediaRefusal);
+      expect(codes).toContain((failure as MediaRefusal).code);
+    };
+
+    const expectNothingStored = async (before: number | undefined) => {
+      if (options.count) expect(await options.count()).toBe(before);
+    };
+
+    describe("upload", () => {
+      test.skipIf(options.processesAsync === true)("the sample answers ready with an id", async () => {
+        const answer = await store.upload(streamOf(sample.bytes), info(), contractField, live());
+        expect(answer.status).toBe("ready");
+        if (answer.status !== "ready") return;
+        expect(answer.media.id).toEqual(expect.any(String));
+        expect(answer.media.id.length).toBeGreaterThan(0);
+      });
+
+      test.skipIf(options.processesAsync !== true)("the sample answers processing with a job id", async () => {
+        const answer = await store.upload(streamOf(sample.bytes), info(), contractField, live());
+        expect(answer.status).toBe("processing");
+        if (answer.status !== "processing") return;
+        expect(answer.job).toEqual(expect.any(String));
+        if (answer.retryAfterMs !== undefined) expect(answer.retryAfterMs).toBeGreaterThan(0);
+      });
+
+      test("the render has a kind, a src and a positive intrinsic size", async () => {
+        const { render } = await uploadSample();
+        expect(["image", "video"]).toContain(render.kind);
+        expect(render.src).toEqual(expect.any(String));
+        expect(render.src.length).toBeGreaterThan(0);
+        expect(render.width).toBeGreaterThan(0);
+        expect(render.height).toBeGreaterThan(0);
+      });
+
+      test("an undeclared size (null) still uploads", async () => {
+        const media = await uploadSample(info({ size: null }));
+        expect(media.id.length).toBeGreaterThan(0);
+      });
+
+      test("rejects when the body stream errors, and stores nothing", async () => {
+        const before = await options.count?.();
+        await expect(store.upload(erroringStream(sample.bytes), info(), contractField, live())).rejects.toBeInstanceOf(
+          Error,
+        );
+        await expectNothingStored(before);
+      });
+
+      test("rejects when the signal is already aborted, and stores nothing", async () => {
+        const before = await options.count?.();
+        const controller = new AbortController();
+        controller.abort();
+        const upload = store.upload(streamOf(sample.bytes), info(), contractField, { signal: controller.signal });
+        await expect(upload).rejects.toBeInstanceOf(Error);
+        await expectNothingStored(before);
+      });
+
+      test("rejects when the signal aborts mid-body, and stores nothing", async () => {
+        const before = await options.count?.();
+        const controller = new AbortController();
+        let sent = false;
+        // Sends one byte, then aborts and never sends more: only the signal can end the upload.
+        const stalled = new ReadableStream<Uint8Array>({
+          pull(streamController) {
+            if (sent) {
+              controller.abort();
+              return new Promise(() => {});
+            }
+            sent = true;
+            streamController.enqueue(sample.bytes.slice(0, 1));
+          },
+        });
+        await expect(
+          store.upload(stalled, info(), contractField, { signal: controller.signal }),
+        ).rejects.toBeInstanceOf(Error);
+        await expectNothingStored(before);
+      });
+
+      test("bytes that are not a file it takes are refused with a MediaRefusal", async () => {
+        const text = new TextEncoder().encode("not an image at all");
+        const file = { filename: "notes.txt", type: "text/plain", size: text.byteLength };
+        await expectRefusal(
+          () => store.upload(streamOf(text), file, contractField, live()),
+          ["unsupported", "invalid"],
+        );
+      });
+
+      test("an untrusted filename with path separators is stored safely or refused", async () => {
+        const result = await uploadSample(info({ filename: "../../etc/pass\\wd\u0000.png" })).then(
+          (media) => ({ media }),
+          (error: unknown) => ({ error }),
+        );
+        if ("error" in result) {
+          expect(result.error).toBeInstanceOf(MediaRefusal);
+          return;
+        }
+        const filename = result.media.render.filename;
+        if (filename === undefined) return;
+        expect(filename).not.toMatch(/[/\\]/);
+        expect(filename.includes("\u0000")).toBe(false);
+      });
+
+      test.skipIf(options.maxBytes === undefined)("a body past its limit is refused as too_large", async () => {
+        const before = await options.count?.();
+        const tooLarge = (options.maxBytes ?? 0) + 1;
+        await expectRefusal(
+          () => store.upload(zeros(tooLarge), info({ size: null }), contractField, live()),
+          ["too_large"],
+        );
+        await expectNothingStored(before);
+      });
+
+      test.skipIf(options.maxBytes === undefined)("accept, when present, refuses a declared size past it", async () => {
+        if (!store.accept) return;
+        const tooLarge = (options.maxBytes ?? 0) + 1;
+        await expectRefusal(() => store.accept?.(contractField, info({ size: tooLarge }), {}), ["too_large"]);
+      });
+    });
+
+    describe("resolve", () => {
+      test("returns an uploaded id with its render", async () => {
+        const media = await uploadSample();
+        const resolved = await store.resolve([media.id]);
+        expect(resolved.get(media.id)?.id).toBe(media.id);
+        expect(resolved.get(media.id)?.render).toEqual(media.render);
+      });
+
+      test("leaves unknown ids out of the map", async () => {
+        const media = await uploadSample();
+        const resolved = await store.resolve([media.id, "contract-unknown-id"]);
+        expect(resolved.has("contract-unknown-id")).toBe(false);
+        expect(resolved.has(media.id)).toBe(true);
+      });
+
+      test("no ids is an empty map", async () => {
+        expect((await store.resolve([])).size).toBe(0);
+      });
+    });
+
+    describe.skipIf(options.processesAsync !== true)("jobs", () => {
+      const startJob = async () => {
+        const answer = await store.upload(streamOf(sample.bytes), info(), contractField, live());
+        if (answer.status !== "processing") throw new Error("expected processing");
+        return answer.job;
+      };
+
+      test("the store has job()", () => {
+        expect(typeof store.job).toBe("function");
+      });
+
+      test("a job becomes ready with media that resolve returns", async () => {
+        const state = await settle(await startJob());
+        expect(state?.status).toBe("ready");
+        if (state?.status !== "ready") return;
+        expect((await store.resolve([state.media.id])).get(state.media.id)?.render).toEqual(state.media.render);
+      });
+
+      test("a job stays readable for a while after ready", async () => {
+        const job = await startJob();
+        const first = await settle(job);
+        expect(first?.status).toBe("ready");
+        expect(await store.job?.(job, contractField)).toEqual(first);
+      });
+
+      test("an unknown job reads null", async () => {
+        expect(await store.job?.("contract-unknown-job", contractField)).toBeNull();
+      });
+
+      test("a job that belongs to another field reads null", async () => {
+        const job = await startJob();
+        expect(await store.job?.(job, otherField)).toBeNull();
+        expect(await store.job?.(job, { key: contractField.key, path: "other" })).toBeNull();
+        expect(await store.job?.(job, contractField)).not.toBeNull();
+      });
+
+      test("cancelJob of another field's job leaves it running", async () => {
+        if (!store.cancelJob) return;
+        const job = await startJob();
+        await store.cancelJob(job, otherField);
+        expect((await settle(job))?.status).toBe("ready");
+      });
+
+      test("after cancelJob the job reads null or failed, never ready", async () => {
+        if (!store.cancelJob) return;
+        const job = await startJob();
+        await store.cancelJob(job, contractField);
+        const state = await store.job?.(job, contractField);
+        expect(state === null || state?.status === "failed").toBe(true);
+      });
+
+      test("cancelJob of an unknown job resolves", async () => {
+        if (!store.cancelJob) return;
+        await expect(store.cancelJob("contract-unknown-job", contractField)).resolves.toBeUndefined();
       });
     });
   });

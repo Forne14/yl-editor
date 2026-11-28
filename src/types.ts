@@ -141,16 +141,113 @@ export interface Access {
   canPublish(locals: unknown, doc: DocumentRef): MaybePromise<AccessVerdict>;
 }
 
-export const MediaVariantSchema = z.object({
-  width: z.number().int().positive(),
-  format: z.enum(["avif", "webp", "png", "mp4"]),
-  url: z.string(),
-});
-export type MediaVariant = z.infer<typeof MediaVariantSchema>;
+/** The field an upload is for: the document key and the field's path in it. */
+export interface MediaFieldRef {
+  key: string;
+  path: string;
+}
 
-export interface MediaStore {
-  upload(file: Uint8Array, meta: { role: string; filename: string; alt: string }): Promise<{ id: string }>;
-  resolve(id: string): Promise<MediaVariant[] | null>;
+/**
+ * Everything the chrome reads about a media item, in HTML's own vocabulary. The host builds it from its own variants in
+ * its store. It is also the wire shape (`WireMediaRender` in `@yl/editor/http`, kept identical by a check in `wire.ts`).
+ */
+export interface MediaRender {
+  kind: "image" | "video";
+  /** A URL the browser can show at once: the preview and `<img src>`. */
+  src: string;
+  /** For `<img srcset>`. */
+  srcset?: string;
+  /** For `<picture><source type>`, best first. */
+  sources?: { type: string; srcset: string }[];
+  /** Intrinsic size, for `width`/`height` and the aspect ratio. Positive. */
+  width: number;
+  height: number;
+  /** Video only. */
+  poster?: string;
+  /** For the publish diff and the popover. */
+  filename?: string;
+}
+
+/** A stored media item. `variants` is the host's own shape: the package never reads it and never sends it. */
+export interface ResolvedMedia<V = unknown> {
+  id: string;
+  render: MediaRender;
+  variants: V;
+}
+
+/** What `MediaStore.upload` answers: stored now, or still processing under a job id the editor polls. */
+export type MediaUploadAnswer<V = unknown> =
+  { status: "ready"; media: ResolvedMedia<V> } | { status: "processing"; job: string; retryAfterMs?: number };
+
+/** What `MediaStore.job` answers for a job it knows. `progress` is 0..1. */
+export type MediaJobState<V = unknown> =
+  | { status: "processing"; progress?: number; retryAfterMs?: number }
+  | { status: "ready"; media: ResolvedMedia<V> }
+  | { status: "failed"; reason: string; message?: string };
+
+export type MediaRefusalCode = "too_large" | "unsupported" | "invalid" | "busy";
+
+/**
+ * Thrown by `MediaStore.accept` or `upload` to refuse a file. The handlers map it to a status: `too_large` 413,
+ * `unsupported` 415, `invalid` 400 (`bad_request`), `busy` 503 with `Retry-After`. The message reaches the editor.
+ */
+export class MediaRefusal extends Error {
+  override name = "MediaRefusal";
+  readonly code: MediaRefusalCode;
+  readonly detail: { limit?: number; retryAfterMs?: number };
+  constructor(code: MediaRefusalCode, message: string, detail: { limit?: number; retryAfterMs?: number } = {}) {
+    super(message);
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
+/**
+ * What the browser said about the file. All of it is untrusted: `filename` may hold path separators or control
+ * characters, and `type` may claim anything (an SVG can carry script). `size` is the declared length, or null when the
+ * request had none.
+ */
+export interface MediaFileInfo {
+  filename: string;
+  type: string;
+  size: number | null;
+}
+
+/** The host's media storage. The package ships no implementation; `runMediaStoreContract` checks one. */
+export interface MediaStore<V = unknown> {
+  /** Before the body is read: refuse early on type or declared size by throwing `MediaRefusal`. Optional. */
+  accept?(field: MediaFieldRef, file: MediaFileInfo, context: WriteContext): Promise<void> | void;
+  /**
+   * Reads `body` and stores it, or answers `processing` with a job id. When `signal` aborts, or the body stream
+   * errors, it rejects and stores nothing.
+   */
+  upload(
+    body: ReadableStream<Uint8Array>,
+    file: MediaFileInfo,
+    field: MediaFieldRef,
+    context: WriteContext & { signal: AbortSignal },
+  ): Promise<MediaUploadAnswer<V>>;
+  /** Required when `upload` can answer `processing`. Null for an unknown job, or one that is another field's. */
+  job?(job: string, field: MediaFieldRef): Promise<MediaJobState<V> | null>;
+  cancelJob?(job: string, field: MediaFieldRef): Promise<void>;
+  /** Batched. A missing id is left out of the map. */
+  resolve(ids: readonly string[]): Promise<Map<string, ResolvedMedia<V>>>;
+}
+
+/** The stored value of a `media` field. `decorative: true` means the editor chose no alt text (`alt` is then ""). */
+export interface MediaValue {
+  id: string;
+  alt: string;
+  decorative?: boolean;
+}
+
+/**
+ * The zod schema of a `media` field's value: `{ id, alt }`, or `{ id, alt: "", decorative: true }`. Alt text is
+ * content, drafted and published with the page; the value never holds URLs or variants. Use `mediaValue().nullable()`
+ * for a field that may be empty. Refuses `decorative: true` with alt text, and any other key.
+ */
+export function mediaValue(): z.ZodType<MediaValue> {
+  throw new Error("not implemented");
 }
 
 export type OnPublish = (doc: StoredDocument) => Promise<void> | void;
