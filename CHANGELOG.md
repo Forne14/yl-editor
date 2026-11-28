@@ -12,7 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Chrome: plain fields can be grouped in one outline (#44, group close plain fields in one outline). Wrap them in an
   element with `editable(docKey).group()` (`data-edit-group`, set only in edit mode). The group gets one dashed outline
   around the wrapper's box and thin dashed lines between its fields, like a list; fields inside lose their own outline.
-  A group can hold fields of several documents. A wrapper that holds a list, a group inside a group (the outer one
+  A group can hold fields of several documents. Its fields are decided from the markup, not the layout, so a field
+  hidden at some width keeps its group; the wrapper must stay block-level or `inline-block` in edit mode. A wrapper that holds a list, a group inside a group (the outer one
   wins) and a group inside a list item are ignored with a `console.warn`. A warning also names any pair of dashed
   outlines that cross and a wrapper whose `overflow` clips its outline. An inline wrapper is ignored with a warning. Lists now honour
   `--cms-list-pad: 0` and lengths other than px, measure inside a border on the list, and add their outline at the end
