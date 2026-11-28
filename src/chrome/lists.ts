@@ -246,6 +246,26 @@ export function boxOf(node: Element, origin: { left: number; top: number }): Box
 }
 
 /**
+ * The box an absolutely positioned child is placed in: the padding box, in client coordinates. A host border moves it
+ * in from the border box `getBoundingClientRect` gives.
+ */
+export function paddingBox(node: HTMLElement): { left: number; top: number; width: number; height: number } {
+  const rect = node.getBoundingClientRect();
+  return {
+    left: rect.left + node.clientLeft,
+    top: rect.top + node.clientTop,
+    width: node.clientWidth,
+    height: node.clientHeight,
+  };
+}
+
+/** A computed length in pixels (`--cms-list-pad`, `border-left-width`). 0 is a value: only an unreadable one falls back. */
+export function cssPixels(node: Element, property: string, fallback: number): number {
+  const value = Number.parseFloat(getComputedStyle(node).getPropertyValue(property));
+  return Number.isNaN(value) ? fallback : value;
+}
+
+/**
  * Lines between an item's fields, from the fields' boxes. A vertical line goes midway between two fields side by side
  * and runs the item's band, from the line above to the line below. A horizontal one goes midway between two stacked
  * fields and runs to the nearest vertical line, or the outline, on each side. Neighbours only: a pair with another
@@ -712,7 +732,7 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
     const origin = host.getBoundingClientRect();
-    const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
+    const pad = cssPixels(frame, "--cms-list-pad", 12);
     const cells: Cell[] = [
       ...items.map((item, index) => ({ row: item.element, band: bands[index], tools: toolbars[index], item: true })),
       ...(addRow ? [{ row: addRow, band: addBand, tools: undefined, item: false }] : []),

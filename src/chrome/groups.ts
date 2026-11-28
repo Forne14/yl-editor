@@ -4,15 +4,29 @@
 // custom properties (CSP-safe), and `detach` takes every one of them back out.
 //
 // Invariants:
-// - A group is a wrapper with at least two fields the chrome knows. Fewer draws nothing and adds nothing.
+// - Membership: a member is a field the chrome dresses now (its record is attached) with a non-zero box, worked out
+//   afresh on every paint. Fewer than two members: the group draws nothing and the wrapper holds no `cms-group` class,
+//   so its fields look plain; the next paint with two members draws it again. Candidates (the fields the chrome knew
+//   inside the wrapper at attach) are fixed per attach; a wrapper with fewer than two is never attached.
+// - Geometry: everything is measured in the wrapper's padding box (border box + clientLeft/clientTop, clientWidth /
+//   clientHeight), where its absolutely positioned children sit. The pad (`--cms-list-pad`), the frame's border
+//   (`border-left-width`) and a field outline's offset (`--cms-space-1`) are computed styles; 0 is a value, and only an
+//   unreadable one (NaN) takes the fallback.
+// - Nodes: the frame and separators are appended to the wrapper, never prepended, so host `:first-child` and
+//   `> * + *` rules match the same elements in edit mode.
 // - Never a group inside a group (the outermost wins), a group holding a list, or a group inside a list item: each is
-//   dropped at scan time with one console warning per element.
-// - `paint` is the only writer of separators and positions; `schedule` coalesces any number of requests into one paint
-//   per animation frame. `detach` cancels the frame, disconnects the observer, and removes every node and class added.
-// - The crossing check (`createOutlineWatch`) only reads boxes and warns once per pair of elements per mount; it never
-//   changes the page, so a recheck cannot trigger another one.
+//   dropped at scan time.
+// - Warnings: scan-time ones (G5, G7, G8) and the clipping one (a wrapper whose overflow clips its outline) are once per
+//   element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 4 kinds.
+// - `paint` is the only writer of separators, positions and the group classes; `schedule` coalesces any number of
+//   requests into one paint per animation frame. `detach` cancels the frame, disconnects the observer (which watches
+//   the wrapper and the candidates, nothing else), and removes every node and class added.
+// - The crossing check (`createOutlineWatch`) only reads boxes, and warns once per pair of elements per mount; it never
+//   changes the page. On each check its observer watches exactly the current outlines: it is disconnected and
+//   re-observed only when that set changed, so a removed node isn't held and a recheck triggers at most one more check
+//   (the new observations' first report), which finds the same set and stops.
 import { element } from "./dom.ts";
-import { boxOf, cellLines, layOut, px, type Box } from "./lists.ts";
+import { boxOf, cellLines, cssPixels, layOut, paddingBox, px, type Box } from "./lists.ts";
 
 export interface GroupRecord {
   element: HTMLElement;
@@ -23,8 +37,19 @@ export interface GroupRecord {
   schedule: () => void;
 }
 
-/** The elements already warned about, so a rescan doesn't repeat a warning. */
-const told = new WeakSet<Element>();
+/** Warns about `node` once per kind; one per mount, so a rescan doesn't repeat a warning but a new mount does. */
+export type Warnings = (node: Element, kind: "item" | "list" | "nested" | "clip", message: string) => void;
+
+export function createWarnings(): Warnings {
+  const told = new WeakMap<Element, Set<string>>();
+  return (node, kind, message) => {
+    const kinds = told.get(node) ?? new Set<string>();
+    if (kinds.has(kind)) return;
+    kinds.add(kind);
+    told.set(node, kinds);
+    console.warn(`[yl-editor] ${describe(node)} ${message} See docs/chrome.md → Groups.`);
+  };
+}
 
 /** `<section id="hero" data-edit-group>`: enough for a developer to find the element. */
 function describe(node: Element): string {
@@ -34,14 +59,8 @@ function describe(node: Element): string {
   return `<${[node.localName, ...attributes].join(" ")}>`;
 }
 
-function warnOnce(node: Element, message: string): void {
-  if (told.has(node)) return;
-  told.add(node);
-  console.warn(`[yl-editor] ${describe(node)} ${message} See docs/chrome.md → Groups.`);
-}
-
 /** Every `[data-edit-group]` under `root` the chrome will draw, in page order. */
-export function scanGroups(root: HTMLElement): GroupRecord[] {
+export function scanGroups(root: HTMLElement, warn: Warnings): GroupRecord[] {
   const records: GroupRecord[] = [];
   const candidates = [
     ...(root.matches("[data-edit-group]") ? [root] : []),
@@ -50,16 +69,24 @@ export function scanGroups(root: HTMLElement): GroupRecord[] {
   for (const target of candidates) {
     if (target.closest(".cms-root")) continue;
     if (target.closest("[data-edit-item]")) {
-      warnOnce(target, "is inside a list item, so it is ignored: the item's fields already share the list's outline.");
+      warn(
+        target,
+        "item",
+        "is inside a list item, so it is ignored: the item's fields already share the list's outline.",
+      );
       continue;
     }
     const list = target.matches("[data-edit-list]") ? target : target.querySelector("[data-edit-list]");
     if (list) {
-      warnOnce(target, `holds the list ${describe(list)}, so it is ignored: its fields keep their own outlines.`);
+      warn(target, "list", `holds the list ${describe(list)}, so it is ignored: its fields keep their own outlines.`);
       continue;
     }
     if (records.some((outer) => outer.element.contains(target))) {
-      warnOnce(target, "is inside another data-edit-group, so it is ignored: the outer group draws all its fields.");
+      warn(
+        target,
+        "nested",
+        "is inside another data-edit-group, so it is ignored: the outer group draws all its fields.",
+      );
       continue;
     }
     records.push({ element: target, paint: () => undefined, schedule: () => undefined });
@@ -67,26 +94,49 @@ export function scanGroups(root: HTMLElement): GroupRecord[] {
   return records;
 }
 
+/** Overflow values that cut off what reaches past the padding box, as the frame does by `--cms-list-pad`. */
+const CLIPS = new Set(["hidden", "clip", "auto", "scroll"]);
+
+function clips(node: Element): string | undefined {
+  const style = getComputedStyle(node);
+  // `overflow` too: an engine that keeps only the shorthand still says what it is.
+  const values = `${style.overflowX} ${style.overflowY} ${style.overflow}`.split(/\s+/);
+  return values.find((value) => CLIPS.has(value));
+}
+
+/** What a group's frame reaches past its wrapper's padding box when the style can't be read. */
+const PAD = 12;
+/** The frame's border when the style can't be read: `--cms-outline`'s 2px. */
+const BORDER = 2;
+
 /**
- * Draws the group: a frame, and a line between its fields from their boxes. `recordOf` answers for a field element the
- * chrome knows (`editable` false for a locked one); an element it doesn't know isn't a member.
+ * Draws the group: a frame, and a line between its members from their boxes. `recordOf` answers for a field element
+ * the chrome knows (`editable` false for a locked one, `detach` set while it is dressed); an element it doesn't know
+ * isn't a candidate.
  */
 export function attachGroup(
   record: GroupRecord,
-  recordOf: (element: HTMLElement) => { editable: boolean } | undefined,
+  recordOf: (element: HTMLElement) => { editable: boolean; detach?: unknown } | undefined,
+  warn: Warnings,
 ): void {
   record.detach?.();
   const host = record.element;
-  const members = [...host.querySelectorAll<HTMLElement>("[data-edit-field]")].filter(
+  const candidates = [...host.querySelectorAll<HTMLElement>("[data-edit-field]")].filter(
     (node) => !node.closest(".cms-root") && recordOf(node) !== undefined,
   );
-  if (members.length < 2) return;
+  if (candidates.length < 2) return;
+  const clipping = clips(host);
+  if (clipping) {
+    warn(
+      host,
+      "clip",
+      `has overflow: ${clipping}, so it clips its group's outline, which sits --cms-list-pad outside it. Let it overflow, or give the group room inside an element that clips.`,
+    );
+  }
 
   const hadClass = host.hasAttribute("class");
   const childTag = host.tagName === "UL" || host.tagName === "OL" ? "li" : "div";
-  host.classList.add("cms-group");
   const frame = element(childTag, { class: "cms-root cms-group__frame", "aria-hidden": "true" });
-  host.prepend(frame);
   const separators: HTMLElement[] = [];
 
   const separator = (axis: "v" | "h", x: number, y: number, length: number) => {
@@ -98,25 +148,42 @@ export function attachGroup(
     separators.push(sep);
   };
 
+  /** Takes the frame, the separators and the classes back out: the fields look plain. */
+  const retire = () => {
+    for (const node of separators.splice(0)) node.remove();
+    frame.remove();
+    host.classList.remove("cms-group", "cms-group--locked");
+    if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
+  };
+
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
+    const origin = paddingBox(host);
+    const members = candidates
+      .filter((node) => recordOf(node)?.detach !== undefined)
+      .map((node) => ({ node, box: boxOf(node, origin) }))
+      .filter(({ box }) => box.r - box.l > 0 && box.b - box.t > 0);
+    if (members.length < 2) {
+      retire();
+      return;
+    }
+    host.classList.add("cms-group");
     host.classList.toggle(
       "cms-group--locked",
-      members.every((node) => recordOf(node)?.editable !== true),
+      members.every(({ node }) => recordOf(node)?.editable !== true),
     );
-    const origin = host.getBoundingClientRect();
-    const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
-    // Inside the frame's 2px border.
-    const edge = { left: -pad + 2, right: origin.width + pad - 2 };
-    const top = -pad + 2;
-    const bottom = origin.height + pad - 2;
-    const cells = members
-      .map((node) => ({ box: boxOf(node, origin) }))
-      .filter(({ box }) => box.r - box.l > 0 && box.b - box.t > 0);
+    if (frame.parentNode !== host) host.append(frame);
+    // Read once the frame is on the page: a detached element has no computed style.
+    const pad = cssPixels(frame, "--cms-list-pad", PAD);
+    const border = cssPixels(frame, "border-left-width", BORDER);
+    // Inside the frame's border.
+    const edge = { left: -pad + border, right: origin.width + pad - border };
+    const top = -pad + border;
+    const bottom = origin.height + pad - border;
     // A line is fields sharing a stretch of height; one on top of another are lines of their own (a column).
     const { lines } = layOut(
-      cells.map((cell) => cell.box),
-      cells,
+      members.map((cell) => cell.box),
+      members,
     );
     lines.forEach((line, index) => {
       const previous = lines[index - 1];
@@ -143,10 +210,11 @@ export function attachGroup(
       paint();
     });
   };
+  // The wrapper and the candidates: a candidate that gets a box again (shown, re-rendered) brings the group back.
   const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(schedule);
   if (observer) {
     observer.observe(host);
-    for (const node of members) observer.observe(node);
+    for (const node of candidates) observer.observe(node);
   }
   // A viewport change can move `--cms-list-pad` through a media query without resizing any observed box.
   window.addEventListener("resize", schedule);
@@ -159,10 +227,7 @@ export function attachGroup(
     window.removeEventListener("resize", schedule);
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     frameRequest = undefined;
-    for (const node of separators.splice(0)) node.remove();
-    frame.remove();
-    host.classList.remove("cms-group", "cms-group--locked");
-    if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
+    retire();
     record.detach = undefined;
     record.paint = () => undefined;
     record.schedule = () => undefined;
@@ -177,7 +242,7 @@ export interface OutlineWatch {
   destroy(): void;
 }
 
-/** What a dashed outline overhangs its field by: `--cms-space-1`. */
+/** What a dashed outline overhangs its field by when `--cms-space-1` can't be read. */
 const FIELD_OFFSET = 4;
 const EDGE = 0.5;
 
@@ -203,26 +268,37 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
 
   let schedule: () => void = () => undefined;
   const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => schedule());
+  /** What the observer watches: the outlines of the last check, whatever their size (showing one rechecks). */
+  let watched = new Set<Element>();
+  const watch = (nodes: readonly Element[]) => {
+    if (nodes.length === watched.size && nodes.every((node) => watched.has(node))) return;
+    observer?.disconnect();
+    watched = new Set(nodes);
+    for (const node of nodes) observer?.observe(node);
+  };
 
   const outlines = (): { node: Element; box: Box }[] => {
+    const seen: Element[] = [];
     const found: { node: Element; box: Box }[] = [];
     const add = (node: Element, box: Box, grow: number) => {
-      // Observed even when it has no size yet: showing it rechecks.
-      observer?.observe(node);
+      seen.push(node);
       if (box.r - box.l <= 0 || box.b - box.t <= 0) return;
       found.push({ node, box: { l: box.l - grow, r: box.r + grow, t: box.t - grow, b: box.b + grow } });
     };
     const viewport = { left: 0, top: 0 };
     for (const node of root.querySelectorAll(".cms-field")) {
       if (node.closest(".cms-group, .cms-item")) continue;
-      add(node, boxOf(node, viewport), FIELD_OFFSET);
+      add(node, boxOf(node, viewport), cssPixels(node, "--cms-space-1", FIELD_OFFSET));
     }
-    for (const node of root.querySelectorAll(".cms-group")) {
+    for (const node of root.querySelectorAll<HTMLElement>(".cms-group")) {
       const frame = node.querySelector(":scope > .cms-group__frame");
-      const pad = frame ? Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12 : 12;
-      add(node, boxOf(node, viewport), pad);
+      const pad = frame ? cssPixels(frame, "--cms-list-pad", PAD) : PAD;
+      // The frame sits in the wrapper's padding box, reaching the pad past it.
+      const inner = paddingBox(node);
+      add(node, { l: inner.left, r: inner.left + inner.width, t: inner.top, b: inner.top + inner.height }, pad);
     }
     for (const node of root.querySelectorAll(".cms-list__frame")) add(node, boxOf(node, viewport), 0);
+    watch(seen);
     return found;
   };
 
@@ -235,7 +311,11 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
     !inside(b, a);
 
   const check = () => {
-    if (!active()) return;
+    if (!active()) {
+      // Nothing is drawn: hold nothing until editing starts again (which schedules a check).
+      watch([]);
+      return;
+    }
     const found = outlines();
     for (const [index, a] of found.entries()) {
       for (const b of found.slice(index + 1)) {
@@ -265,6 +345,7 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
     check,
     destroy() {
       observer?.disconnect();
+      watched = new Set();
       window.removeEventListener("resize", schedule);
       if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
       frameRequest = undefined;
