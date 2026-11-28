@@ -120,7 +120,12 @@ export function attach(record: FieldRecord, hint: string): void {
   };
 }
 
+/**
+ * Shows a save state on a dressed field. An undressed one (not editing) is the host's markup: nothing is written, and
+ * the mount shows the slot's state again when it dresses the field.
+ */
 export function showState(record: FieldRecord, state: string): void {
+  if (record.detach === undefined) return;
   const target = record.element;
   target.dataset.cmsState = state;
   for (const name of ["saving", "saved", "failed"]) target.classList.toggle(`cms-field--${name}`, name === state);

@@ -578,9 +578,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     outlines.schedule();
   }
 
+  /** Dresses a field and shows its slot's state, which may have changed while it was undressed (a save after Done). */
   function attachRecord(record: FieldRecord): void {
     descriptions.append(record.description);
     attach(record, strings.pressEnterToEdit);
+    const state = session.slot(record.info.key, record.info.path).state;
+    if (state !== "idle") showState(record, state);
   }
 
   /**
@@ -982,11 +985,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of added) {
       dressRecord(record);
-      // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state.
+      // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state, which
+      // `dressRecord` showed if it dressed the field.
       const committed = session.committedValue(record.info.key, record.info.path);
       if (committed) render(record, committed.value);
-      const state = session.slot(record.info.key, record.info.path).state;
-      if (state !== "idle") showState(record, state);
     }
     // Swaps take outermost lists, and a rearranged list holds none with chrome, so only the new records need dressing.
     if (editing) for (const list of addedLists) attachListRecord(list);
