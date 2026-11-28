@@ -1,7 +1,7 @@
 // Finding the editable fields and dressing them. The host's elements are borrowed, never replaced: the chrome adds
 // classes, a tabindex and an aria-describedby while editing, and `detach` puts every one of them back.
 import type { EditFieldType } from "../editable.ts";
-import { element, uniqueId } from "./dom.ts";
+import { addHostClass, element, removeHostClass, uniqueId } from "./dom.ts";
 import type { FieldInfo } from "./types.ts";
 
 export interface FieldRecord {
@@ -92,9 +92,8 @@ export function attach(record: FieldRecord, hint: string): void {
   const target = record.element;
   const previousTabindex = target.getAttribute("tabindex");
   const previousDescribedBy = target.getAttribute("aria-describedby");
-  const hadClass = target.hasAttribute("class");
   record.description.textContent = record.editable ? `${badgeText(record)} · ${hint}` : badgeText(record);
-  target.classList.add("cms-field");
+  addHostClass(target, "cms-field");
   target.classList.toggle("cms-field--locked", !record.editable);
   target.dataset.cmsState = "idle";
   if (previousTabindex === null) target.tabIndex = 0;
@@ -103,7 +102,8 @@ export function attach(record: FieldRecord, hint: string): void {
     previousDescribedBy ? `${previousDescribedBy} ${record.description.id}` : record.description.id,
   );
   record.detach = () => {
-    target.classList.remove(
+    removeHostClass(
+      target,
       "cms-field",
       "cms-field--locked",
       "cms-field--editing",
@@ -111,7 +111,6 @@ export function attach(record: FieldRecord, hint: string): void {
       "cms-field--saved",
       "cms-field--failed",
     );
-    if (!hadClass && target.classList.length === 0) target.removeAttribute("class");
     delete target.dataset.cmsState;
     if (previousTabindex === null) target.removeAttribute("tabindex");
     if (previousDescribedBy === null) target.removeAttribute("aria-describedby");

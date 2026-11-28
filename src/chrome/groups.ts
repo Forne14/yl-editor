@@ -15,8 +15,7 @@
 // - Members carry `data-cms-member` exactly while their group is drawn: attach sets it on this attach's members, retire
 //   (every detach, and the re-attach's detach first) takes it off them. The chrome's CSS and the crossing check key on it,
 //   never on being inside `.cms-group`, so a field in a drawn group that isn't a member keeps its own outline and is
-//   checked. An attribute, not a class: a field's detach drops its class attribute from what it saw at its own attach,
-//   which a class the group added before or after it would make wrong in one order or the other.
+//   checked. An attribute, so the member's class attribute stays the field's alone.
 // - Paint only places the frame and lines from the members' boxes. A member with no box (hidden at this width) gets no
 //   line beside it and isn't laid out; the frame still goes round the wrapper. The locked class is set at attach from
 //   the members' editability (G3), which only changes through a path that re-attaches.
@@ -35,8 +34,9 @@
 // - Never a group inside a group (the outermost wins), a group holding a list, a group inside a list (between the list
 //   and its items, or inside an item), an inline wrapper (computed display `inline` or `contents`: it has no box of
 //   its own to frame, G11), or a wrapper that is itself a `[data-edit-field]` (the field's classes and outline are the
-//   field's): each is dropped at scan time and its fields keep their own outlines. So the wrapper's class attribute has
-//   one chrome writer, and `hadClass` read at attach is the host's.
+//   field's): each is dropped at scan time and its fields keep their own outlines.
+// - Host classes (`cms-group`, `cms-group--locked`) go on and off through `addHostClass` / `removeHostClass` (dom.ts),
+//   which decide once per element whether its class attribute was the host's, whichever chrome part lets go last.
 // - Warnings: scan-time ones (G5, G7, G8, G11, a field wrapper) and the clipping one (a wrapper whose overflow clips its
 //   outline) are once per element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by
 //   elements x 6 kinds.
@@ -56,7 +56,7 @@
 //   (the new observations' first report), which finds the same set and stops. A check while not editing watches
 //   nothing; the mount runs one on Done, so the watch holds no node while the page is the host's. Once destroyed,
 //   `schedule` and `check` are no-ops: no frame is requested and nothing is observed again.
-import { element } from "./dom.ts";
+import { addHostClass, element, removeHostClass } from "./dom.ts";
 import {
   FRAME_PAD,
   boxOf,
@@ -207,7 +207,6 @@ export function attachGroup(
   if (members.length !== before.length || members.some((node, index) => before[index] !== node)) changed();
   if (members.length === 0) return;
 
-  const hadClass = host.hasAttribute("class");
   const childTag = host.tagName === "UL" || host.tagName === "OL" ? "li" : "div";
   const frame = element(childTag, { class: "cms-root cms-group__frame", "aria-hidden": "true" });
   const separators: HTMLElement[] = [];
@@ -226,17 +225,15 @@ export function attachGroup(
     for (const node of separators.splice(0)) node.remove();
     frame.remove();
     for (const node of members) node.removeAttribute(MEMBER);
-    host.classList.remove("cms-group", "cms-group--locked");
-    if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
+    removeHostClass(host, "cms-group", "cms-group--locked");
   };
 
   // Styled before any paint measures, so host CSS keyed on `.cms-group` is in the boxes it reads.
-  host.classList.add("cms-group");
+  addHostClass(host, "cms-group");
   host.classList.toggle(
     "cms-group--locked",
     members.every((node) => recordOf(node)?.editable !== true),
   );
-  // An attribute, not a class: a field's own detach decides whether its class attribute goes, from what it found.
   for (const node of members) node.setAttribute(MEMBER, "");
   host.append(frame);
   const clipping = clips(host);

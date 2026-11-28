@@ -3,7 +3,7 @@
 // crosses (docs/specs/artefacts/2026-11-list-editing.html). The host's elements are borrowed: the chrome adds
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
-import { KEY_ID, element, isItemKey, uniqueId } from "./dom.ts";
+import { KEY_ID, addHostClass, element, isItemKey, removeHostClass, uniqueId } from "./dom.ts";
 import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
@@ -404,16 +404,16 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   const host = record.element;
   const { info, items } = record;
   const childTag = host.tagName === "UL" || host.tagName === "OL" ? "li" : "div";
-  const hadClass = host.hasAttribute("class");
   const added: Element[] = [];
-  const itemClasses: { node: HTMLElement; hadClass: boolean }[] = [];
+  /** The items this attach put `cms-item` on. */
+  const dressedItems: HTMLElement[] = [];
   const total = items.length;
   const full = info.max !== undefined && total >= info.max;
   const atMin = total <= info.min;
   const fullReason = format(strings.listFull, { max: info.max ?? 0, plural: info.plural });
   const minReason = format(strings.listAtMin, { min: info.min, noun: info.noun });
 
-  host.classList.add("cms-list");
+  addHostClass(host, "cms-list");
   const tag = element("span", { class: "cms-list__tag" }, [
     info.max === undefined
       ? format(strings.listTagNoMax, { label: info.label, count: total })
@@ -590,8 +590,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (!handlers.actions) {
       // Still a row of the grid: a band for its line and the tint, but nothing to act with.
       const band = element("span", { class: "cms-root cms-item__band", "aria-hidden": "true" });
-      itemClasses.push({ node: item.element, hadClass: item.element.hasAttribute("class") });
-      item.element.classList.add("cms-item");
+      dressedItems.push(item.element);
+      addHostClass(item.element, "cms-item");
       item.element.append(band);
       added.push(band);
       bands.push(band);
@@ -703,8 +703,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       for (const node of buttons) node.tabIndex = node === event.target ? 0 : -1;
     });
     const band = element("span", { class: "cms-root cms-item__band", "aria-hidden": "true" });
-    itemClasses.push({ node: item.element, hadClass: item.element.hasAttribute("class") });
-    item.element.classList.add("cms-item");
+    dressedItems.push(item.element);
+    addHostClass(item.element, "cms-item");
     item.element.prepend(tools);
     item.element.append(band);
     added.push(tools, band);
@@ -769,6 +769,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   // - Nodes: the frame is appended to the host (after its items, before the Add row), so host `:first-child` rules
   //   match the same item in edit mode. Each item's toolbar stays its first child: Tab reaches it before the item's
   //   fields (#28).
+  // - Host classes on the list and its items go on and off through `addHostClass` / `removeHostClass` (dom.ts): an item
+  //   that is also a field gets its class attribute back as it was, whichever of the two lets go first.
   // - `paint` is the only writer of separators, bands' and tools' positions and the axis classes; `schedule` coalesces
   //   any number of requests into one paint per animation frame.
   const separators: HTMLElement[] = [];
@@ -895,13 +897,11 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     for (const node of separators.splice(0)) node.remove();
     for (const node of added) node.remove();
-    for (const { node, hadClass: had } of itemClasses) {
-      node.classList.remove("cms-item", "cms-item--dragging");
+    for (const node of dressedItems) {
+      removeHostClass(node, "cms-item", "cms-item--dragging");
       node.removeAttribute("data-cms-open");
-      if (!had && node.classList.length === 0) node.removeAttribute("class");
     }
-    host.classList.remove("cms-list", "cms-list--row", "cms-list--grid");
-    if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
+    removeHostClass(host, "cms-list", "cms-list--row", "cms-list--grid");
     record.detach = undefined;
     record.addButton = undefined;
     record.undoButton = undefined;
