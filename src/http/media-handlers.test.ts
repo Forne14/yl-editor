@@ -629,6 +629,16 @@ describe("numbers the store provides", () => {
     expect(response.headers.get("Retry-After")).toBe("5");
   });
 
+  test("a huge busy wait is capped to a day of whole seconds", async () => {
+    const { store } = spyStore({
+      upload: async () => {
+        throw new MediaRefusal("busy", "Busy", { retryAfterMs: 1e25 });
+      },
+    });
+    const { response } = await call(upload(), handlersWith(store));
+    expect(response.headers.get("Retry-After")).toBe("86400");
+  });
+
   test.each(unusable)("a too_large refusal with limit %s sends no limit", async (limit) => {
     const { store } = spyStore({
       upload: async () => {

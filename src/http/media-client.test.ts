@@ -400,6 +400,43 @@ describe("mediaJob", () => {
     await expect(scripted.mediaJob(field, "j")).rejects.toMatchObject({ code: "internal" });
   });
 
+  test("an infinite progress is left out, as the server does", async () => {
+    const scripted = createContentClient({
+      base: "http://host/api/content",
+      fetch: async () => new Response('{"status":"processing","progress":1e999}', { status: 200 }),
+    });
+    expect(await scripted.mediaJob(field, "j")).toEqual({ status: "processing" });
+  });
+
+  test("a Retry-After of 0 counts as absent: the body's wait applies, else none", async () => {
+    const answers = [
+      { body: { status: "processing", retryAfterMs: 10_000 }, status: 200 },
+      { body: { error: { code: "busy", message: "Busy" } }, status: 503 },
+    ];
+    const scripted = createContentClient({
+      base: "http://host/api/content",
+      fetch: async () => {
+        const next = answers.shift();
+        return new Response(JSON.stringify(next?.body), { status: next?.status, headers: { "Retry-After": "0" } });
+      },
+    });
+    expect(await scripted.mediaJob(field, "j")).toEqual({ status: "processing", retryAfterMs: 10_000 });
+    const busy = await scripted.mediaJob(field, "j").catch((error: unknown) => error);
+    expect(busy).toMatchObject({ code: "busy" });
+    expect((busy as ContentRequestError).retryAfterMs).toBeUndefined();
+  });
+
+  test.each([0, -1])("an envelope limit of %s is left out", async (limit) => {
+    const scripted = createContentClient({
+      base: "http://host/api/content",
+      fetch: async () =>
+        new Response(JSON.stringify({ error: { code: "too_large", message: "Big", limit } }), { status: 413 }),
+    });
+    const failure = await scripted.mediaJob(field, "j").catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "too_large" });
+    expect((failure as ContentRequestError).limit).toBeUndefined();
+  });
+
   test("an envelope-less 503 is busy with its Retry-After", async () => {
     const scripted = createContentClient({
       base: "http://host/api/content",
