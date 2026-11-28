@@ -285,9 +285,11 @@ export function framePad(frame: Element, origin: { left: number }): number {
   return rect.width > 0 || rect.height > 0 ? origin.left - rect.left : FRAME_PAD;
 }
 
-/** The frame's border width, from its computed style: the chrome's `--cms-outline` draws the same on every side. */
-export function frameBorder(frame: Element): number {
-  return computedPixels(getComputedStyle(frame), "border-left-width", FRAME_BORDER);
+/** The frame's border width on each side, from its computed style: a host may thicken one side only. */
+export function frameBorder(frame: Element): { left: number; right: number; top: number; bottom: number } {
+  const style = getComputedStyle(frame);
+  const side = (name: string) => computedPixels(style, `border-${name}-width`, FRAME_BORDER);
+  return { left: side("left"), right: side("right"), top: side("top"), bottom: side("bottom") };
 }
 
 /**
@@ -796,8 +798,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     frame.style.setProperty("--cms-frame-top", px(firstTop));
     frame.style.setProperty("--cms-frame-height", px((lines.at(-1)?.bottom ?? 0) + pad - firstTop));
     // Inside the outline's border on each side.
-    const innerLeft = -pad + border;
-    const innerRight = origin.width + pad - border;
+    const innerLeft = -pad + border.left;
+    const innerRight = origin.width + pad - border.right;
     lines.forEach((line, lineIndex) => {
       const above = lineIndex === 0 ? lead : (halves[lineIndex - 1] ?? 0);
       const below = halves[lineIndex] ?? pad;

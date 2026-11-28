@@ -4,10 +4,17 @@
 // custom properties (CSP-safe), and `detach` takes every one of them back out.
 //
 // Invariants:
-// - Membership: a member is a field the chrome dresses now (its record is attached) with a non-zero box, worked out
-//   afresh on every paint. Fewer than two members: the group draws nothing and the wrapper holds no `cms-group` class,
-//   so its fields look plain; the next paint with two members draws it again. Candidates (the fields the chrome knew
-//   inside the wrapper at attach) are fixed per attach; a wrapper with fewer than two is never attached.
+// - Membership (G12, option B of docs/specs/artefacts/2026-11-field-groups-live-layout.html) is decided only by
+//   `attachGroup`, which runs at the mount's scan and dress, setEditing(true), a list swap's rescan, a refresh, and the
+//   Discard of a never-published document. Members are the wrapper's `[data-edit-field]` elements the chrome dresses
+//   now (`recordOf` knows them and they are attached), not inside a `[data-edit-list]` or `[data-edit-item]`; the mount's
+//   `recordOf` already leaves out fields whose document the editor no longer has (`strings.unknownDocument`), so a
+//   Discard-deleted field never rejoins. Fewer than two members at attach: no group, no class, no node. Layout (boxes,
+//   display, host CSS keyed on `.cms-group`) never changes membership: paint has no retire path, so it can't loop.
+// - Paint only places the frame and lines from the members' boxes. A member with no box (hidden at this width) gets no
+//   line beside it and isn't laid out; the frame still goes round the wrapper. The locked class is set at attach from
+//   the members' editability (G3), which only changes through a path that re-attaches.
+// - Display (G11) is read at scan only. A wrapper that turns inline or contents later (a breakpoint) is unsupported.
 // - Measurement policy (shared with the list painter in lists.ts): never parse a CSS length in JS. An unregistered
 //   custom property computes to its unresolved token (`1rem`, `calc()`), so `--cms-list-pad` and `--cms-space-1` are
 //   never read. Geometry comes from rendered boxes: the wrapper's padding box (border box + clientLeft/clientTop,
@@ -15,28 +22,30 @@
 //   padding box (the frame's inset is -pad); the frame's border is its computed `border-*-width`, and a plain field's
 //   outline reach is its computed `outline-offset` + `outline-width` (real properties, so px). 0 is a value; only an
 //   unreadable one (no box, an empty style: an engine without layout) takes the fallback.
-// - Measure after styling: a paint adds `cms-group` and puts the frame in place before it measures anything but
-//   membership, so host CSS keyed on `.cms-group` is in the boxes it reads. Membership is decided first, from the boxes
-//   as they are, so a class that changes a member's size can't make a paint retire what it just drew.
+// - Measure after styling: attach adds `cms-group` and the frame before the first paint measures anything, so host CSS
+//   keyed on `.cms-group` is in every box a paint reads.
 // - Nodes: the frame and separators are appended to the wrapper, never prepended, so host `:first-child` and
 //   `> * + *` rules match the same elements in edit mode.
-// - Never a group inside a group (the outermost wins), a group holding a list, a group inside a list item, or an
-//   inline wrapper (computed display `inline` or `contents`: it has no box of its own to frame, G11): each is dropped
-//   at scan time and its fields keep their own outlines.
+// - Never a group inside a group (the outermost wins), a group holding a list, a group inside a list (between the list
+//   and its items, or inside an item), or an inline wrapper (computed display `inline` or `contents`: it has no box of
+//   its own to frame, G11): each is dropped at scan time and its fields keep their own outlines.
 // - Warnings: scan-time ones (G5, G7, G8, G11) and the clipping one (a wrapper whose overflow clips its outline) are
 //   once per element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 5 kinds.
-// - `paint` is the only writer of separators, positions and the group classes; `schedule` coalesces any number of
-//   requests into one paint per animation frame. `detach` cancels the frame, disconnects the observer (which watches
-//   the wrapper and the candidates, nothing else), and removes every node and class added.
-// - Crossing hand-off: a paint whose member set differs from the last paint's (drawn, retired, or a member in or out)
-//   calls `changed` once, which the mount wires to the crossing watch's `schedule`: one scheduled check per change,
-//   coalesced with any other into one check per frame. `detach` doesn't call it: every caller of detach either stops
-//   editing (no check), rescans and attaches again (which schedules), or destroys the mount.
+// - `attachGroup` is the only writer of the group classes and the frame; `paint` the only writer of separators and
+//   their positions; `schedule` coalesces any number of requests into one paint per animation frame. `detach` cancels
+//   the frame, disconnects the observer (which watches the wrapper and the members, nothing else), and removes every
+//   node and class added.
+// - Crossing hand-off: an attach whose member set differs from the one it replaces (a group drawn, gone, or a member in
+//   or out) calls `changed` once, which the mount wires to the crossing watch's `schedule`: one scheduled check per
+//   change, coalesced with any other into one check per frame. A paint never calls it. `detach` doesn't either: every
+//   caller of detach either stops editing (which runs one check that lets the watch go), rescans and attaches again
+//   (which schedules), or destroys the mount.
 // - The crossing check (`createOutlineWatch`) only reads boxes, and warns once per pair of elements per mount; it never
 //   changes the page. On each check its observer watches exactly the current outlines: it is disconnected and
 //   re-observed only when that set changed, so a removed node isn't held and a recheck triggers at most one more check
-//   (the new observations' first report), which finds the same set and stops. Once destroyed, `schedule` and `check`
-//   are no-ops: no frame is requested and nothing is observed again.
+//   (the new observations' first report), which finds the same set and stops. A check while not editing watches
+//   nothing; the mount runs one on Done, so the watch holds no node while the page is the host's. Once destroyed,
+//   `schedule` and `check` are no-ops: no frame is requested and nothing is observed again.
 import { element } from "./dom.ts";
 import {
   FRAME_PAD,
@@ -53,6 +62,8 @@ import {
 
 export interface GroupRecord {
   element: HTMLElement;
+  /** The fields the last attach made members; empty while nothing is drawn. Only `attachGroup` and detach set it. */
+  members?: readonly HTMLElement[];
   detach?: () => void;
   /** Draws the group now. Nothing until it is attached. */
   paint: () => void;
@@ -99,6 +110,16 @@ export function scanGroups(root: HTMLElement, warn: Warnings): GroupRecord[] {
       );
       continue;
     }
+    // Between a list and its items: the list's frame already goes round everything in it.
+    const outer = target.parentElement?.closest("[data-edit-list]");
+    if (outer) {
+      warn(
+        target,
+        "item",
+        `is inside the list ${describe(outer)}, so it is ignored: the list's fields already share the list's outline.`,
+      );
+      continue;
+    }
     const list = target.matches("[data-edit-list]") ? target : target.querySelector("[data-edit-list]");
     if (list) {
       warn(target, "list", `holds the list ${describe(list)}, so it is ignored: its fields keep their own outlines.`);
@@ -138,10 +159,10 @@ function clips(node: Element): string | undefined {
 }
 
 /**
- * Draws the group: a frame, and a line between its members from their boxes. `recordOf` answers for a field element
- * the chrome knows (`editable` false for a locked one, `detach` set while it is dressed); an element it doesn't know
- * isn't a candidate. `changed` is called once by each paint that draws a different set of members than the last one
- * (drawn, retired, or a member in or out): the outlines on the page moved.
+ * Decides the group's members and draws it: a frame, and a line between its members from their boxes. `recordOf`
+ * answers for a field element the chrome knows (`editable` false for a locked one, `detach` set while it is dressed);
+ * an element it doesn't know, or one not dressed now, isn't a member. `changed` is called once when this attach's
+ * members differ from the ones it replaces (a group drawn, gone, or a member in or out): the outlines on the page moved.
  */
 export function attachGroup(
   record: GroupRecord,
@@ -149,12 +170,16 @@ export function attachGroup(
   warn: Warnings,
   changed: () => void,
 ): void {
+  const before = record.members ?? [];
   record.detach?.();
   const host = record.element;
-  const candidates = [...host.querySelectorAll<HTMLElement>("[data-edit-field]")].filter(
-    (node) => !node.closest(".cms-root") && recordOf(node) !== undefined,
+  const found = [...host.querySelectorAll<HTMLElement>("[data-edit-field]")].filter(
+    (node) => !node.closest(".cms-root, [data-edit-list], [data-edit-item]") && recordOf(node)?.detach !== undefined,
   );
-  if (candidates.length < 2) return;
+  const members = found.length < 2 ? [] : found;
+  record.members = members;
+  if (members.length !== before.length || members.some((node, index) => before[index] !== node)) changed();
+  if (members.length === 0) return;
 
   const hadClass = host.hasAttribute("class");
   const childTag = host.tagName === "UL" || host.tagName === "OL" ? "li" : "div";
@@ -178,51 +203,39 @@ export function attachGroup(
     if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
   };
 
-  /** The members the last paint drew; empty while retired. */
-  let drawn: HTMLElement[] = [];
-  const settle = (members: HTMLElement[]) => {
-    const same = members.length === drawn.length && members.every((node, index) => drawn[index] === node);
-    drawn = members;
-    if (!same) changed();
-  };
+  // Styled before any paint measures, so host CSS keyed on `.cms-group` is in the boxes it reads.
+  host.classList.add("cms-group");
+  host.classList.toggle(
+    "cms-group--locked",
+    members.every((node) => recordOf(node)?.editable !== true),
+  );
+  host.append(frame);
+  const clipping = clips(host);
+  if (clipping) {
+    warn(
+      host,
+      "clip",
+      `has overflow: ${clipping}, so it clips its group's outline, which sits --cms-list-pad outside it. Let it overflow, or give the group room inside an element that clips.`,
+    );
+  }
 
   const hasBox = (box: Box) => box.r - box.l > 0 && box.b - box.t > 0;
-  const viewport = { left: 0, top: 0 };
+  /** Places the lines from the members' boxes now. It never changes who is a member or whether the group is drawn. */
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
-    // Membership from the boxes as they are; everything else is measured once the group's styling is on.
-    const present = candidates.filter((node) => recordOf(node)?.detach !== undefined && hasBox(boxOf(node, viewport)));
-    if (present.length < 2) {
-      retire();
-      settle([]);
-      return;
-    }
-    host.classList.add("cms-group");
-    host.classList.toggle(
-      "cms-group--locked",
-      present.every((node) => recordOf(node)?.editable !== true),
-    );
-    if (frame.parentNode !== host) host.append(frame);
-    const clipping = clips(host);
-    if (clipping) {
-      warn(
-        host,
-        "clip",
-        `has overflow: ${clipping}, so it clips its group's outline, which sits --cms-list-pad outside it. Let it overflow, or give the group room inside an element that clips.`,
-      );
-    }
     const origin = paddingBox(host);
-    const members = present.map((node) => ({ node, box: boxOf(node, origin) })).filter(({ box }) => hasBox(box));
+    // A member hidden at this width has no box: no line beside it, and the frame still goes round the wrapper.
+    const shown = members.map((node) => ({ node, box: boxOf(node, origin) })).filter(({ box }) => hasBox(box));
     const pad = framePad(frame, origin);
     const border = frameBorder(frame);
     // Inside the frame's border.
-    const edge = { left: -pad + border, right: origin.width + pad - border };
-    const top = -pad + border;
-    const bottom = origin.height + pad - border;
+    const edge = { left: -pad + border.left, right: origin.width + pad - border.right };
+    const top = -pad + border.top;
+    const bottom = origin.height + pad - border.bottom;
     // A line is fields sharing a stretch of height; one on top of another are lines of their own (a column).
     const { lines } = layOut(
-      members.map((cell) => cell.box),
-      members,
+      shown.map((cell) => cell.box),
+      shown,
     );
     lines.forEach((line, index) => {
       const previous = lines[index - 1];
@@ -239,7 +252,6 @@ export function attachGroup(
       for (const x of inside.vertical) separator("v", x, start, to - start);
       for (const { x, y, w } of inside.horizontal) separator("h", x, y, w);
     });
-    settle(present);
   };
 
   let frameRequest: number | undefined;
@@ -250,11 +262,11 @@ export function attachGroup(
       paint();
     });
   };
-  // The wrapper and the candidates: a candidate that gets a box again (shown, re-rendered) brings the group back.
+  // The wrapper and the members: a member that moves, or is shown or hidden, moves the lines.
   const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(schedule);
   if (observer) {
     observer.observe(host);
-    for (const node of candidates) observer.observe(node);
+    for (const node of members) observer.observe(node);
   }
   // A viewport change can move the pad through a media query without resizing any observed box.
   window.addEventListener("resize", schedule);
@@ -268,6 +280,7 @@ export function attachGroup(
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     frameRequest = undefined;
     retire();
+    record.members = [];
     record.detach = undefined;
     record.paint = () => undefined;
     record.schedule = () => undefined;
