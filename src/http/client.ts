@@ -7,24 +7,58 @@ import {
   type DocumentsResponse,
   type DocumentSummary,
   type ErrorCode,
+  type MediaJobResponse,
+  type MediaUploadResult,
   type PublishDueResponse,
   type WireArrayOp,
   type WireDocument,
+  type WireMediaField,
+  type WireMediaRender,
   type WireRevision,
 } from "./wire-types.ts";
 
-/** A non-2xx response from the content handlers, decoded from its error envelope. */
+/** A non-2xx response from the content handlers, decoded from its error envelope (or, without one, from its status). */
 export class ContentRequestError extends Error {
+  /** From a `Retry-After` header, in milliseconds (`busy`). */
+  readonly retryAfterMs?: number;
+  /** From a `too_large` envelope: the server's limit in bytes. */
+  readonly limit?: number;
   constructor(
     readonly status: number,
     readonly code: ErrorCode,
     message: string,
     readonly issues?: unknown,
     readonly current?: WireDocument,
+    details: { retryAfterMs?: number; limit?: number } = {},
   ) {
     super(message);
     this.name = "ContentRequestError";
+    if (details.retryAfterMs !== undefined) this.retryAfterMs = details.retryAfterMs;
+    if (details.limit !== undefined) this.limit = details.limit;
   }
+}
+
+/** An upload progress event, as `XMLHttpRequest` and its `upload` fire it. */
+export interface UploadXhrProgress {
+  loaded: number;
+  total: number;
+  lengthComputable: boolean;
+}
+
+interface UploadXhrTarget {
+  addEventListener(type: string, listener: (event: UploadXhrProgress) => void): void;
+}
+
+/** The part of `XMLHttpRequest` `uploadMedia` uses, so tests can pass their own. */
+export interface UploadXhr extends UploadXhrTarget {
+  open(method: string, url: string): void;
+  setRequestHeader(name: string, value: string): void;
+  send(body: Blob): void;
+  abort(): void;
+  readonly status: number;
+  readonly responseText: string;
+  getResponseHeader(name: string): string | null;
+  readonly upload: UploadXhrTarget;
 }
 
 export interface ContentClientOptions {
@@ -32,6 +66,19 @@ export interface ContentClientOptions {
   base?: string;
   /** Default: the global `fetch`. */
   fetch?: typeof fetch;
+  /** Makes the request `uploadMedia` sends. Default: `new XMLHttpRequest()`, the only API with upload progress in every engine. */
+  xhr?: () => UploadXhr;
+}
+
+/** A file to upload: a `File`, or any `Blob` with a name. */
+export type MediaUploadFile = Blob & { readonly name: string };
+
+export interface MediaUploadOptions {
+  /** Bytes sent so far; `total` is null when the browser can't tell. */
+  onProgress?: (progress: { loaded: number; total: number | null }) => void;
+  /** Every byte is sent; the server's answer is still to come. */
+  onSent?: () => void;
+  signal?: AbortSignal;
 }
 
 export interface ContentClient {
@@ -55,6 +102,16 @@ export interface ContentClient {
   rename(key: string, slug: string): Promise<WireDocument>;
   revisions(key: string): Promise<WireRevision[]>;
   create(type: string, slug: string, payload: unknown): Promise<WireDocument>;
+  /**
+   * Uploads `file` for a field over `XMLHttpRequest`, streaming it from disk. Rejects with a `ContentRequestError` for
+   * a non-2xx or unreadable answer, a `TypeError` when the network fails, and the signal's reason when it aborts.
+   */
+  uploadMedia(field: WireMediaField, file: MediaUploadFile, options?: MediaUploadOptions): Promise<MediaUploadResult>;
+  /** One poll of an upload's job. `progress` is clamped to 0..1; a `Retry-After` header wins over `retryAfterMs`. */
+  mediaJob(field: WireMediaField, job: string, options?: { signal?: AbortSignal }): Promise<MediaJobResponse>;
+  cancelMediaJob(field: WireMediaField, job: string, options?: { signal?: AbortSignal }): Promise<void>;
+  /** The render of each id the store knows, gated by `canEdit` on `key`. At most 100 ids per request; more are split. */
+  media(key: string, ids: readonly string[], options?: { signal?: AbortSignal }): Promise<Map<string, WireMediaRender>>;
 }
 
 async function decodeError(response: Response): Promise<ContentRequestError> {
@@ -113,5 +170,9 @@ export function createContentClient(options: ContentClientOptions = {}): Content
     revisions: async (key) =>
       (await send<{ revisions: WireRevision[] }>("GET", `revisions?${new URLSearchParams({ key })}`)).revisions,
     create: (type, slug, payload) => post("create", { type, slug, payload }),
+    uploadMedia: () => Promise.reject(new Error("not implemented")),
+    mediaJob: () => Promise.reject(new Error("not implemented")),
+    cancelMediaJob: () => Promise.reject(new Error("not implemented")),
+    media: () => Promise.reject(new Error("not implemented")),
   };
 }

@@ -111,6 +111,16 @@ export interface WireMedia {
   render: WireMediaRender;
 }
 
+/** The field an upload is for. Same shape as the core's `MediaFieldRef`. */
+export interface WireMediaField {
+  key: string;
+  path: string;
+}
+
+/** What the client's `uploadMedia` resolves to: the `201` or the `202`, told apart by `status`. */
+export type MediaUploadResult =
+  { status: "ready"; media: WireMedia } | { status: "processing"; job: string; retryAfterMs?: number };
+
 /** Body of a `201` from `POST media`: stored now. */
 export interface MediaUploadReadyResponse {
   media: WireMedia;

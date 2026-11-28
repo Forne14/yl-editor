@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { ArrayOpSchema, type ArrayOp, type MediaRender, type StoredDocument } from "../types.ts";
+import { ArrayOpSchema, type ArrayOp, type MediaFieldRef, type MediaRender, type StoredDocument } from "../types.ts";
 import {
   ERROR_STATUS,
   type ErrorCode,
   type WireArrayOp,
   type WireDocument,
+  type WireMediaField,
   type WireMediaRender,
 } from "./wire-types.ts";
 
@@ -93,5 +94,6 @@ const wireMatchesCore: [
   Same<WireDocument, StoredDocument>,
   Same<WireArrayOp, ArrayOp>,
   Same<WireMediaRender, MediaRender>,
-] = [true, true, true];
+  Same<WireMediaField, MediaFieldRef>,
+] = [true, true, true, true];
 void wireMatchesCore;
