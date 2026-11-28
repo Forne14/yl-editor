@@ -19,8 +19,8 @@ publishes it, with drafts and revisions underneath.
 | `@yl/editor/richtext`          | The rich text widget, built on TipTap (optional peer dependencies); see `docs/chrome.md`                                  |
 
 The core depends on zod and TypeScript only. Frameworks, databases, media storage and rich-text widgets stay the
-host's concern: the package ships the `MediaStore` interface and `MediaVariantSchema` but no implementation, so the
-host implements the store. The chrome has no default `media` widget, so a `media` field needs one the host registers.
+host's concern: the package ships the `MediaStore` interface, its contract suite (`runMediaStoreContract`) and the
+media routes, but no storage, so the host implements the store over its own storage (see `docs/store.md`).
 
 ## How the pieces fit
 

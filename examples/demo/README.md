@@ -36,21 +36,23 @@ the cookie you are on `default`. Restarting the server forgets everything.
 Only with `DEMO_TEST_HOOKS=1`, and the server listens on 127.0.0.1 only. They act on the request's tenant. Use them
 through `e2e/fixtures.ts` rather than directly.
 
-| Route                       | Does                                                                       |
-| --------------------------- | -------------------------------------------------------------------------- |
-| `POST /__test/reset`        | `{ empty? }`: the default seed again, or an empty database                 |
-| `POST /__test/drop`         | Forgets the tenant                                                         |
-| `POST /__test/role`         | `{ role }`: sets the `demo-role` cookie                                    |
-| `GET /__test/sign-in?role=` | Same, then redirects to `/?edit=1`                                         |
-| `GET /__test/whoami`        | `{ tenant, role }`                                                         |
-| `POST /__test/seed`         | `{ documents: [...] }`: raw SQL upsert, payloads as stored text, no checks |
-| `POST /__test/delete`       | `{ keys }`                                                                 |
-| `GET /__test/doc?key=`      | The row as stored, with its revisions; `404` when absent                   |
-| `GET /__test/csp-reports`   | CSP violation reports sent to `/__csp-report` for this tenant              |
-| `GET /__test/changes`       | Successful writes seen by the handlers' `onChange`                         |
-| `POST /__test/clock`        | `{ now }`: fixes the store clock (ISO), or `null` for real time            |
-| `GET /__test/csp-violation` | A page with an inline `style` attribute, for the guard's own test          |
-| `GET /__test/console-error` | A page that logs a console error and throws, for the guard's own test      |
+| Route                       | Does                                                                                |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `POST /__test/reset`        | `{ empty? }`: the default seed again, or an empty database                          |
+| `POST /__test/drop`         | Forgets the tenant                                                                  |
+| `POST /__test/role`         | `{ role }`: sets the `demo-role` cookie                                             |
+| `GET /__test/sign-in?role=` | Same, then redirects to `/?edit=1`                                                  |
+| `GET /__test/whoami`        | `{ tenant, role }`                                                                  |
+| `POST /__test/seed`         | `{ documents: [...] }`: raw SQL upsert, payloads as stored text, no checks          |
+| `POST /__test/delete`       | `{ keys }`                                                                          |
+| `GET /__test/doc?key=`      | The row as stored, with its revisions; `404` when absent                            |
+| `GET /__test/csp-reports`   | CSP violation reports sent to `/__csp-report` for this tenant                       |
+| `POST /__test/media`        | Switches for the tenant's test media store (202, ready after N polls, failed, busy) |
+| `GET /media/<id>`           | A file the test media store holds                                                   |
+| `GET /__test/changes`       | Successful writes seen by the handlers' `onChange`                                  |
+| `POST /__test/clock`        | `{ now }`: fixes the store clock (ISO), or `null` for real time                     |
+| `GET /__test/csp-violation` | A page with an inline `style` attribute, for the guard's own test                   |
+| `GET /__test/console-error` | A page that logs a console error and throws, for the guard's own test               |
 
 ## Timeouts
 
