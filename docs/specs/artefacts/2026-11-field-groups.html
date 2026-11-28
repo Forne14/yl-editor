@@ -339,6 +339,30 @@
         margin-top: 0.5rem;
         font-size: 0.875rem;
       }
+      .mock-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem 1.5rem;
+      }
+      .mock-gap {
+        margin: 3rem 0 2.5rem;
+      }
+      /* G8 B: the honoured group's frame drawn just inside the item's cell. */
+      .mock-row > .cms-group__frame {
+        inset: -3px -6px;
+      }
+      .mock-row {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 1.5rem;
+      }
+      .byline--nested {
+        margin-top: 1.5rem;
+      }
+      .site p.near {
+        margin-top: 0.75rem;
+      }
       .prox-byline {
         margin-top: 1.25rem;
       }
@@ -438,8 +462,8 @@
         <div>
           <h1 class="doc-title">Field groups</h1>
           <p class="doc-sub">
-            #44 · Chrome: group close plain fields in one outline (no overlapping dashed outlines). Prototype for
-            approval, 2026-11-28.
+            #44 · Chrome: group close plain fields in one outline (no overlapping dashed outlines). Prototype; G1–G4
+            approved 2026-11-28, G5–G10 asked.
           </p>
         </div>
         <button type="button" class="theme-btn" id="theme" aria-pressed="false">Dark theme</button>
@@ -448,8 +472,9 @@
       <p>
         Your rule from 2026-11-11: <b>no overlapping dashed outlines</b>. Lists already follow it (#28): one outline,
         thin dashed lines between items and fields. Plain fields outside lists still get one outline each, and on the
-        demo page those cross. This page proposes the same treatment for plain fields and asks four rulings, listed at
-        the end. Everything below is live: hover, click and Tab through the fields.
+        demo page those cross. This page proposes the same treatment for plain fields. G1–G4 are ruled; G5–G10 come from
+        walking through the build and are asked, each with what it looks like. Everything below is live: hover, click
+        and Tab through the fields.
       </p>
 
       <!-- ===================================================================================================== -->
@@ -529,8 +554,8 @@
       <!-- ===================================================================================================== -->
       <h2 class="doc-h">3 · Ruling G1: how a group is declared</h2>
       <div class="options">
-        <div class="option rec">
-          <h3>A · A wrapper attribute<span class="rec-tag">Recommended</span></h3>
+        <div class="option">
+          <h3>A · A wrapper attribute</h3>
           <p>
             The host marks the element that holds the fields. Every field inside it (not inside a list) is one group.
           </p>
@@ -574,8 +599,8 @@
             </div>
           </div>
         </div>
-        <div class="option">
-          <h3>C · Attribute, plus a warning</h3>
+        <div class="option rec">
+          <h3>C · Attribute, plus a warning<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             A, and on mount the chrome checks the outlines of fields left ungrouped. When two would cross,
             <code>console.warn</code> names both fields and suggests <code>data-edit-group</code>. Nothing on screen
@@ -591,10 +616,7 @@ with data-edit-group.</pre>
             <li>The host finds the problem in development, as with an unkeyed list item today.</li>
             <li>Checked once per mount and on resize; no layout cost while editing.</li>
           </ul>
-          <p class="muted">
-            Recommended as A + C together: an explicit attribute, and the warning so nobody ships crossing outlines by
-            accident.
-          </p>
+          <p class="muted">What the warning checks is G10.</p>
         </div>
       </div>
 
@@ -603,7 +625,7 @@ with data-edit-group.</pre>
       <p class="muted">Lists have a tag on their top edge ("Artists · 3 of 6"). A group has no count.</p>
       <div class="options">
         <div class="option rec">
-          <h3>A · No tag; each field keeps its badge<span class="rec-tag">Recommended</span></h3>
+          <h3>A · No tag; each field keeps its badge<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             Hovering or focusing a field shows its badge, as today. The frame says "these belong together"; the badge
             says which one you're on. No new text. The badge sits just above its field, so it covers the line above it,
@@ -644,7 +666,7 @@ with data-edit-group.</pre>
       </p>
       <div class="options">
         <div class="option rec">
-          <h3>A · Frame stays accent; the locked field is marked<span class="rec-tag">Recommended</span></h3>
+          <h3>A · Frame stays accent; the locked field is marked<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             The frame is muted only when every field in it is locked. A locked field shows a thin muted dashed outline
             on hover and its muted badge with the reason, as today. Clicking it shows the reason as a toast.
@@ -693,12 +715,12 @@ with data-edit-group.</pre>
       <h2 class="doc-h">6 · Ruling G4: groups and lists</h2>
       <div class="options">
         <div class="option rec">
-          <h3>A · A list is never inside a group<span class="rec-tag">Recommended</span></h3>
+          <h3>A · A list is never inside a group<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
-            Fields inside a <code>data-edit-list</code> belong to the list, never to a group around it. A group that
-            wraps a list keeps only its own plain fields, and its lines stop at the list's frame rather than crossing
-            it. If that leaves one field, it's drawn as a plain field. Nested groups: the innermost wins, and
-            <code>console.warn</code> says so.
+            Fields inside a <code>data-edit-list</code> belong to the list, never to a group around it. What happens to
+            a group whose wrapper holds a list is G5; a group inside a group is G7. (The first draft said "innermost
+            wins" and "lines stop at the list's frame"; both still drew a dashed outline around another, so they are
+            replaced by G5 and G7.)
           </p>
         </div>
         <div class="option">
@@ -711,36 +733,331 @@ with data-edit-group.</pre>
       </div>
 
       <!-- ===================================================================================================== -->
-      <h2 class="doc-h">Rulings asked</h2>
+      <h2 class="doc-h">7 · Ruling G5: a group wrapper that holds a list</h2>
+      <p class="muted">
+        The host wraps a heading, a list and a closing line in one <code>data-edit-group</code>. By G4 the list's fields
+        stay the list's. What is left of the group?
+      </p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · The group is dropped<span class="rec-tag">Recommended</span></h3>
+          <p>
+            Its fields get plain outlines, as if the attribute weren't there, and <code>console.warn</code> names the
+            wrapper. No dashed outline goes around another.
+          </p>
+          <pre>
+[yl-editor] data-edit-group on
+&lt;section.about&gt; holds a list
+(pages/team/list:members).
+The group is ignored.</pre>
+          <div class="preview">
+            <div class="site">
+              <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+              <div class="mock-gap">
+                <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                  <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                  <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                  <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                  <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+                </div>
+              </div>
+              <p class="cms-field" tabindex="0" data-label="Closing line">Come and say hello.</p>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · The frame shrinks to the group's own fields</h3>
+          <p>
+            The frame goes around just the heading and the closing line. When they sit above and below the list, that
+            box contains the list, so its frame is drawn around the list's frame: the nesting the rule forbids. It only
+            works when the group's fields are all on one side of the list.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group data-frame="fields">
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="mock-gap">
+                  <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                    <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                    <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                    <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                    <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+                  </div>
+                </div>
+                <p class="cms-field" tabindex="0" data-label="Closing line">Come and say hello.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">8 · Ruling G6: what the frame goes around</h2>
+      <p class="muted">The wrapper can hold markup that isn't editable, like the facts list's labels.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · The wrapper's box<span class="rec-tag">Recommended</span></h3>
+          <p>
+            The frame is the wrapper element's box plus the 12px padding, as a list's frame is its host's. Labels, icons
+            or an image inside the wrapper sit inside the frame, and lines run its full width. The host decides the
+            frame by choosing the wrapper.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <dl class="facts">
+                  <dt>Open</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Open">Live</dd>
+                  <dt>Status</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Status">Taking orders</dd>
+                  <dt>Price</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Price">4.50</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Only the fields' boxes</h3>
+          <p>
+            The frame is the smallest box around the fields. Here the labels fall outside and the lines no longer pass
+            under them, so a row's label and value look split. The frame moves whenever a value's length changes.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group data-frame="fields">
+                <dl class="facts">
+                  <dt>Open</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Open">Live</dd>
+                  <dt>Status</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Status">Taking orders</dd>
+                  <dt>Price</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Price">4.50</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">9 · Ruling G7: a group inside another group</h2>
+      <p class="muted">A section is a group, and its byline is wrapped in a group of its own.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · The outermost group wins<span class="rec-tag">Recommended</span></h3>
+          <p>
+            The inner wrapper's fields join the outer group: one frame, a line under the heading, a line between author
+            and date. <code>console.warn</code> names the inner wrapper as ignored.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="byline">
+                  <span class="cms-field" tabindex="0" data-label="Author">Maya Okafor</span>
+                  <span class="cms-field" tabindex="0" data-label="Date">14 Nov 2026</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · The innermost group wins</h3>
+          <p>
+            Each group draws its own frame, so the byline's frame sits inside the section's: a dashed outline inside a
+            dashed outline.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="byline byline--nested cms-group" data-group>
+                  <span class="cms-field" tabindex="0" data-label="Author">Maya Okafor</span>
+                  <span class="cms-field" tabindex="0" data-label="Date">14 Nov 2026</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">10 · Ruling G8: <code>data-edit-group</code> inside a list item</h2>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · Ignored, with a warning<span class="rec-tag">Recommended</span></h3>
+          <p>
+            The item already draws a line between each of its fields, so the list looks exactly as it does today.
+            <code>console.warn</code> names the wrapper.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Honoured</h3>
+          <p>
+            A frame is drawn inside the item's cell, around two of its fields: an outline inside the list's outline.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                <div class="cms-group mock-row" data-group>
+                  <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                  <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                </div>
+                <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">11 · Ruling G9: the helper (public surface)</h2>
+      <p class="muted">Nothing changes on screen; this is what a site developer writes.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · On the document's helper, like <code>.list()</code><span class="rec-tag">Recommended</span></h3>
+          <pre>
+const about = editable(
+  editing ? "pages/about" : undefined,
+);
+
+&lt;section ${attrs(about.group())}&gt;
+  &lt;h2 ${attrs(about("title", "text"))}&gt;…
+  &lt;p ${attrs(footer("line", "text"))}&gt;…
+&lt;/section&gt;</pre>
+          <ul>
+            <li>
+              Renders <code>data-edit-group</code> only in edit mode, like every other helper, so visitors never get the
+              attribute.
+            </li>
+            <li>
+              It hangs off one document's helper, but the group can hold fields of any document (the footer line above).
+              The docs say so.
+            </li>
+          </ul>
+        </div>
+        <div class="option">
+          <h3>B · A static <code>editable.group()</code></h3>
+          <pre>&lt;section ${attrs(editing ? editable.group() : {})}&gt;</pre>
+          <ul>
+            <li>Not tied to a document.</li>
+            <li>
+              It can't know whether the page is in edit mode, so the host writes the condition or ships the attribute to
+              every visitor.
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">12 · Ruling G10: what the warning (G1 C) checks</h2>
+      <p class="muted">
+        A group frame sits 12px outside its wrapper, so a plain field just below it can have an outline that crosses the
+        frame.
+      </p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · Any two dashed outlines that cross<span class="rec-tag">Recommended</span></h3>
+          <p>
+            Field and field, field and group frame, field and list frame, group and list, group and group. Each crossing
+            pair is warned once per mount; it is checked again on resize but never repeated. Fields with no size
+            (hidden) are skipped. The case below warns.
+          </p>
+          <pre>
+[yl-editor] The outline of
+"settings/site/footer" crosses
+the group on &lt;section.about&gt;.
+Move it into the group, or
+add space between them.</pre>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <p class="cms-field" tabindex="0" data-label="About text">Three bakers and one oven since 2009.</p>
+              </div>
+              <p class="cms-field near" tabindex="0" data-label="Footer">© 2026 The Bakehouse</p>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Only two ungrouped fields</h3>
+          <p>
+            The literal G1 C wording. Cheaper to check, but the case on the left passes in silence: the footer's outline
+            crosses the group's frame and nothing tells the host.
+          </p>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">Rulings</h2>
       <table class="rulings">
         <tbody>
           <tr>
             <th>G1</th>
             <td>
-              How a group is declared. <b>Recommended: A + C</b>, a <code>data-edit-group</code> wrapper
-              (<code>editable.group()</code>) plus a <code>console.warn</code> when ungrouped outlines cross.
+              <b>Ruled C</b>: a <code>data-edit-group</code> wrapper, plus a <code>console.warn</code> when outlines
+              cross.
             </td>
           </tr>
           <tr>
             <th>G2</th>
-            <td>Group tag. <b>Recommended: A</b>, no tag; field badges as today. No new chrome text.</td>
+            <td><b>Ruled A</b>: no tag; field badges as today. No new chrome text.</td>
           </tr>
           <tr>
             <th>G3</th>
             <td>
-              Locked field in a group. <b>Recommended: A</b>, it stays in the group; frame muted only when all fields
-              are locked.
+              <b>Ruled A</b>: a locked field stays in its group; the frame is muted only when every field is locked.
             </td>
           </tr>
           <tr>
             <th>G4</th>
-            <td>Groups and lists. <b>Recommended: A</b>, list fields never join a group; innermost group wins.</td>
+            <td><b>Ruled A</b>: list fields never join a group.</td>
+          </tr>
+          <tr>
+            <th>G5</th>
+            <td>Wrapper holding a list. <b>Recommended: A</b>, the group is dropped, fields plain, a warning.</td>
+          </tr>
+          <tr>
+            <th>G6</th>
+            <td>What the frame goes around. <b>Recommended: A</b>, the wrapper's box plus 12px.</td>
+          </tr>
+          <tr>
+            <th>G7</th>
+            <td>Group in a group. <b>Recommended: A</b>, the outermost wins, a warning names the inner one.</td>
+          </tr>
+          <tr>
+            <th>G8</th>
+            <td>Group in a list item. <b>Recommended: A</b>, ignored, a warning.</td>
+          </tr>
+          <tr>
+            <th>G9</th>
+            <td>Helper. <b>Recommended: A</b>, <code>editable(doc).group()</code>, attribute only in edit mode.</td>
+          </tr>
+          <tr>
+            <th>G10</th>
+            <td>Warning scope. <b>Recommended: A</b>, any two dashed outlines that cross, once per pair per mount.</td>
           </tr>
         </tbody>
       </table>
       <p class="muted">
-        Not changing: fields outside a group, list frames, the badge, keyboard order (Tab still visits each field in
-        page order; the group adds no stop), and the CSP rule (positions only through custom properties).
+        Settled by this page, so a bug if review finds otherwise: no tint on hover, no Tab stop for a group, a group
+        left with one field drawn as a plain field, the list tokens (<code>--cms-list-pad</code>,
+        <code>--cms-list-line</code>) reused, and <code>cms-group</code>, <code>cms-group__frame</code>,
+        <code>cms-group__sep</code> documented as styling hooks. Not changing: fields outside a group, list frames, the
+        badge, keyboard order (Tab still visits each field in page order; the group adds no stop), and the CSP rule
+        (positions only through custom properties).
       </p>
     </div>
 
@@ -804,7 +1121,8 @@ with data-edit-group.</pre>
           tag.textContent = group.dataset.tag;
           frame.append(tag);
         }
-        const fields = [...group.querySelectorAll(".cms-field")];
+        // A group's own fields: not those of a group (or mock list) inside it.
+        const fields = [...group.querySelectorAll(".cms-field")].filter((f) => f.closest("[data-group]") === group);
         group.classList.toggle(
           "cms-group--locked",
           fields.every((f) => f.hasAttribute("data-locked")),
@@ -822,13 +1140,26 @@ with data-edit-group.</pre>
           } else rows.push({ t: b.t, b: b.b, cells: [b] });
         }
         rows.sort((a, b) => a.t - b.t);
-        const innerLeft = -pad + 2;
-        const width = origin.width + 2 * pad - 4;
+        // The frame: the wrapper's box (default), or only the fields' boxes (data-frame="fields", G5 B and G6 B).
+        let u = { t: 0, b: origin.height, l: 0, r: origin.width };
+        if (group.dataset.frame === "fields" && boxes.length) {
+          u = boxes.reduce(
+            (a, b) => ({ t: Math.min(a.t, b.t), b: Math.max(a.b, b.b), l: Math.min(a.l, b.l), r: Math.max(a.r, b.r) }),
+            { t: Infinity, b: -Infinity, l: Infinity, r: -Infinity },
+          );
+          frame.style.setProperty("inset", "auto");
+          frame.style.setProperty("top", px(u.t - pad));
+          frame.style.setProperty("left", px(u.l - pad));
+          frame.style.setProperty("width", px(u.r - u.l + 2 * pad));
+          frame.style.setProperty("height", px(u.b - u.t + 2 * pad));
+        }
+        const innerLeft = u.l - pad + 2;
+        const width = u.r - u.l + 2 * pad - 4;
         rows.forEach((row, i) => {
           const prev = rows[i - 1];
           const next = rows[i + 1];
-          const top = prev ? (prev.b + row.t) / 2 : -pad + 2;
-          const bottom = next ? (row.b + next.t) / 2 : origin.height + pad - 2;
+          const top = prev ? (prev.b + row.t) / 2 : u.t - pad + 2;
+          const bottom = next ? (row.b + next.t) / 2 : u.b + pad - 2;
           if (prev) add(group, "h", innerLeft, top, width);
           row.cells.sort((a, b) => a.l - b.l);
           row.cells.forEach((c, j) => {
