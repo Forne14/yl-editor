@@ -157,6 +157,15 @@
   outline-offset: var(--cms-space-1);
 }
 
+/* The focus rule's `outline` shorthand comes last and would paint the accent; keep the state's colour while focused. */
+:where(.cms-field--saving:focus-visible) {
+  outline-color: var(--cms-warning);
+}
+
+:where(.cms-field--failed:focus-visible) {
+  outline-color: var(--cms-danger);
+}
+
 :where(.cms-input) {
   min-height: var(--cms-control-h);
   width: 100%;
@@ -700,6 +709,14 @@
   outline-offset: calc(-3 * var(--cms-space-1) / 4);
 }
 
+:where(.cms-item .cms-field--saving:focus-visible) {
+  outline-color: var(--cms-warning);
+}
+
+:where(.cms-item .cms-field--failed:focus-visible) {
+  outline-color: var(--cms-danger);
+}
+
 /* A group (#44): the list frame's look for plain fields inside a [data-edit-group] wrapper. One dashed outline, the
  * wrapper's box plus --cms-list-pad; thin dashed lines between the fields, set by the chrome from the fields' boxes. Its
  * members ([data-cms-member], set by the chrome while the group is drawn) lose their own outline; their states are solid
@@ -776,6 +793,14 @@
 :where(.cms-field[data-cms-member]:focus-visible) {
   outline: medium solid var(--cms-accent);
   outline-offset: calc(-3 * var(--cms-space-1) / 4);
+}
+
+:where(.cms-field--saving[data-cms-member]:focus-visible) {
+  outline-color: var(--cms-warning);
+}
+
+:where(.cms-field--failed[data-cms-member]:focus-visible) {
+  outline-color: var(--cms-danger);
 }
 
 /* An item's toolbar sits on its top line, centred on it: at the right of the outline in a column, at the item's top left
