@@ -13,8 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   element with `editable(docKey).group()` (`data-edit-group`, set only in edit mode). The group gets one dashed outline
   around the wrapper's box and thin dashed lines between its fields, like a list; fields inside lose their own outline.
   A group can hold fields of several documents. A wrapper that holds a list, a group inside a group (the outer one
-  wins) and a group inside a list item are ignored with a `console.warn`, and so is any pair of dashed outlines that
-  cross. Ungrouped fields look as before. Design: `docs/specs/artefacts/2026-11-field-groups.html`.
+  wins) and a group inside a list item are ignored with a `console.warn`. A warning also names any pair of dashed
+  outlines that cross and a wrapper whose `overflow` clips its outline. `--cms-list-pad: 0` is now honoured by lists too
+  (it fell back to 12px). Ungrouped fields look as before. Design: `docs/specs/artefacts/2026-11-field-groups.html`.
 - Chrome: list items can be dragged to reorder (#43, lists: drag to reorder, row and grid lists, data-order
   announcement). In a `manual` list, each item's toolbar starts with a drag handle (`.cms-item__grip`, dragged with a pointer,
   `touch-action: none`). A drop makes one `move` write, like Move up and Move down, which stay as the single-pointer
