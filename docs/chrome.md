@@ -432,7 +432,9 @@ one document's helper, but a group can hold fields of any document.
   or a field resizes. Style them through `.cms-group`, `.cms-group__frame` and `.cms-group__sep`; while editing, each
   field in the group carries `data-cms-member`. They are added at the
   end of the wrapper, so in edit mode a `:last-child` rule of yours on the wrapper's children matches a chrome node
-  instead. A border on the wrapper is allowed; `--cms-list-pad: 0` puts the outline on the wrapper's edge.
+  instead. A border on the wrapper is allowed. The outline's distance is `--cms-list-pad`, set where the tokens are, on
+  `.cms-root` or on the outline itself (`.cms-group__frame`, `.cms-list__frame`): `0` puts it on the wrapper's edge, and
+  any length works (`1rem`, `calc()`). Set on the wrapper it has no effect, because the outline declares its own.
 - The outline sits outside the wrapper's box, so a wrapper that clips (`overflow` other than `visible`) hides it. A
   `console.warn` names such a wrapper.
 

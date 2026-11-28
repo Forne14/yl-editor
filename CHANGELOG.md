@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   hidden at some width keeps its group; the wrapper must stay block-level or `inline-block` in edit mode. A wrapper that holds a list, a group inside a group (the outer one
   wins) and a group inside a list item are ignored with a `console.warn`. A warning also names any pair of dashed
   outlines that cross and a wrapper whose `overflow` clips its outline. An inline wrapper is ignored with a warning. Lists now honour
-  `--cms-list-pad: 0` and lengths other than px, measure inside a border on the list, and add their outline at the end
+  `--cms-list-pad: 0` and lengths other than px (set on `.cms-root` or the outline), measure inside a border on the list, and add their outline at the end
   of the list instead of the start. A list's own `display`, padding and bullets are no longer reset in edit mode (the
   chrome's rule for its sheet lists matched host lists too). Ungrouped fields look as before. Design: `docs/specs/artefacts/2026-11-field-groups.html`.
 - Chrome: list items can be dragged to reorder (#43, lists: drag to reorder, row and grid lists, data-order
