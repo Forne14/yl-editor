@@ -2681,6 +2681,17 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     expect(prop(band(2), "--cms-band-width")).toBe("217px");
   });
 
+  test("the right edge reads the frame's right border, not its left one", async () => {
+    css(".cms-list__frame { border-right-width: 5px; }");
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    // The left border is the 2px default; the right one ends the last band at 600 + 12 - 5.
+    expect(prop(band(0), "--cms-band-left")).toBe("-10px");
+    expect(prop(band(2), "--cms-band-width")).toBe("217px");
+  });
+
   test("the frame is appended: the host's first child is still its first item, and the toolbar leads each item", async () => {
     three();
     await mount();

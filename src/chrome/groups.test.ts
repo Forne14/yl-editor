@@ -2,17 +2,23 @@
 // Field groups (#44). happy-dom has no layout, so boxes are stubbed by element id: this proves the chrome's logic, not
 // how a browser lays the page out (e2e/groups.spec.ts does that).
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
-import { createOutlineWatch } from "./groups.ts";
+import { attachGroup, createOutlineWatch, createWarnings, scanGroups } from "./groups.ts";
 import { mountEditor } from "./index.ts";
 import type { EditorHandle } from "./types.ts";
 
 const KEY = "page/home";
+/** Another document the editor can edit, and one it can only read. */
+const OTHER = "page/other";
+const LOCKED = "page/locked";
 let canEdit: boolean;
 let handle: EditorHandle | undefined;
 /** `id -> [left, top, width, height]`. An element with no entry has no box, like one that isn't rendered. */
 let boxes: Record<string, [number, number, number, number]>;
-/** Boxes that replace `boxes` while a `.cms-group` is on the page: host CSS keyed on the class moves them. */
-let groupedBoxes: Record<string, [number, number, number, number]>;
+/**
+ * Boxes that replace `boxes` while a `.cms-group` is on the page: host CSS keyed on the class moves them. `null`: the
+ * class hides that element (no box).
+ */
+let groupedBoxes: Record<string, [number, number, number, number] | null>;
 /**
  * Where a frame is drawn: its parent's padding box grown by this much on each side, as the chrome's CSS lays it out
  * (`inset` / `left` / `right` of `calc(-1 * --cms-list-pad)`). Undefined: frames have no box, as in happy-dom.
@@ -46,18 +52,17 @@ function installFetch(): void {
     vi.fn(async (input: string) => {
       const url = new URL(input, location.href);
       if (url.pathname === "/api/content/documents") {
+        const summary = (key: string, edit: boolean) => ({
+          key,
+          type: "page",
+          version: 1,
+          isDraft: true,
+          draftUpdatedAt: null,
+          publishedAt: null,
+          access: { edit, publish: edit },
+        });
         return json({
-          documents: {
-            [KEY]: {
-              key: KEY,
-              type: "page",
-              version: 1,
-              isDraft: true,
-              draftUpdatedAt: null,
-              publishedAt: null,
-              access: { edit: canEdit, publish: canEdit },
-            },
-          },
+          documents: { [KEY]: summary(KEY, canEdit), [OTHER]: summary(OTHER, true), [LOCKED]: summary(LOCKED, false) },
         });
       }
       if (url.pathname === "/api/content/discard") return json({ document: null });
@@ -118,7 +123,8 @@ beforeEach(() => {
   borders = {};
   document.head.innerHTML = "";
   sessionStorage.clear();
-  const layout = (id: string) => (document.querySelector(".cms-group") ? (groupedBoxes[id] ?? boxes[id]) : boxes[id]);
+  const layout = (id: string) =>
+    document.querySelector(".cms-group") && id in groupedBoxes ? (groupedBoxes[id] ?? undefined) : boxes[id];
   Element.prototype.getBoundingClientRect = function (this: Element) {
     boxCalls[this.id] = (boxCalls[this.id] ?? 0) + 1;
     const parent = this.parentElement;
@@ -253,7 +259,7 @@ describe("a group of plain fields", () => {
 
   test("is not muted when a field in it can be edited", async () => {
     column();
-    document.getElementById("c")?.setAttribute("data-edit-field", "other/doc:c");
+    document.getElementById("c")?.setAttribute("data-edit-field", `${LOCKED}:c`);
     await mount();
     expect(document.getElementById("g")?.classList.contains("cms-group--locked")).toBe(false);
     // The locked field stays in the group: it keeps its separator.
@@ -311,6 +317,21 @@ describe("a group the chrome ignores", () => {
     expect(document.querySelector("#outer > .cms-group__frame")).not.toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0])).toContain('id="inner"');
+  });
+
+  test("one inside a list, between the list and its items, is ignored and the console names it", async () => {
+    page(
+      `<div id="l" data-edit-list="${KEY}:items"><div id="g" data-edit-group><div data-edit-item="${KEY}:items[_key=i1]">${field("a", "items[_key=i1].a")}</div><div data-edit-item="${KEY}:items[_key=i2]">${field("b", "items[_key=i2].b")}</div></div></div>`,
+    );
+    boxes = { l: [0, 0, 400, 100], g: [0, 0, 400, 100], a: [0, 0, 400, 40], b: [0, 60, 400, 40] };
+    await mount();
+    expect(frames()).toHaveLength(0);
+    expect(document.getElementById("g")?.classList.contains("cms-group")).toBe(false);
+    const named = warn.mock.calls.filter((call) => String(call[0]).includes('id="g"'));
+    expect(named).toHaveLength(1);
+    await handle?.api.refresh();
+    await settle();
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes('id="g"'))).toHaveLength(1);
   });
 
   test("one inside a list item is ignored and the console names it (G8)", async () => {
@@ -421,25 +442,110 @@ describe("membership: the fields the chrome dresses now", () => {
     expect(group.hasAttribute("class")).toBe(false);
   });
 
-  test("a group left with one field that has a box draws nothing, and comes back when the other shows again", async () => {
+  test("a member hidden at this width keeps the group: the frame goes round the wrapper, no line beside it (G12)", async () => {
     column();
     boxes = { g: [100, 100, 400, 200], a: [100, 100, 400, 40] };
     await mount();
     const group = document.getElementById("g") as HTMLElement;
-    expect(frames()).toHaveLength(0);
-    expect(group.classList.contains("cms-group")).toBe(false);
-    // The fields are still dressed: they look plain, with their own outline.
-    expect(document.getElementById("b")?.classList.contains("cms-field")).toBe(true);
+    expect(frames()).toHaveLength(1);
+    expect(group.classList.contains("cms-group")).toBe(true);
+    expect(seps()).toHaveLength(0);
     boxes.b = [100, 160, 400, 40];
     await reportAll();
     expect(frames()).toHaveLength(1);
-    expect(group.classList.contains("cms-group")).toBe(true);
     expect(seps("h")).toHaveLength(1);
     delete boxes.b;
     await reportAll();
-    expect(frames()).toHaveLength(0);
+    expect(frames()).toHaveLength(1);
     expect(seps()).toHaveLength(0);
-    expect(group.classList.contains("cms-group")).toBe(false);
+    expect(group.classList.contains("cms-group")).toBe(true);
+  });
+
+  test("host CSS on .cms-group that hides members doesn't make the group draw and retire (G12)", async () => {
+    column();
+    groupedBoxes = { b: null, c: null };
+    await mount();
+    const group = document.getElementById("g") as HTMLElement;
+    for (let round = 0; round < 3; round += 1) {
+      await reportAll();
+      expect(frames()).toHaveLength(1);
+      expect(group.classList.contains("cms-group")).toBe(true);
+      expect(seps()).toHaveLength(0);
+    }
+  });
+
+  test("a field of a document Discard deleted leaves its group for good: Done then Edit doesn't bring it back", async () => {
+    page(
+      `<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}<p id="c" data-edit-field="${OTHER}:c" data-edit-type="text">c</p><p id="d" data-edit-field="${OTHER}:d" data-edit-type="text">d</p></section>`,
+    );
+    boxes = {
+      g: [0, 0, 400, 240],
+      a: [0, 0, 400, 40],
+      b: [0, 60, 400, 40],
+      c: [0, 120, 400, 40],
+      d: [0, 180, 400, 40],
+    };
+    await mount();
+    expect(seps("h")).toHaveLength(3);
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(frames()).toHaveLength(1);
+    expect(seps("h")).toHaveLength(1);
+    const done = [...document.querySelectorAll<HTMLButtonElement>(".cms-bar button")].find(
+      (button) => button.textContent === "Done",
+    );
+    done?.click();
+    document.querySelector<HTMLButtonElement>(".cms-enter")?.click();
+    await settle();
+    expect(frames()).toHaveLength(1);
+    expect(seps("h")).toHaveLength(1);
+  });
+
+  test("a field inside a list item in the wrapper is not a member", async () => {
+    page(
+      `<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}<div id="i" data-edit-item="${KEY}:items[_key=i1]">${field("x", "items[_key=i1].x")}</div></section>`,
+    );
+    boxes = {
+      g: [0, 0, 400, 180],
+      a: [0, 0, 400, 40],
+      b: [0, 60, 400, 40],
+      i: [0, 120, 400, 40],
+      x: [0, 120, 400, 40],
+    };
+    await mount();
+    expect(frames()).toHaveLength(1);
+    expect(seps("h")).toHaveLength(1);
+  });
+
+  test("`changed` is called when membership is decided at attach, never by a paint", () => {
+    column();
+    const group = scanGroups(document.getElementById("page") as HTMLElement, createWarnings())[0];
+    if (!group) throw new Error("no group");
+    const known = new Map(
+      ["a", "b", "c"].map((id) => [
+        document.getElementById(id) as HTMLElement,
+        { editable: true, detach: () => undefined },
+      ]),
+    );
+    const changed = vi.fn();
+    attachGroup(group, (node) => known.get(node), createWarnings(), changed);
+    expect(changed).toHaveBeenCalledTimes(1);
+    delete boxes.b;
+    group.paint();
+    delete boxes.c;
+    group.paint();
+    boxes.b = [100, 160, 400, 40];
+    group.paint();
+    expect(changed).toHaveBeenCalledTimes(1);
+    group.detach?.();
+  });
+
+  test("a wrapper that turns display: contents after the scan keeps its frame: display is checked at scan only", async () => {
+    column();
+    await mount();
+    css("#g { display: contents; }");
+    await reportAll();
+    expect(frames()).toHaveLength(1);
   });
 });
 
@@ -453,6 +559,15 @@ describe("geometry: measured in the wrapper's padding box", () => {
     expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-top"))).toEqual(["50px", "110px"]);
     // Edge to edge inside the frame's border: 400 + 2 * (12 - 2).
     expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-length"))).toEqual(["420px", "420px"]);
+  });
+
+  test("the right edge reads the frame's right border, not its left one", async () => {
+    css(".cms-group__frame { border-right-width: 5px; }");
+    column();
+    await mount();
+    // From -12 + 2 (left border) to 400 + 12 - 5 (right border).
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-x"))).toEqual(["-10px", "-10px"]);
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-length"))).toEqual(["417px", "417px"]);
   });
 
   test("a pad of 0 is a pad of 0, not the 12px fallback", async () => {
@@ -617,19 +732,27 @@ describe("crossing watch", () => {
     expect(crossings()).toHaveLength(1);
   });
 
-  test("a group that starts drawing after the frame's check is checked again", async () => {
+  test("a group with a hidden member still draws its frame, and the crossing check counts it (G12)", async () => {
     page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>${field("c", "c")}`);
-    // b has no box: the group draws nothing, and nothing crosses.
-    // c sits clear of b's own outline (6px past it) but inside the frame's reach (12px past the wrapper).
-    boxes = { g: [0, 0, 400, 100], a: [0, 0, 400, 40], c: [0, 114, 400, 40] };
+    // b has no box. c sits clear of a's own outline (6px past it) but inside the frame's reach (12px past the wrapper).
+    boxes = { g: [0, 0, 400, 100], a: [0, 0, 400, 40], c: [0, 106, 400, 40] };
     await mount();
-    expect(crossings()).toHaveLength(0);
-    // The watch's resize listener runs its check before the group's paint draws the frame that c crosses.
-    boxes.b = [0, 60, 400, 40];
-    window.dispatchEvent(new Event("resize"));
-    await settle();
+    expect(frames()).toHaveLength(1);
     expect(crossings()).toHaveLength(1);
     expect(String(crossings()[0]?.[0])).toContain('id="g"');
+  });
+
+  test("Done lets the watch go of every outline it held", async () => {
+    page(`${field("a", "a")}${field("b", "b")}`);
+    boxes = { a: [0, 0, 100, 40], b: [0, 100, 100, 40] };
+    await mount();
+    const a = document.getElementById("a") as HTMLElement;
+    expect(watching.some((targets) => targets.has(a))).toBe(true);
+    const done = [...document.querySelectorAll<HTMLButtonElement>(".cms-bar button")].find(
+      (button) => button.textContent === "Done",
+    );
+    done?.click();
+    expect(watching.every((targets) => targets.size === 0)).toBe(true);
   });
 
   test("a destroyed watch neither checks nor schedules", async () => {
