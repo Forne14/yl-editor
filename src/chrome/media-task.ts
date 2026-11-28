@@ -122,11 +122,308 @@ export interface MediaTask {
 
 /** The browser's clock, timers, `document.visibilityState`, `navigator.onLine` and `pageshow`, each guarded. */
 export function browserMediaTaskEnvironment(): MediaTaskEnvironment {
-  throw new Error("not implemented");
+  const page = typeof document === "undefined" ? undefined : document;
+  const view = typeof window === "undefined" ? undefined : window;
+  const listen = (target: EventTarget | undefined, type: string, handler: (event: Event) => void) => {
+    if (!target) return () => {};
+    target.addEventListener(type, handler);
+    return () => target.removeEventListener(type, handler);
+  };
+  return {
+    now: () => Date.now(),
+    setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>),
+    isHidden: () => page?.visibilityState === "hidden",
+    isOnline: () => typeof navigator === "undefined" || navigator.onLine !== false,
+    onVisible: (listener) =>
+      listen(page, "visibilitychange", () => {
+        if (page?.visibilityState === "visible") listener();
+      }),
+    onOnline: (listener) => listen(view, "online", () => listener()),
+    onRestore: (listener) =>
+      listen(view, "pageshow", (event) => {
+        if ((event as Event & { persisted?: boolean }).persisted) listener();
+      }),
+  };
+}
+
+const clampRetryAfter = (ms: number) => Math.min(MAX_RETRY_AFTER_MS, Math.max(MIN_RETRY_AFTER_MS, ms));
+
+/** What a failed send becomes. */
+function sendFailure(error: unknown): MediaTaskFailure {
+  if (error instanceof TypeError) return { kind: "network", stalled: false };
+  if (!(error instanceof ContentRequestError)) return { kind: "server" };
+  switch (error.code) {
+    case "too_large":
+    case "unsupported":
+      return {
+        kind: "refused",
+        code: error.code,
+        message: error.message,
+        ...(error.limit !== undefined ? { limit: error.limit } : {}),
+      };
+    case "bad_request":
+      return { kind: "refused", code: "invalid", message: error.message };
+    case "forbidden":
+      return { kind: "forbidden", message: error.message };
+    case "not_found":
+      return { kind: "document-gone" };
+    default:
+      return { kind: "server" };
+  }
+}
+
+/** A poll error that ends the job at once, or undefined when it only counts as a failed poll. */
+function terminalPollFailure(error: unknown): MediaTaskFailure | undefined {
+  if (!(error instanceof ContentRequestError)) return undefined;
+  if (error.code === "job_not_found") return { kind: "job-gone" };
+  if (error.code === "forbidden") return { kind: "forbidden", message: error.message };
+  if (error.code === "not_found") return { kind: "document-gone" };
+  return undefined;
 }
 
 export function startMediaTask(options: MediaTaskOptions): MediaTask {
-  void options;
-  void ContentRequestError;
-  throw new Error("not implemented");
+  const { client, field, file } = options;
+  const environment = options.environment ?? browserMediaTaskEnvironment();
+  const jobTimeoutMs = options.jobTimeoutMs ?? DEFAULT_JOB_TIMEOUT_MS;
+
+  let state: MediaTaskState = { phase: "uploading", loaded: 0, total: file.size };
+  let epoch = 0;
+  // Claims: the one request in flight, the one pending timer, the stall timer.
+  let inFlight: AbortController | null = null;
+  let timer: unknown = null;
+  let stallTimer: unknown = null;
+  /** The pending timer is a 503's Retry-After wait, which a visible or online poll must not cut short. */
+  let busyWait = false;
+  // Counters.
+  let resends = 0;
+  let failures = 0;
+  let pollIndex = 0;
+  // The job, once the upload answered 202.
+  let job: string | null = null;
+  let deadline = 0;
+
+  let resolveDone: (media: WireMedia) => void = () => {};
+  let rejectDone: (reason: unknown) => void = () => {};
+  const done = new Promise<WireMedia>((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+
+  const set = (next: MediaTaskState) => {
+    state = next;
+    options.onState?.(next);
+  };
+
+  const clearTimer = () => {
+    if (timer !== null) environment.clearTimeout(timer);
+    timer = null;
+    busyWait = false;
+  };
+  const clearStall = () => {
+    if (stallTimer !== null) environment.clearTimeout(stallTimer);
+    stallTimer = null;
+  };
+  /** Abandons whatever is pending: every continuation started before this does nothing. */
+  const bump = () => {
+    epoch++;
+    clearTimer();
+    clearStall();
+    inFlight?.abort();
+    inFlight = null;
+  };
+
+  /** Runs `callback` after `ms`, unless the epoch moves first. */
+  const later = (ms: number, callback: () => void) => {
+    const startedIn = epoch;
+    timer = environment.setTimeout(() => {
+      if (startedIn !== epoch) return;
+      timer = null;
+      busyWait = false;
+      callback();
+    }, ms);
+  };
+
+  const unsubscribe: (() => void)[] = [];
+  const stopListening = () => {
+    for (const stop of unsubscribe.splice(0)) stop();
+  };
+
+  const finishReady = (media: WireMedia) => {
+    stopListening();
+    set({ phase: "ready", media });
+    resolveDone(media);
+  };
+
+  const fail = (failure: MediaTaskFailure) => set({ phase: "failed", failure });
+
+  const send = () => {
+    bump();
+    job = null;
+    if (!environment.isOnline()) return fail({ kind: "network", stalled: false });
+    const startedIn = epoch;
+    const current = () => startedIn === epoch;
+    const controller = new AbortController();
+    inFlight = controller;
+    set({ phase: "uploading", loaded: 0, total: file.size });
+    const armStall = () => {
+      clearStall();
+      stallTimer = environment.setTimeout(() => {
+        if (!current()) return;
+        stallTimer = null;
+        bump();
+        fail({ kind: "network", stalled: true });
+      }, STALL_MS);
+    };
+    client
+      .uploadMedia(field, file, {
+        signal: controller.signal,
+        onProgress: ({ loaded, total }) => {
+          if (!current()) return;
+          armStall();
+          set({ phase: "uploading", loaded, total });
+        },
+        onSent: () => {
+          if (!current()) return;
+          clearStall();
+          set({ phase: "finishing" });
+        },
+      })
+      .then(
+        (answer) => {
+          if (!current()) return;
+          inFlight = null;
+          clearStall();
+          if (answer.status === "ready") finishReady(answer.media);
+          else startPolling(answer.job, answer.retryAfterMs);
+        },
+        (error: unknown) => {
+          if (!current()) return;
+          inFlight = null;
+          clearStall();
+          if (error instanceof ContentRequestError && error.code === "busy") return busy(error.retryAfterMs);
+          fail(sendFailure(error));
+        },
+      );
+  };
+
+  const busy = (retryAfterMs: number | undefined) => {
+    if (resends >= MAX_BUSY_RESENDS) return fail({ kind: "busy" });
+    resends++;
+    const wait = clampRetryAfter(retryAfterMs ?? BUSY_DEFAULT_WAIT_MS);
+    set({ phase: "busy", retryInMs: wait, resend: resends });
+    later(wait, send);
+  };
+
+  const startPolling = (id: string, retryAfterMs: number | undefined) => {
+    job = id;
+    deadline = environment.now() + jobTimeoutMs;
+    failures = 0;
+    pollIndex = 0;
+    set({ phase: "processing", job: id, progress: null });
+    schedulePoll(retryAfterMs, false);
+  };
+
+  /** The next poll: the backoff step, or the server's wait instead. The step advances either way. */
+  const schedulePoll = (retryAfterMs: number | undefined, fromBusy: boolean) => {
+    const step = POLL_BACKOFF_MS[Math.min(pollIndex, POLL_BACKOFF_MS.length - 1)] ?? MAX_RETRY_AFTER_MS;
+    pollIndex++;
+    later(retryAfterMs !== undefined ? clampRetryAfter(retryAfterMs) : step, poll);
+    busyWait = fromBusy;
+  };
+
+  const poll = () => {
+    const id = job;
+    if (id === null) return;
+    // Offline: nothing is sent and nothing counts; coming online polls again.
+    if (!environment.isOnline()) return;
+    const startedIn = epoch;
+    const sentAt = environment.now();
+    const controller = new AbortController();
+    inFlight = controller;
+    client.mediaJob(field, id, { signal: controller.signal }).then(
+      (answer) => {
+        if (startedIn !== epoch) return;
+        inFlight = null;
+        if (answer.status === "ready") return finishReady(answer.media);
+        if (answer.status === "failed")
+          return fail({
+            kind: "job-failed",
+            reason: answer.reason,
+            ...(answer.message !== undefined ? { message: answer.message } : {}),
+          });
+        failures = 0;
+        set({ phase: "processing", job: id, progress: answer.progress ?? null });
+        afterAnswer(sentAt, answer.retryAfterMs, false);
+      },
+      (error: unknown) => {
+        if (startedIn !== epoch) return;
+        inFlight = null;
+        const terminal = terminalPollFailure(error);
+        if (terminal) return fail(terminal);
+        failures++;
+        const isBusy = error instanceof ContentRequestError && error.code === "busy";
+        afterAnswer(sentAt, isBusy ? (error as ContentRequestError).retryAfterMs : undefined, isBusy);
+      },
+    );
+  };
+
+  /** After every poll answer: give up when the bound is spent and the tab is visible, else poll again. */
+  const afterAnswer = (sentAt: number, retryAfterMs: number | undefined, fromBusy: boolean) => {
+    const spent = failures >= MAX_FAILED_POLLS || sentAt >= deadline;
+    if (spent && !environment.isHidden() && job !== null) return set({ phase: "gave-up", job });
+    schedulePoll(retryAfterMs, fromBusy);
+  };
+
+  /** A visible or online event: one poll now, unless one is in flight, a 503 wait is pending, or polling is over. */
+  const pollNow = () => {
+    if (state.phase !== "processing" || inFlight !== null || busyWait) return;
+    clearTimer();
+    poll();
+  };
+
+  unsubscribe.push(
+    environment.onVisible(pollNow),
+    environment.onOnline(pollNow),
+    environment.onRestore(() => {
+      if (state.phase !== "uploading" && state.phase !== "finishing") return;
+      bump();
+      fail({ kind: "network", stalled: false });
+    }),
+  );
+
+  send();
+
+  return {
+    get state() {
+      return state;
+    },
+    get epoch() {
+      return epoch;
+    },
+    done,
+    retry: () => {
+      if (state.phase !== "failed") return;
+      resends = 0;
+      send();
+    },
+    keepWaiting: () => {
+      if (state.phase !== "gave-up" || job === null) return;
+      deadline = environment.now() + jobTimeoutMs;
+      failures = 0;
+      pollIndex = 0;
+      set({ phase: "processing", job, progress: null });
+      schedulePoll(undefined, false);
+    },
+    abort: () => {
+      // Ready is settled: nothing is pending, and done has resolved.
+      if (state.phase === "aborted" || state.phase === "ready") return;
+      const cancel = job !== null && (state.phase === "processing" || state.phase === "gave-up") ? job : null;
+      bump();
+      stopListening();
+      state = { phase: "aborted" };
+      if (cancel !== null) client.cancelMediaJob(field, cancel).catch(() => {});
+      rejectDone(new DOMException("The media task was aborted", "AbortError"));
+    },
+  };
 }
