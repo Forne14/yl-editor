@@ -87,18 +87,80 @@ export interface RevisionsResponse {
   revisions: WireRevision[];
 }
 
+/** The header `POST media` reads the file's name from, URI-encoded. */
+export const UPLOAD_FILENAME_HEADER = "X-Upload-Filename";
+
+/** Most ids one `GET media` request may name, after deduping. */
+export const MAX_MEDIA_IDS = 100;
+
+/** A `MediaRender` as it travels as JSON. Kept structurally identical to the core's `MediaRender` (checked in `wire.ts`). */
+export interface WireMediaRender {
+  kind: "image" | "video";
+  src: string;
+  srcset?: string;
+  sources?: { type: string; srcset: string }[];
+  width: number;
+  height: number;
+  poster?: string;
+  filename?: string;
+}
+
+/** A stored media item on the wire: its id and render. The store's variants never leave the server. */
+export interface WireMedia {
+  id: string;
+  render: WireMediaRender;
+}
+
+/** Body of a `201` from `POST media`: stored now. */
+export interface MediaUploadReadyResponse {
+  media: WireMedia;
+}
+
+/** Body of a `202` from `POST media`: still processing; poll `GET media-job`. */
+export interface MediaUploadProcessingResponse {
+  job: string;
+  retryAfterMs?: number;
+}
+
+/** Body of `GET media-job`. `progress` is 0..1. */
+export type MediaJobResponse =
+  | { status: "processing"; progress?: number; retryAfterMs?: number }
+  | { status: "ready"; media: WireMedia }
+  | { status: "failed"; reason: string; message?: string };
+
+/** Body of `GET media`: the render of every id the store knows. Unknown ids are left out. */
+export interface MediaResolveResponse {
+  media: Record<string, WireMediaRender>;
+}
+
 export type ErrorCode =
-  "forbidden" | "not_found" | "conflict" | "validation" | "path" | "state" | "slug" | "bad_request" | "internal";
+  | "forbidden"
+  | "not_found"
+  | "job_not_found"
+  | "conflict"
+  | "validation"
+  | "path"
+  | "state"
+  | "slug"
+  | "bad_request"
+  | "too_large"
+  | "unsupported"
+  | "busy"
+  | "internal";
 
 export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   forbidden: 403,
   not_found: 404,
+  job_not_found: 404,
   conflict: 409,
   validation: 422,
   path: 400,
   state: 409,
   slug: 400,
   bad_request: 400,
+  too_large: 413,
+  unsupported: 415,
+  busy: 503,
   internal: 500,
 };
 
@@ -109,7 +171,19 @@ export interface ErrorEnvelope {
     issues?: unknown;
     /** On `conflict`: the document as it is now (draft view), so the client can offer "take theirs". */
     current?: WireDocument;
+    /** On `too_large`: the limit in bytes, when the server knows it. */
+    limit?: number;
   };
+}
+
+/**
+ * A `Retry-After` header in milliseconds: delay-seconds or an HTTP date (counted from `now`, never negative).
+ * Undefined when absent or unreadable. Not clamped: callers apply their own bounds.
+ */
+export function parseRetryAfter(value: string | null | undefined, now: number): number | undefined {
+  void value;
+  void now;
+  throw new Error("not implemented");
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;

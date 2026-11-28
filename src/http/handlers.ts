@@ -10,6 +10,7 @@ import {
   type AccessVerdict,
   type ContentStore,
   type MaybePromise,
+  type MediaStore,
   type SchemaRegistry,
   type StoredDocument,
   type WriteContext,
@@ -77,6 +78,12 @@ export interface ContentHandlerOptions {
    * answers `forbidden`.
    */
   publishDue?: { authorize: (locals: unknown) => MaybePromise<AccessVerdict> };
+  /**
+   * Enables `POST media`, `GET media`, `GET media-job` and `DELETE media-job`, gated by `canEdit` on the document the
+   * field is in. `maxBytes` caps an upload: a larger declared length is refused before the body is read, and a body
+   * that grows past it is cut off. Without the option those routes are `404`.
+   */
+  media?: { store: MediaStore; maxBytes: number };
 }
 
 export interface ContentHandlers {
