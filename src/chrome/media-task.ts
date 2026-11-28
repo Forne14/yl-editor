@@ -11,8 +11,12 @@
 //   killed by it. Each progress event restarts it.
 // - 503 busy: sent again after its Retry-After (clamped 1-60 s; BUSY_DEFAULT_WAIT_MS when the answer has none), at most
 //   MAX_BUSY_RESENDS (3) times per task, then failed with Retry. Retry resets the count. No other automatic resend.
-// - Offline (environment.isOnline() false) when a send would start: nothing is sent; it fails as a network error.
+// - Offline (environment.isOnline() false) when a send would start: nothing is sent; it fails as a network error
+//   (after `uploading` is emitted, so the first state is always `uploading`).
 // - Restored from the back/forward cache while sending: the send fails as a network error (Retry resends).
+// - A ready answer whose render the client can't read (a kind other than image or video, a src that is not a string,
+//   a width or height that is not a positive integer) is a ContentRequestError `internal`: failed `server`, with Retry.
+//   Our handlers never send such a render; they answer 500 instead, which is the same `server` failure.
 //
 // The poll (after a 202)
 // - Waits POLL_BACKOFF_MS: 1, 2, 4, 8 s, then every 15 s. A retryAfterMs from the store, or a Retry-After header (the
@@ -20,14 +24,20 @@
 // - One request in flight per task, at most one timer pending.
 // - A readable processing answer sets the failure count back to 0. It moves neither the deadline nor the backoff.
 // - A failed poll (network error, 5xx, 503, unreadable body) adds 1 to the failure count. A 503's Retry-After sets the
-//   next wait.
+//   next wait. A ready poll answer with an unreadable render is an unreadable body (our handlers answer it as a 500):
+//   it counts as a failed poll, so a job whose render stays broken gives up after MAX_FAILED_POLLS in a row.
 // - Give-up: only after a poll answer, never while the tab is hidden. Either MAX_FAILED_POLLS (6) failures in a row, or
 //   the answer is to a poll sent at or after the deadline (202 + jobTimeoutMs, default 600 000): when the deadline
 //   passes, the next poll is the last one.
-// - Hidden: polls go on as scheduled; a give-up they would cause waits. Becoming visible polls once at once, unless a
-//   request is in flight, a 503's Retry-After wait is pending, or the task gave up; it changes nothing else.
+// - Hidden: polls go on as scheduled; a give-up they would cause waits. Once past the deadline while hidden, each wait
+//   is at least HIDDEN_PAST_DEADLINE_MS (60 s), since only the visible tab can end it. Becoming visible polls once at
+//   once, unless a request is in flight, a 503's Retry-After wait is pending, or the task gave up; it changes nothing
+//   else.
 // - Offline: a poll that comes due while offline is not sent and counts for nothing. Coming online polls at once
-//   (same guard as becoming visible).
+//   (same guard as becoming visible). Backstop, in case navigator.onLine is a false negative or the online event never
+//   comes: while offline, isOnline() is re-checked every OFFLINE_RECHECK_MS (15 s) on the one task timer, and the first
+//   re-check that finds it online polls. A re-check never sends a request while offline and never gives up: only a
+//   poll answer does.
 // - Terminal at once: ready, failed (job-failed), job_not_found (job-gone), 403 (forbidden), not_found (document-gone).
 // - Keep waiting (from gave-up only): new deadline, failure count 0, backoff from the start (next wait 1 s).
 //
@@ -35,16 +45,20 @@
 // - Epoch: every abandoned operation bumps `epoch` (abort, a new send on Retry or a busy resend, a stall, a bfcache
 //   restore while sending). Every continuation (XHR progress, sent, load or error; a poll answer; the busy wait; a poll
 //   timer) captured the epoch it started under and does nothing when it has moved: no state, no timer, no request.
-// - Claims: `inFlight` holds the one request's AbortController; `timer` the one pending timer (poll wait or busy wait);
-//   `stallTimer` the stall timer. Each is released (cleared or aborted, then set to null) when its continuation runs, on
-//   every epoch bump, and on ready. After abort() nothing is pending and no listener is subscribed.
+// - Claims: `inFlight` holds the one request's AbortController; `timer` the one pending timer (poll wait, busy wait or
+//   offline re-check); `stallTimer` the stall timer. Each is released (cleared or aborted, then set to null) when its
+//   continuation runs, on every epoch bump, and on ready. After abort() nothing is pending and no listener is
+//   subscribed. So a task holds at most 2 timers (`timer`, `stallTimer`) and 1 request at any time.
 // - Counters: `resends` (automatic 503 resends) counts up to MAX_BUSY_RESENDS and resets only on retry(). `failures`
 //   (failed polls in a row) resets on a readable processing answer and on keepWaiting(). `pollIndex` (backoff step)
 //   resets when polling starts and on keepWaiting().
-// - Bounds: a job costs about 4 + 40 polls over its 10 minutes, plus one per visible/online event; a send costs at most
-//   1 + 3 requests per retry(). cancelJob is fire-and-forget, sent once, only on abort() while a job is known.
+// - Bounds: a visible job costs about 4 + 40 polls over its 10 minutes (plus one per visible/online event), then gives
+//   up. A hidden tab polls on past the deadline, at most once a minute, until it becomes visible or is aborted. Offline
+//   costs no request, only one re-check timer every 15 s. A send costs at most 1 + 3 requests per retry(). cancelJob is
+//   fire-and-forget, sent once, only on abort() while a job is known.
 // - done settles once: resolves on ready, rejects with an AbortError on abort(). Failed and gave-up are not terminal:
-//   retry() and keepWaiting() leave them.
+//   retry() and keepWaiting() leave them. The task itself handles done's rejection, so an abort nobody awaits is not an
+//   unhandled rejection; a caller awaiting done still sees it.
 // - onState is never called after abort(), and never with a state from a stale epoch.
 import { ContentRequestError, type ContentClient, type MediaUploadFile } from "../http/client.ts";
 import type { WireMedia, WireMediaField } from "../http/wire-types.ts";
@@ -57,6 +71,8 @@ export const MAX_BUSY_RESENDS = 3;
 export const BUSY_DEFAULT_WAIT_MS = 5000;
 export const MAX_FAILED_POLLS = 6;
 export const DEFAULT_JOB_TIMEOUT_MS = 600_000;
+export const OFFLINE_RECHECK_MS = 15_000;
+export const HIDDEN_PAST_DEADLINE_MS = 60_000;
 
 /** Why a task stopped short of ready. */
 export type MediaTaskFailure =
@@ -209,6 +225,8 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
     resolveDone = resolve;
     rejectDone = reject;
   });
+  // Handled here so an abort nobody awaits is not an unhandled rejection; callers awaiting done still see it.
+  done.catch(() => {});
 
   const set = (next: MediaTaskState) => {
     state = next;
@@ -260,12 +278,12 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
   const send = () => {
     bump();
     job = null;
+    set({ phase: "uploading", loaded: 0, total: file.size });
     if (!environment.isOnline()) return fail({ kind: "network", stalled: false });
     const startedIn = epoch;
     const current = () => startedIn === epoch;
     const controller = new AbortController();
     inFlight = controller;
-    set({ phase: "uploading", loaded: 0, total: file.size });
     const armStall = () => {
       clearStall();
       stallTimer = environment.setTimeout(() => {
@@ -328,15 +346,19 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
   const schedulePoll = (retryAfterMs: number | undefined, fromBusy: boolean) => {
     const step = POLL_BACKOFF_MS[Math.min(pollIndex, POLL_BACKOFF_MS.length - 1)] ?? MAX_RETRY_AFTER_MS;
     pollIndex++;
-    later(retryAfterMs !== undefined ? clampRetryAfter(retryAfterMs) : step, poll);
+    let wait = retryAfterMs !== undefined ? clampRetryAfter(retryAfterMs) : step;
+    // Hidden past the deadline only the visible tab can end the job: poll at most once a minute meanwhile.
+    if (environment.isHidden() && environment.now() >= deadline) wait = Math.max(wait, HIDDEN_PAST_DEADLINE_MS);
+    later(wait, poll);
     busyWait = fromBusy;
   };
 
   const poll = () => {
     const id = job;
     if (id === null) return;
-    // Offline: nothing is sent and nothing counts; coming online polls again.
-    if (!environment.isOnline()) return;
+    // Offline: nothing is sent and nothing counts. Coming online polls at once; the re-check on the one task timer is
+    // the backstop when that event never comes.
+    if (!environment.isOnline()) return later(OFFLINE_RECHECK_MS, poll);
     const startedIn = epoch;
     const sentAt = environment.now();
     const controller = new AbortController();
