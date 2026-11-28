@@ -91,16 +91,24 @@ describe("test media store switches", () => {
   test("accept refuses a declared size past maxBytes and a type that is not an image", async () => {
     const store = createTestMediaStore({ MediaRefusal, maxBytes: 10 });
     expect(() => store.accept?.(field, { ...file, size: 11 }, {})).toThrow(MediaRefusal);
-    expect(() => store.accept?.(field, { ...file, type: "application/pdf" }, {})).toThrow(
-      expect.objectContaining({ code: "unsupported" }),
-    );
+    const refusedType = (type: string) => {
+      try {
+        store.accept(field, { ...file, type, size: 1 }, {});
+      } catch (error) {
+        return (error as MediaRefusal).code;
+      }
+      return "accepted";
+    };
+    expect(refusedType("application/pdf")).toBe("unsupported");
+    expect(refusedType("image/svg+xml")).toBe("unsupported");
+    expect(refusedType("IMAGE/PNG; charset=binary")).toBe("accepted");
     expect(() => store.accept?.(field, { ...file, size: 10 }, {})).not.toThrow();
     expect(() => store.accept?.(field, { ...file, type: "", size: null }, {})).not.toThrow();
   });
 
-  test("an image declared under another type is stored with the type its bytes show", async () => {
+  test("an image with no declared type is stored with the type its bytes show", async () => {
     const store = createTestMediaStore({ MediaRefusal });
-    const answer = await store.upload(body(), { ...file, type: "image/svg+xml" }, field, live());
+    const answer = await store.upload(body(), { ...file, type: "" }, field, live());
     if (answer.status !== "ready") throw new Error("expected ready");
     expect(store.file(answer.media.id)?.type).toBe("image/png");
   });

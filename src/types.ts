@@ -247,7 +247,12 @@ export interface MediaValue {
  * for a field that may be empty. Refuses `decorative: true` with alt text, and any other key.
  */
 export function mediaValue(): z.ZodType<MediaValue> {
-  throw new Error("not implemented");
+  return z
+    .strictObject({ id: z.string().min(1), alt: z.string(), decorative: z.boolean().optional() })
+    .refine((value) => value.decorative !== true || value.alt === "", {
+      message: "A decorative image has no alt text",
+      path: ["alt"],
+    });
 }
 
 export type OnPublish = (doc: StoredDocument) => Promise<void> | void;
