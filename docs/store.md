@@ -42,9 +42,8 @@ are keyed `collection/slug`. Slugs are lower-case letters and digits joined by s
 `SlugError`. A registry implements `entry(type)` and `byCollection(collection)`; `entries()` is optional and unused
 by the library, kept for back-office listing.
 
-The package also exports a `MediaStore` interface (`upload`, `resolve`) and `MediaVariantSchema`, the shape of what
-`resolve` returns. It ships no implementation: the host implements `MediaStore` over its own storage. Nothing in the
-store, the HTTP handlers or the chrome calls it, so a `media` field also needs a widget the host registers.
+Media files have a seam of their own, `MediaStore`, which the package also ships no implementation of. See
+[Media](#media).
 
 Every write of a payload is validated against the type's schema before it is stored (`ContentValidationError`), and
 every read is validated again unless it asks for `unvalidated` (see [Schema evolution](#schema-evolution)), so a payload
@@ -203,6 +202,118 @@ they edit the published payload, so they cannot start from one that cannot be re
 `ContentValidationError`, and a `migrate` that throws on it propagates that error.
 
 `migrate` must be pure and cheap: it runs on every read of a stale row until a draft write persists the result.
+
+## Media
+
+The package owns the media seam and the editor's side of it; the host owns storage, processing and garbage collection.
+`MediaStore<V>` (in `src/types.ts`) is what the [media routes](http.md#media) call:
+
+```ts
+interface MediaStore<V = unknown> {
+  accept?(field: MediaFieldRef, file: MediaFileInfo, context: WriteContext): Promise<void> | void;
+  upload(
+    body: ReadableStream<Uint8Array>,
+    file: MediaFileInfo,
+    field: MediaFieldRef,
+    context: WriteContext & { signal: AbortSignal },
+  ): Promise<MediaUploadAnswer<V>>;
+  job?(job: string, field: MediaFieldRef): Promise<MediaJobState<V> | null>;
+  cancelJob?(job: string, field: MediaFieldRef): Promise<void>;
+  resolve(ids: readonly string[]): Promise<Map<string, ResolvedMedia<V>>>;
+}
+
+interface MediaFieldRef {
+  key: string;
+  path: string;
+} // the field the upload is for
+interface MediaFileInfo {
+  filename: string;
+  type: string;
+  size: number | null;
+} // size: the declared length
+interface ResolvedMedia<V> {
+  id: string;
+  render: MediaRender;
+  variants: V;
+}
+type MediaUploadAnswer<V> =
+  { status: "ready"; media: ResolvedMedia<V> } | { status: "processing"; job: string; retryAfterMs?: number };
+type MediaJobState<V> =
+  | { status: "processing"; progress?: number; retryAfterMs?: number } // progress 0..1
+  | { status: "ready"; media: ResolvedMedia<V> }
+  | { status: "failed"; reason: string; message?: string };
+```
+
+- **Streaming.** `upload` gets the request body as a stream, already passed through the handlers' byte counter, so it
+  never holds a whole file it doesn't want to. Spool it to disk, pipe it to object storage, or buffer it. When the
+  stream errors (the counter cut it off, the connection dropped) or `signal` aborts, `upload` rejects and stores
+  nothing.
+- **Processing later.** A store that processes synchronously answers `ready`. One that needs time (a video, a large
+  HEIC) answers `processing` with a job id, and must then implement `job`. `job` answers `null` for an unknown job and
+  for a job that belongs to another field (another key or path), and keeps answering a settled job the same for a
+  while, so a late or repeated poll still reads it. `cancelJob` is optional; after it, the job reads `null` or
+  `failed`, never `ready`.
+- **Render and variants.** `variants` is the host's own shape (`{ w, key }[]`, a crop, a poster), typed by `V`. The
+  package never reads it and never sends it: the handlers send only `id` and `render`. `render` is in HTML's own
+  vocabulary, built by the host from its variants once, in its store:
+
+  ```ts
+  interface MediaRender {
+    kind: "image" | "video";
+    src: string; // shown at once: the preview and <img src>
+    srcset?: string; // <img srcset>
+    sources?: { type: string; srcset: string }[]; // <picture><source type>, best first
+    width: number; // intrinsic size, positive
+    height: number;
+    poster?: string; // video
+    filename?: string; // for the publish diff and the popover
+  }
+  ```
+
+- **Batched resolve.** `resolve(ids)` answers a `Map`; an id it doesn't know is left out.
+- **Refusing.** Throw `MediaRefusal(code, message, detail?)` from `accept` or `upload`: `too_large` (with
+  `detail.limit`), `unsupported`, `invalid` or `busy` (with `detail.retryAfterMs`). The message reaches the editor.
+  `accept` runs before the body is read, so refusing on the declared type or size there costs no upload.
+- **Untrusted input.** `filename` and `type` come from the browser. A filename can hold path separators, `..` and
+  control characters: never use it as a path. A type can claim anything, and an SVG can carry script: decide the type
+  from the bytes, and never serve an uploaded SVG from your own origin as `image/svg+xml`.
+- **Nothing is ever deleted by the package.** Media that ends up unreferenced (a cancelled upload that finished
+  anyway, a given-up job, a replaced image, a removed list item) is the host's to collect.
+
+The stored value of a `media` field is `{ id, alt }`, or `{ id, alt: "", decorative: true }` for an image screen
+readers should skip. Alt text is content: drafted, published and revisioned with the page. The value never holds URLs
+or variants, which can change without a content write. `mediaValue()` from `@yl/editor` is its zod schema; use
+`mediaValue().nullable()` for a field that may be empty. It refuses `decorative: true` with alt text, and any other
+key.
+
+```ts
+const pageSchema = z.object({ hero: mediaValue(), gallery: z.array(mediaValue()) });
+```
+
+### Running the media contract
+
+`runMediaStoreContract` from `@yl/editor/contract` registers the `MediaStore` contract as vitest tests, as
+`runContentStoreContract` does for content:
+
+```ts
+import { runMediaStoreContract } from "@yl/editor/contract";
+
+runMediaStoreContract("s3 media", () => createS3MediaStore(testBucket()), {
+  sample: { bytes: readFileSync("fixtures/dot.png"), type: "image/png", filename: "dot.png" },
+  processesAsync: false, // true when upload answers processing: the job tests run then
+  maxBytes: 40_000_000, // the store's own limit, when it has one: enables the limit tests
+  count: () => testBucket().objectCount(), // optional: enables the "stores nothing" checks
+});
+```
+
+It checks: the sample uploads (ready, or processing then ready through `job`) with a `render` that has a kind, a `src`
+and a positive size; a size of `null` still uploads; an erroring body stream, an aborted signal and a signal aborted
+mid-body all reject and store nothing; bytes that aren't a file it takes are refused with a `MediaRefusal`; a filename
+with path separators is stored safely or refused; a body past `maxBytes` is `too_large`, and so is a declared size
+past it in `accept`; `resolve` answers what was uploaded, leaves unknown ids out and answers no ids with an empty map;
+and, for an asynchronous store, a job stays readable after ready, an unknown job and another field's job read `null`,
+and `cancelJob` behaves as above. The package's own tests run it against a small in-memory test store
+(`src/media-test-store.ts`), which the demo site uses too.
 
 ## Migrations
 

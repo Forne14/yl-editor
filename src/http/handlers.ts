@@ -4,12 +4,17 @@ import {
   ContentValidationError,
   DocumentNotFoundError,
   DocumentStateError,
+  MediaRefusal,
   PathError,
   SlugError,
   type Access,
   type AccessVerdict,
   type ContentStore,
   type MaybePromise,
+  type MediaFileInfo,
+  type MediaRender,
+  type MediaStore,
+  type ResolvedMedia,
   type SchemaRegistry,
   type StoredDocument,
   type WriteContext,
@@ -24,6 +29,10 @@ import {
   ERROR_STATUS,
   FieldRequestSchema,
   KeyRequestSchema,
+  MAX_MEDIA_IDS,
+  MediaFieldQuerySchema,
+  MediaJobQuerySchema,
+  MediaQuerySchema,
   PublishDueRequestSchema,
   PublishRequestSchema,
   RenameRequestSchema,
@@ -32,10 +41,17 @@ import {
   RestoreRevisionRequestSchema,
   RevisionsQuerySchema,
   UnpublishRequestSchema,
+  UPLOAD_FILENAME_HEADER,
   type DocumentSummary,
   type ErrorCode,
   type ErrorEnvelope,
+  type MediaJobResponse,
+  type MediaResolveResponse,
+  type MediaUploadProcessingResponse,
+  type MediaUploadReadyResponse,
   type PublishDueFailure,
+  type WireMedia,
+  type WireMediaRender,
 } from "./wire.ts";
 
 export type ChangeAction =
@@ -77,6 +93,12 @@ export interface ContentHandlerOptions {
    * answers `forbidden`.
    */
   publishDue?: { authorize: (locals: unknown) => MaybePromise<AccessVerdict> };
+  /**
+   * Enables `POST media`, `GET media`, `GET media-job` and `DELETE media-job`, gated by `canEdit` on the document the
+   * field is in. `maxBytes` caps an upload: a larger declared length is refused before the body is read, and a body
+   * that grows past it is cut off. Without the option those routes are `404`.
+   */
+  media?: { store: MediaStore; maxBytes: number };
 }
 
 export interface ContentHandlers {
@@ -91,7 +113,7 @@ class HttpError extends Error {
   constructor(
     readonly code: ErrorCode,
     message: string,
-    readonly extra: { issues?: unknown; current?: StoredDocument } = {},
+    readonly extra: { issues?: unknown; current?: StoredDocument; limit?: number } = {},
   ) {
     super(message);
   }
@@ -108,16 +130,17 @@ type Change = Omit<ChangeEvent, "actor">;
 
 interface RouteResult {
   status?: number;
-  body: unknown;
+  /** Omitted for a `204`. */
+  body?: unknown;
   change?: Change;
   /** Several changes from one request (`publish-due`), each notified on its own. */
   changes?: Change[];
 }
 
-interface Route {
-  method: "GET" | "POST";
-  run: (context: RequestContext) => Promise<RouteResult>;
-}
+type Method = "GET" | "POST" | "DELETE";
+type Run = (context: RequestContext) => Promise<RouteResult>;
+/** One route name, with a handler per method it takes. */
+type Route = Partial<Record<Method, Run>>;
 
 /** The view an editor works on: the draft when there is one, retired documents included. */
 const DRAFT_VIEW = { draft: true, includeRetired: true };
@@ -125,16 +148,26 @@ const DRAFT_VIEW = { draft: true, includeRetired: true };
 /** Most keys one `documents` request may name, after deduping. */
 const MAX_DOCUMENT_KEYS = 100;
 
+/** The wait a `busy` refusal advertises when the store names none. */
+const DEFAULT_BUSY_RETRY_MS = 5000;
+
+/** The route names that exist only with the `media` option. */
+const MEDIA_ROUTES = new Set(["media", "media-job"]);
+
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers },
   });
 
-type ErrorExtra = Pick<ErrorEnvelope["error"], "issues" | "current">;
+type ErrorExtra = Pick<ErrorEnvelope["error"], "issues" | "current" | "limit">;
 
-const errorResponse = (code: ErrorCode, message: string, extra: ErrorExtra = {}): Response =>
-  json(ERROR_STATUS[code], { error: { code, message, ...extra } } satisfies ErrorEnvelope);
+const errorResponse = (
+  code: ErrorCode,
+  message: string,
+  extra: ErrorExtra = {},
+  headers: Record<string, string> = {},
+): Response => json(ERROR_STATUS[code], { error: { code, message, ...extra } } satisfies ErrorEnvelope, headers);
 
 const methodNotAllowed = (method: string, allowed: string): Response =>
   json(405, { error: { code: "bad_request", message: `Method ${method} not allowed` } } satisfies ErrorEnvelope, {
@@ -152,9 +185,33 @@ function isCrossSite(request: Request, url: URL): boolean {
   return false;
 }
 
+const REFUSAL_CODES: Readonly<Record<MediaRefusal["code"], ErrorCode>> = {
+  too_large: "too_large",
+  unsupported: "unsupported",
+  invalid: "bad_request",
+  busy: "busy",
+};
+
+interface DescribedError {
+  code: ErrorCode;
+  message: string;
+  extra?: ErrorExtra;
+  headers?: Record<string, string>;
+}
+
 /** The code and message a thrown error has on the wire. Unexpected errors are logged and never leak their message. */
-function describeError(error: unknown): { code: ErrorCode; message: string; extra?: ErrorExtra } {
+function describeError(error: unknown): DescribedError {
   if (error instanceof HttpError) return { code: error.code, message: error.message, extra: error.extra };
+  if (error instanceof MediaRefusal) {
+    const code = REFUSAL_CODES[error.code];
+    const described: DescribedError = { code, message: error.message };
+    if (code === "too_large" && error.detail.limit !== undefined) described.extra = { limit: error.detail.limit };
+    if (code === "busy") {
+      const seconds = Math.max(1, Math.ceil((error.detail.retryAfterMs ?? DEFAULT_BUSY_RETRY_MS) / 1000));
+      described.headers = { "Retry-After": String(seconds) };
+    }
+    return described;
+  }
   if (error instanceof DocumentNotFoundError) return { code: "not_found", message: error.message };
   if (error instanceof ConflictError) return { code: "conflict", message: error.message };
   if (error instanceof ContentValidationError)
@@ -164,6 +221,162 @@ function describeError(error: unknown): { code: ErrorCode; message: string; extr
   if (error instanceof SlugError) return { code: "slug", message: error.message };
   console.error("[@yl/editor/http] unexpected error", error);
   return { code: "internal", message: "Internal error" };
+}
+
+const tooLarge = (limit: number) => new MediaRefusal("too_large", `The file is over ${limit} bytes`, { limit });
+
+/**
+ * Passes `body` through, counting bytes. Past `limit`, or past a declared length, the stream errors with a refusal; a
+ * body that ends short of its declared length errors too. `onRefuse` hears the refusal first, so the handler can abort
+ * the store's signal and answer with it whatever the store does with the stream error.
+ */
+function countBytes(
+  body: ReadableStream<Uint8Array> | null,
+  limit: number,
+  declared: number | null,
+  onRefuse: (refusal: MediaRefusal) => void,
+): ReadableStream<Uint8Array> {
+  let count = 0;
+  const refuse = (controller: TransformStreamDefaultController<Uint8Array>, refusal: MediaRefusal) => {
+    onRefuse(refusal);
+    controller.error(refusal);
+  };
+  const counter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      count += chunk.byteLength;
+      if (count > limit) return refuse(controller, tooLarge(limit));
+      if (declared !== null && count > declared)
+        return refuse(controller, new MediaRefusal("invalid", "The body is longer than its Content-Length"));
+      controller.enqueue(chunk);
+    },
+    flush(controller) {
+      if (declared !== null && count < declared)
+        refuse(controller, new MediaRefusal("invalid", "The body is shorter than its Content-Length"));
+    },
+  });
+  return (body ?? new ReadableStream<Uint8Array>({ start: (controller) => controller.close() })).pipeThrough(counter);
+}
+
+/** Only the render's own keys, so nothing else a store puts there (variants, storage keys) reaches the wire. */
+function wireRender(render: MediaRender): WireMediaRender {
+  const wire: WireMediaRender = { kind: render.kind, src: render.src, width: render.width, height: render.height };
+  if (render.srcset !== undefined) wire.srcset = render.srcset;
+  if (render.sources !== undefined)
+    wire.sources = render.sources.map((source) => ({ type: source.type, srcset: source.srcset }));
+  if (render.poster !== undefined) wire.poster = render.poster;
+  if (render.filename !== undefined) wire.filename = render.filename;
+  return wire;
+}
+
+const wireMedia = (media: ResolvedMedia): WireMedia => ({ id: media.id, render: wireRender(media.render) });
+
+/** The media type without parameters, lower-cased: `Image/PNG; charset=x` is `image/png`. */
+const bareType = (header: string | null) => (header ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+
+/** A Content-Length that is a plain non-negative integer, else null (undeclared). */
+function declaredLength(header: string | null): number | null {
+  if (header === null || !/^\d+$/.test(header.trim())) return null;
+  const length = Number(header.trim());
+  return Number.isSafeInteger(length) ? length : null;
+}
+
+type Gate = (context: RequestContext, key: string, check: "canEdit" | "canPublish") => Promise<StoredDocument>;
+type ParseQuery = <Schema extends z.ZodType>(url: URL, schema: Schema) => z.infer<Schema>;
+
+/** `media` (GET, POST) and `media-job` (GET, DELETE), each gated by `canEdit` on the field's document. */
+function mediaRoutes(
+  { store, maxBytes }: NonNullable<ContentHandlerOptions["media"]>,
+  gate: Gate,
+  parseQuery: ParseQuery,
+): Record<string, Route> {
+  return {
+    media: {
+      GET: async (context) => {
+        const { key } = parseQuery(context.url, MediaQuerySchema);
+        const ids = [...new Set(context.url.searchParams.getAll("id"))].filter((id) => id.length > 0);
+        if (ids.length > MAX_MEDIA_IDS)
+          throw new HttpError("bad_request", `Too many ids: at most ${MAX_MEDIA_IDS} per request`);
+        await gate(context, key, "canEdit");
+        if (ids.length === 0) return { body: { media: {} } satisfies MediaResolveResponse };
+        const found = await store.resolve(ids);
+        // fromEntries defines own properties, so an id such as `__proto__` stays an ordinary key.
+        const media = Object.fromEntries(
+          ids.flatMap((id) => {
+            const entry = found.get(id);
+            return entry ? [[id, wireRender(entry.render)] as const] : [];
+          }),
+        );
+        return { body: { media } satisfies MediaResolveResponse };
+      },
+      POST: async (context) => {
+        const field = parseQuery(context.url, MediaFieldQuerySchema);
+        const { request } = context;
+        await gate(context, field.key, "canEdit");
+        const header = request.headers.get(UPLOAD_FILENAME_HEADER) ?? "";
+        let filename: string;
+        try {
+          filename = decodeURIComponent(header);
+        } catch {
+          throw new HttpError("bad_request", `${UPLOAD_FILENAME_HEADER} is not URI-encoded`);
+        }
+        if (filename.length === 0) throw new HttpError("bad_request", `Missing ${UPLOAD_FILENAME_HEADER} header`);
+        const size = declaredLength(request.headers.get("Content-Length"));
+        if (size !== null && size > maxBytes) throw tooLarge(maxBytes);
+        const file: MediaFileInfo = { filename, type: bareType(request.headers.get("Content-Type")), size };
+        const write = context.writeContext();
+        await store.accept?.(field, file, write);
+
+        const abort = new AbortController();
+        const onRequestAbort = () => abort.abort(request.signal.reason);
+        request.signal.addEventListener("abort", onRequestAbort);
+        let refusal: MediaRefusal | undefined;
+        const body = countBytes(request.body, maxBytes, size, (refused) => {
+          refusal = refused;
+          abort.abort(refused);
+        });
+        try {
+          const answer = await store.upload(body, file, field, { ...write, signal: abort.signal });
+          // The counter's verdict wins: a store that swallowed the stream error must not answer as if it stored.
+          if (refusal) throw refusal;
+          if (answer.status === "ready")
+            return { status: 201, body: { media: wireMedia(answer.media) } satisfies MediaUploadReadyResponse };
+          const processing: MediaUploadProcessingResponse = { job: answer.job };
+          if (answer.retryAfterMs !== undefined) processing.retryAfterMs = answer.retryAfterMs;
+          return { status: 202, body: processing };
+        } catch (error) {
+          throw refusal ?? error;
+        } finally {
+          request.signal.removeEventListener("abort", onRequestAbort);
+        }
+      },
+    },
+    "media-job": {
+      GET: async (context) => {
+        const { key, path, job } = parseQuery(context.url, MediaJobQuerySchema);
+        await gate(context, key, "canEdit");
+        const state = store.job ? await store.job(job, { key, path }) : null;
+        if (!state) throw new HttpError("job_not_found", `No job ${job} for this field`);
+        let body: MediaJobResponse;
+        if (state.status === "ready") body = { status: "ready", media: wireMedia(state.media) };
+        else if (state.status === "failed") {
+          body = { status: "failed", reason: state.reason };
+          if (state.message !== undefined) body.message = state.message;
+        } else {
+          body = { status: "processing" };
+          if (state.progress !== undefined) body.progress = state.progress;
+          if (state.retryAfterMs !== undefined) body.retryAfterMs = state.retryAfterMs;
+        }
+        return { body };
+      },
+      DELETE: async (context) => {
+        const { key, path, job } = parseQuery(context.url, MediaJobQuerySchema);
+        await gate(context, key, "canEdit");
+        // A store without cancelJob has nothing to cancel: that is still a success.
+        await store.cancelJob?.(job, { key, path });
+        return { status: 204 };
+      },
+    },
+  };
 }
 
 export function createContentHandlers(options: ContentHandlerOptions): ContentHandlers {
@@ -216,7 +429,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       action: ChangeAction,
       check: "canEdit" | "canPublish",
       write: (key: string, context: WriteContext) => Promise<StoredDocument>,
-    ): Route["run"] =>
+    ): Run =>
     async (context) => {
       const { key } = await parseBody(context.request, KeyRequestSchema);
       await gate(context, key, check);
@@ -226,8 +439,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
 
   const routeTable: Record<string, Route> = {
     documents: {
-      method: "GET",
-      run: async (context) => {
+      GET: async (context) => {
         const { keys } = parseQuery(context.url, DocumentsQuerySchema);
         const unique = [...new Set(keys.split(",").map((part) => part.trim()))].filter((part) => part.length > 0);
         if (unique.length > MAX_DOCUMENT_KEYS)
@@ -262,8 +474,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     document: {
-      method: "GET",
-      run: async (context) => {
+      GET: async (context) => {
         const { key } = parseQuery(context.url, DocumentQuerySchema);
         const stored = await gate(context, key, "canEdit");
         // A draft failing its schema is reported, not served. Anything else that stops the validated read is a payload
@@ -283,8 +494,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     revisions: {
-      method: "GET",
-      run: async (context) => {
+      GET: async (context) => {
         const { key } = parseQuery(context.url, RevisionsQuerySchema);
         await gate(context, key, "canEdit");
         const revisions = await store.revisions(key);
@@ -292,8 +502,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     field: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, FieldRequestSchema);
         await gate(context, body.key, "canEdit");
         const document = await store.writeField(
@@ -306,8 +515,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     array: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, ArrayRequestSchema);
         await gate(context, body.key, "canEdit");
         const document = await store.arrayOp(body.key, body.path, body.op, context.writeContext(body.expectedVersion));
@@ -315,8 +523,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     publish: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, PublishRequestSchema);
         await gate(context, body.key, "canPublish");
         const write = context.writeContext(body.expectedVersion);
@@ -325,8 +532,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     unpublish: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, UnpublishRequestSchema);
         await gate(context, body.key, "canPublish");
         const document = await store.unpublish(body.key, context.writeContext(body.expectedVersion));
@@ -334,8 +540,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     "restore-revision": {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, RestoreRevisionRequestSchema);
         await gate(context, body.key, "canEdit");
         const document = await store.restoreRevision(
@@ -347,8 +552,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     "publish-due": {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         if (!options.publishDue) throw new HttpError("forbidden", "publish-due is not enabled");
         const body = await parseBody(context.request, PublishDueRequestSchema);
         deny(await options.publishDue.authorize(context.locals));
@@ -367,19 +571,17 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     discard: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, DiscardRequestSchema);
         await gate(context, body.key, "canEdit");
         const document = await store.discardDraft(body.key, context.writeContext(body.expectedVersion));
         return { body: { document }, change: { action: "discard", key: body.key, document } };
       },
     },
-    retire: { method: "POST", run: keyedWrite("retire", "canPublish", (key, write) => store.retire(key, write)) },
-    restore: { method: "POST", run: keyedWrite("restore", "canPublish", (key, write) => store.restore(key, write)) },
+    retire: { POST: keyedWrite("retire", "canPublish", (key, write) => store.retire(key, write)) },
+    restore: { POST: keyedWrite("restore", "canPublish", (key, write) => store.restore(key, write)) },
     rename: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, RenameRequestSchema);
         await gate(context, body.key, "canPublish");
         const document = await store.rename(body.key, body.slug, context.writeContext());
@@ -387,8 +589,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       },
     },
     create: {
-      method: "POST",
-      run: async (context) => {
+      POST: async (context) => {
         const body = await parseBody(context.request, CreateRequestSchema);
         const entry = registry.entry(body.type);
         if (!entry)
@@ -403,11 +604,17 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
     },
   };
 
-  const routes = Object.entries(routeTable).map(([name, route]) => `${route.method} ${name}`);
+  if (options.media) Object.assign(routeTable, mediaRoutes(options.media, gate, parseQuery));
+
+  const routes = Object.entries(routeTable).flatMap(([name, route]) =>
+    Object.keys(route).map((method) => `${method} ${name}`),
+  );
+
+  let warnedMediaOff = false;
 
   /** Maps a thrown error onto the wire. Unexpected errors are logged and never leak their message. */
   const toResponse = async (error: unknown): Promise<Response> => {
-    const { code, message, extra } = describeError(error);
+    const { code, message, extra, headers } = describeError(error);
     if (error instanceof ConflictError) {
       // The document may fail its schema: a conflict during a repair still shows what is stored.
       const current = await store
@@ -416,7 +623,7 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
         .catch(() => null);
       return errorResponse(code, message, current ? { current } : {});
     }
-    return errorResponse(code, message, extra);
+    return errorResponse(code, message, extra, headers);
   };
 
   /** Fire-and-forget: never rejects, so callers may leave it unawaited. */
@@ -435,8 +642,18 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
       const pathname = url.pathname;
       const name = pathname.startsWith(`${base}/`) ? pathname.slice(base.length + 1) : undefined;
       const route = name !== undefined && Object.hasOwn(routeTable, name) ? routeTable[name] : undefined;
-      if (!route) return errorResponse("not_found", "Unknown route");
-      if (request.method !== route.method) return methodNotAllowed(request.method, route.method);
+      if (!route) {
+        if (name !== undefined && MEDIA_ROUTES.has(name) && !warnedMediaOff) {
+          warnedMediaOff = true;
+          console.warn(
+            `[@yl/editor/http] ${request.method} ${name} answered 404: the media routes are off. ` +
+              "Pass createContentHandlers({ media: { store, maxBytes } }) to turn them on.",
+          );
+        }
+        return errorResponse("not_found", "Unknown route");
+      }
+      const run = Object.hasOwn(route, request.method) ? route[request.method as Method] : undefined;
+      if (!run) return methodNotAllowed(request.method, Object.keys(route).join(", "));
 
       if (request.headers.get(REQUESTED_WITH_HEADER) !== REQUESTED_WITH_VALUE)
         return errorResponse("forbidden", `Missing ${REQUESTED_WITH_HEADER} header`);
@@ -453,8 +670,11 @@ export function createContentHandlers(options: ContentHandlerOptions): ContentHa
           ...(expectedVersion !== undefined ? { expectedVersion } : {}),
         }),
       };
-      const result = await route.run(context);
-      const response = json(result.status ?? 200, result.body);
+      const result = await run(context);
+      const response =
+        result.status === 204
+          ? new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } })
+          : json(result.status ?? 200, result.body);
       for (const change of [...(result.change ? [result.change] : []), ...(result.changes ?? [])])
         void notify({ ...change, ...(actor !== undefined ? { actor } : {}) });
       return response;
