@@ -48,6 +48,11 @@ export interface Editable {
   (path: string, type: EditFieldType, attrs?: EditableAttrs): Record<string, string>;
   /** The list element's attributes. Its items are the elements carrying `item(...)`. */
   list(path: string, attrs?: EditableListAttrs): Record<string, string>;
+  /**
+   * The attributes of a wrapper whose plain fields the chrome draws as one dashed outline, with thin dashed lines
+   * between the fields (docs/chrome.md, "Groups"). Nothing outside edit mode.
+   */
+  group(): Record<string, string>;
   /** One item's attributes, addressed with `itemPath` so a keyed item survives a concurrent reorder. */
   item(listPath: string, item: unknown, index: number): Record<string, string>;
   /**
@@ -112,5 +117,6 @@ export function editable(docKey: string | undefined): Editable {
     const base = itemPath(listPath, value, index);
     return (name: string, type: EditFieldType, attrs?: EditableAttrs) => field(`${base}.${name}`, type, attrs);
   };
-  return Object.assign(field, { list, item, itemFields });
+  const group = (): Record<string, string> => (docKey === undefined ? {} : { "data-edit-group": "" });
+  return Object.assign(field, { list, item, itemFields, group });
 }

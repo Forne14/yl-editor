@@ -101,3 +101,8 @@ test("itemFields addresses an item's fields through the item, and renders nothin
   });
   expect(editable(undefined).itemFields("artists", { _key: "i3" }, 2)("name", "text")).toEqual({});
 });
+
+test("group marks a wrapper in edit mode and renders nothing outside it", () => {
+  expect(editable("pages/home").group()).toEqual({ "data-edit-group": "" });
+  expect(editable(undefined).group()).toEqual({});
+});

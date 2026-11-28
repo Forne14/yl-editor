@@ -23,7 +23,7 @@ footer that is locked for the others) and `cron` (may only run `POST /api/conten
 `pages/home` covers text, richtext, toggle, select, number, tags, date and url fields. `pages/about` has two text
 fields, for multi-document publish and discard. `pages/team` is a keyed list (max 4, Duplicate on),
 rendered only with `&lists=1` so the specs that walk the whole page are unaffected. `pages/crew` is a second keyed list (max 6, Duplicate on) laid out as a row that wraps into a grid on a narrow page, rendered only
-with `&rowlist=1` (`/?edit=1&rowlist=1`): it shows the chrome drawing its lines on a row and a grid axis. `settings/site` has the footer, a type only `owner` may edit. Visitors
+with `&rowlist=1` (`/?edit=1&rowlist=1`): it shows the chrome drawing its lines on a row and a grid axis. `&groups=1` wraps the hero and the facts in `editable(docKey).group()` wrappers, so the chrome draws each as one outline with lines between its fields. `settings/site` has the footer, a type only `owner` may edit. Visitors
 see the published versions and no `data-edit-*` attributes, script or stylesheet; editors see drafts.
 
 ## Tenants

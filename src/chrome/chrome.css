@@ -697,6 +697,83 @@
   outline-offset: calc(-3 * var(--cms-space-1) / 4);
 }
 
+/* A group (#44): the list frame's look for plain fields inside a [data-edit-group] wrapper. One dashed outline, the
+ * wrapper's box plus --cms-list-pad; thin dashed lines between the fields, set by the chrome from the fields' boxes. Fields
+ * inside lose their own outline; their states are solid and inset, as in a list item. No tint, tag or Tab stop. */
+:where(.cms-group) {
+  position: relative;
+}
+
+:where(.cms-group__frame) {
+  position: absolute;
+  inset: calc(-1 * var(--cms-list-pad));
+  margin: 0;
+  padding: 0;
+  border: var(--cms-outline);
+  border-radius: var(--cms-radius);
+  list-style: none;
+  pointer-events: none;
+}
+
+:where(.cms-group--locked) > .cms-group__frame {
+  border-color: var(--cms-muted);
+}
+
+:where(.cms-group__sep) {
+  position: absolute;
+  top: var(--cms-sep-top);
+  left: var(--cms-sep-x);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+:where(.cms-group__sep--v) {
+  height: var(--cms-sep-length);
+  border-left: var(--cms-list-line);
+}
+
+:where(.cms-group__sep--h) {
+  width: var(--cms-sep-length);
+  border-top: var(--cms-list-line);
+}
+
+:where(.cms-group .cms-field) {
+  outline: none;
+}
+
+:where(.cms-group .cms-field:hover) {
+  outline: thin solid var(--cms-fg);
+  outline-offset: calc(-1 * var(--cms-space-1) / 4);
+}
+
+:where(.cms-group .cms-field--editing, .cms-group .cms-field--saving, .cms-group .cms-field--failed) {
+  outline: medium solid var(--cms-accent);
+  outline-offset: calc(-1 * var(--cms-space-1) / 2);
+}
+
+:where(.cms-group .cms-field--saving) {
+  outline-color: var(--cms-warning);
+}
+
+:where(.cms-group .cms-field--failed) {
+  outline-color: var(--cms-danger);
+}
+
+:where(.cms-group .cms-field--locked) {
+  cursor: not-allowed;
+}
+
+:where(.cms-group .cms-field--locked:hover) {
+  outline: thin dashed var(--cms-muted);
+}
+
+:where(.cms-group .cms-field:focus-visible) {
+  outline: medium solid var(--cms-accent);
+  outline-offset: calc(-3 * var(--cms-space-1) / 4);
+}
+
 /* An item's toolbar sits on its top line, centred on it: at the right of the outline in a column, at the item's top left
  * in a row or grid (the chrome sets `left`, and `right: auto`). */
 :where(.cms-item__tools) {
