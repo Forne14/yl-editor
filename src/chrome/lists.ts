@@ -223,9 +223,9 @@ function icon(name: ItemAction | "add"): SVGSVGElement {
   return svg;
 }
 
-const px = (value: number) => `${Math.round(value * 100) / 100}px`;
+export const px = (value: number) => `${Math.round(value * 100) / 100}px`;
 
-interface Box {
+export interface Box {
   l: number;
   r: number;
   t: number;
@@ -235,7 +235,7 @@ interface Box {
 /** The viewport as an origin: boxes in client coordinates, as a pointer event's are. */
 const VIEWPORT = { left: 0, top: 0 } as const;
 
-function boxOf(node: Element, origin: { left: number; top: number }): Box {
+export function boxOf(node: Element, origin: { left: number; top: number }): Box {
   const rect = node.getBoundingClientRect();
   return {
     l: rect.left - origin.left,
@@ -251,7 +251,7 @@ function boxOf(node: Element, origin: { left: number; top: number }): Box {
  * fields and runs to the nearest vertical line, or the outline, on each side. Neighbours only: a pair with another
  * field between them gets no line.
  */
-function cellLines(fields: readonly Box[], edge: { left: number; right: number }) {
+export function cellLines(fields: readonly Box[], edge: { left: number; right: number }) {
   const overlapY = (a: Box, b: Box) => Math.min(a.b, b.b) - Math.max(a.t, b.t) > 1;
   const overlapX = (a: Box, b: Box) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 1;
   const xs: number[] = [];
@@ -282,7 +282,7 @@ function cellLines(fields: readonly Box[], edge: { left: number; right: number }
   return { vertical: xs, horizontal };
 }
 
-type Axis = "column" | "row" | "grid";
+export type Axis = "column" | "row" | "grid";
 
 interface Cell {
   row: HTMLElement;
@@ -293,11 +293,11 @@ interface Cell {
   box: Box;
 }
 
-interface Line {
+export interface Line<T = Cell> {
   top: number;
   bottom: number;
   /** Left to right. */
-  cells: Cell[];
+  cells: T[];
 }
 
 /**
@@ -321,7 +321,10 @@ function group<T extends { box: Box }>(all: readonly T[]): { top: number; bottom
   return lines;
 }
 
-function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Line[]; axis: Axis } {
+export function layOut<T extends { box: Box }>(
+  itemBoxes: readonly Box[],
+  cells: readonly T[],
+): { lines: Line<T>[]; axis: Axis } {
   const across = group(itemBoxes.map((box) => ({ box })));
   const crowded = across.some((line) => line.cells.length > 1);
   const axis: Axis = !crowded ? "column" : across.length === 1 ? "row" : "grid";

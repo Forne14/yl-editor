@@ -117,8 +117,6 @@ export function editable(docKey: string | undefined): Editable {
     const base = itemPath(listPath, value, index);
     return (name: string, type: EditFieldType, attrs?: EditableAttrs) => field(`${base}.${name}`, type, attrs);
   };
-  const group = (): Record<string, string> => {
-    throw new Error("not implemented");
-  };
+  const group = (): Record<string, string> => (docKey === undefined ? {} : { "data-edit-group": "" });
   return Object.assign(field, { list, item, itemFields, group });
 }

@@ -17,6 +17,7 @@ import {
   type ItemRecord,
   type ListRecord,
 } from "./lists.ts";
+import { attachGroup, createOutlineWatch, scanGroups, type GroupRecord } from "./groups.ts";
 import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
@@ -165,6 +166,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let fields: FieldRecord[] = [];
   let byElement = new Map<HTMLElement, FieldRecord>();
   let lists: ListRecord[] = [];
+  let groups: GroupRecord[] = [];
   /** A field's emptied state, kept for an element that left the page, in case Undo puts it back. */
   const clearedOf = new WeakMap<HTMLElement, FieldRecord["cleared"]>();
   /** The reason fields are locked after the last load failed, until one succeeds. */
@@ -228,6 +230,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   let opening: { record: FieldRecord; ticket: number } | undefined;
   let editing = true;
+  /** Warns when two dashed outlines cross; quiet while not editing. */
+  const outlines = createOutlineWatch(scanRoot, () => editing);
   let destroyed = false;
   let openTicket = 0;
   /** The toast that reported the last failed load, hidden once a load succeeds. */
@@ -535,6 +539,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (next) {
       for (const record of fields) attachRecord(record);
       for (const list of lists) attachListRecord(list);
+      attachGroups();
       enterButton.blur();
     } else {
       openTicket += 1;
@@ -544,8 +549,15 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       badge.hide();
       for (const record of fields) record.detach?.();
       for (const list of lists) list.detach?.();
+      for (const group of groups) group.detach?.();
       enterButton.focus();
     }
+  }
+
+  /** Draws every group from the fields the chrome knows now, and queues the crossing check. */
+  function attachGroups(): void {
+    for (const group of groups) attachGroup(group, (element) => byElement.get(element));
+    outlines.schedule();
   }
 
   function attachRecord(record: FieldRecord): void {
@@ -960,6 +972,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     // Swaps take outermost lists, and a rearranged list holds none with chrome, so only the new records need dressing.
     if (editing) for (const list of addedLists) attachListRecord(list);
+    // The swap moved what is around the groups: repaint them and look for crossings again.
+    for (const group of groups) group.schedule();
+    outlines.schedule();
     updateBar();
   }
 
@@ -2487,17 +2502,22 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   function scan(): void {
     for (const record of fields) record.detach?.();
     for (const list of lists) list.detach?.();
+    for (const group of groups) group.detach?.();
     const previous = byElement;
     fields = scanFields(scanRoot);
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
     lists = scanLists(scanRoot);
+    groups = scanGroups(scanRoot);
   }
 
   /** Marks each field editable or locked from what the session knows, and dresses fields and lists while editing. */
   function dress(): void {
     for (const record of fields) dressRecord(record);
-    if (editing) for (const list of lists) attachListRecord(list);
+    if (editing) {
+      for (const list of lists) attachListRecord(list);
+      attachGroups();
+    }
     updateBar();
   }
 
@@ -2573,6 +2593,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       toast.cancelAnnounce();
       for (const record of fields) record.detach?.();
       for (const list of lists) list.detach?.();
+      for (const group of groups) group.detach?.();
+      outlines.destroy();
       for (const removal of removals) clearTimeout(removal.timer);
       disposer.dispose();
       chrome.remove();

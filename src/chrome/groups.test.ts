@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // Field groups (#44). happy-dom has no layout, so boxes are stubbed by element id: this proves the chrome's logic, not
 // how a browser lays the page out (e2e/groups.spec.ts does that).
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { mountEditor } from "./index.ts";
 import type { EditorHandle } from "./types.ts";
 
@@ -11,7 +11,7 @@ let handle: EditorHandle | undefined;
 /** `id -> [left, top, width, height]`. An element with no entry has no box, like one that isn't rendered. */
 let boxes: Record<string, [number, number, number, number]>;
 let boxCalls: Record<string, number>;
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 const realRect = Element.prototype.getBoundingClientRect;
 const realObserver = globalThis.ResizeObserver;
 let observed: (() => void)[];
