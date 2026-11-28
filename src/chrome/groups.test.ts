@@ -830,6 +830,15 @@ describe("a field in a drawn group that isn't a member", () => {
     expect(String(crossings()[0]?.[0])).toContain('id="g"');
   });
 
+  test("the crossing check counts the scan root's own frame when the root is the group", async () => {
+    withStranger([0, 90, 400, 40]);
+    handle = mountEditor({ root: document.getElementById("g") as HTMLElement });
+    await handle.ready;
+    await settle();
+    expect(crossings()).toHaveLength(1);
+    expect(String(crossings()[0]?.[0])).toContain('id="g"');
+  });
+
   test("the member marker comes off on Done and when the group goes, and back on with Edit", async () => {
     column();
     const before = document.body.innerHTML;

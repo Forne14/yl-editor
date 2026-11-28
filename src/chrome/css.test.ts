@@ -51,3 +51,29 @@ test("every class the stylesheet styles is prefixed cms-", () => {
   const classes = [...css.matchAll(/\.([a-z][\w-]*)/gi)].map((match) => match[1]);
   expect(classes.filter((name) => !name?.startsWith("cms-"))).toEqual([]);
 });
+
+// happy-dom matches :focus-visible but doesn't resolve it inside :where() lists, so a focused failed field can't be
+// measured there: this checks the cascade by rule order instead. All these rules have specificity 0, so a later
+// `outline` shorthand beats an earlier `outline-color`; a focused saving or failed field must have a later colour rule.
+const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+  selector: (match[1] ?? "").replace(/\s+/g, " ").trim(),
+  body: match[2] ?? "",
+}));
+
+test.each([
+  ["a plain field", ".cms-field:focus-visible", ".cms-field--%:focus-visible"],
+  ["a list item's field", ".cms-item .cms-field:focus-visible", ".cms-item .cms-field--%:focus-visible"],
+  ["a group member", ".cms-field[data-cms-member]:focus-visible", ".cms-field--%[data-cms-member]:focus-visible"],
+])("%s keeps the saving and failed colours while focused", (_name, focusSelector, stateSelector) => {
+  const focusAt = rules.findIndex((rule) => rule.selector.includes(focusSelector) && /\boutline:/.test(rule.body));
+  expect(focusAt).toBeGreaterThanOrEqual(0);
+  for (const [state, token] of [
+    ["saving", "warning"],
+    ["failed", "danger"],
+  ] as const) {
+    const selector = stateSelector.replace("%", state);
+    const at = rules.findIndex((rule) => rule.selector.includes(selector));
+    expect(at, `${selector} rule`).toBeGreaterThan(focusAt);
+    expect(rules[at]?.body).toContain(`outline-color: var(--cms-${token})`);
+  }
+});

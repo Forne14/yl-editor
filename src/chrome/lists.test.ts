@@ -2894,3 +2894,17 @@ describe("a host element two chrome parts dress gives its class attribute back a
     expect(list().outerHTML).toBe(before);
   });
 });
+
+describe("a host's class attribute that the host empties while the chrome is on it", () => {
+  test("stays the host's: a later add and remove never deletes class=\"\"", () => {
+    const node = document.createElement("p");
+    addHostClass(node, "cms-field");
+    node.className = "host";
+    removeHostClass(node, "cms-field");
+    node.className = "";
+    expect(node.getAttribute("class")).toBe("");
+    addHostClass(node, "cms-field");
+    removeHostClass(node, "cms-field");
+    expect(node.getAttribute("class")).toBe("");
+  });
+});
