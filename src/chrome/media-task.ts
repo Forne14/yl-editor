@@ -29,10 +29,13 @@
 // - Give-up: only after a poll answer, never while the tab is hidden. Either MAX_FAILED_POLLS (6) failures in a row, or
 //   the answer is to a poll sent at or after the deadline (202 + jobTimeoutMs, default 600 000): when the deadline
 //   passes, the next poll is the last one.
-// - Hidden: polls go on as scheduled; a give-up they would cause waits. Once past the deadline while hidden, each wait
-//   is at least HIDDEN_PAST_DEADLINE_MS (60 s), since only the visible tab can end it. Becoming visible polls once at
-//   once, unless a request is in flight, a 503's Retry-After wait is pending, or the task gave up; it changes nothing
-//   else.
+// - Busy wait: the wait a poll's 503 Retry-After sets, kept exactly as the server asked (clamped 1-60 s). Until it
+//   has passed (`busyUntil`, a time, not the timer, so a hidden tab's late timer doesn't stretch it), a visible or
+//   online event doesn't poll. A 503 without Retry-After waits the backoff step and is not a busy wait.
+// - Hidden: polls go on as scheduled; a give-up they would cause waits. Once past the deadline while hidden, every
+//   wait except a busy wait is at least HIDDEN_PAST_DEADLINE_MS (60 s), since only the visible tab can end it; a wait
+//   the floor set is never a busy wait. Becoming visible polls once at once, unless a request is in flight, a busy
+//   wait hasn't passed yet, or the task gave up; it changes nothing else.
 // - Offline: a poll that comes due while offline is not sent and counts for nothing. Coming online polls at once
 //   (same guard as becoming visible). Backstop, in case navigator.onLine is a false negative or the online event never
 //   comes: while offline, isOnline() is re-checked every OFFLINE_RECHECK_MS (15 s) on the one task timer, and the first
@@ -48,7 +51,9 @@
 // - Claims: `inFlight` holds the one request's AbortController; `timer` the one pending timer (poll wait, busy wait or
 //   offline re-check); `stallTimer` the stall timer. Each is released (cleared or aborted, then set to null) when its
 //   continuation runs, on every epoch bump, and on ready. After abort() nothing is pending and no listener is
-//   subscribed. So a task holds at most 2 timers (`timer`, `stallTimer`) and 1 request at any time.
+//   subscribed. So a task holds at most 2 timers (`timer`, `stallTimer`) and 1 request at any time. `busyUntil` belongs
+//   to `timer`: set only when `timer` is a poll's busy wait, and reset to null whenever `timer` fires, is cleared, or
+//   is set to any other wait.
 // - Counters: `resends` (automatic 503 resends) counts up to MAX_BUSY_RESENDS and resets only on retry(). `failures`
 //   (failed polls in a row) resets on a readable processing answer and on keepWaiting(). `pollIndex` (backoff step)
 //   resets when polling starts and on keepWaiting().
@@ -209,8 +214,8 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
   let inFlight: AbortController | null = null;
   let timer: unknown = null;
   let stallTimer: unknown = null;
-  /** The pending timer is a 503's Retry-After wait, which a visible or online poll must not cut short. */
-  let busyWait = false;
+  /** When the pending busy wait (a poll's 503 Retry-After) ends; null when the pending wait is not one. */
+  let busyUntil: number | null = null;
   // Counters.
   let resends = 0;
   let failures = 0;
@@ -236,7 +241,7 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
   const clearTimer = () => {
     if (timer !== null) environment.clearTimeout(timer);
     timer = null;
-    busyWait = false;
+    busyUntil = null;
   };
   const clearStall = () => {
     if (stallTimer !== null) environment.clearTimeout(stallTimer);
@@ -257,7 +262,7 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
     timer = environment.setTimeout(() => {
       if (startedIn !== epoch) return;
       timer = null;
-      busyWait = false;
+      busyUntil = null;
       callback();
     }, ms);
   };
@@ -347,10 +352,13 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
     const step = POLL_BACKOFF_MS[Math.min(pollIndex, POLL_BACKOFF_MS.length - 1)] ?? MAX_RETRY_AFTER_MS;
     pollIndex++;
     let wait = retryAfterMs !== undefined ? clampRetryAfter(retryAfterMs) : step;
-    // Hidden past the deadline only the visible tab can end the job: poll at most once a minute meanwhile.
-    if (environment.isHidden() && environment.now() >= deadline) wait = Math.max(wait, HIDDEN_PAST_DEADLINE_MS);
+    const isBusyWait = fromBusy && retryAfterMs !== undefined;
+    // Hidden past the deadline only the visible tab can end the job: poll at most once a minute meanwhile. Never on a
+    // busy wait, which keeps the server's Retry-After.
+    if (!isBusyWait && environment.isHidden() && environment.now() >= deadline)
+      wait = Math.max(wait, HIDDEN_PAST_DEADLINE_MS);
     later(wait, poll);
-    busyWait = fromBusy;
+    busyUntil = isBusyWait ? environment.now() + wait : null;
   };
 
   const poll = () => {
@@ -397,9 +405,10 @@ export function startMediaTask(options: MediaTaskOptions): MediaTask {
     schedulePoll(retryAfterMs, fromBusy);
   };
 
-  /** A visible or online event: one poll now, unless one is in flight, a 503 wait is pending, or polling is over. */
+  /** A visible or online event: one poll now, unless one is in flight, a busy wait hasn't passed, or polling is over. */
   const pollNow = () => {
-    if (state.phase !== "processing" || inFlight !== null || busyWait) return;
+    if (state.phase !== "processing" || inFlight !== null) return;
+    if (busyUntil !== null && environment.now() < busyUntil) return;
     clearTimer();
     poll();
   };
