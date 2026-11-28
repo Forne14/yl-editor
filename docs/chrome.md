@@ -383,7 +383,9 @@ chrome creates (see docs/paths.md).
   `.cms-list__frame` (the outline and `.cms-list__tag`), `.cms-list__add`, and in each item `.cms-item__tools`,
   `.cms-item__band` and `.cms-item__sep`. Leave room between items for the toolbar on the line between them, for
   example `.my-list.cms-list { gap: 3.75rem; }`: the chrome never changes your layout, so with a smaller gap the
-  toolbar overlaps the items next to it. Done and `destroy()` take it all out again.
+  toolbar overlaps the items next to it. The outline is added at the end of the list and each item's toolbar at the
+  start of the item (it comes first in Tab order), so in edit mode an item's `:first-child` is the toolbar. A border
+  on the list is allowed. Done and `destroy()` take it all out again.
 
 ### Groups
 
@@ -415,7 +417,9 @@ one document's helper, but a group can hold fields of any document.
   nor do fields of a document a Discard deleted.
 - A group never holds a list or sits in one. A wrapper that contains a `data-edit-list` is ignored and its fields get
   their own outlines. A `data-edit-group` inside a list item is ignored. In a group inside a group, the outer one wins
-  and the inner one is ignored. Each case is named by a `console.warn`, once per mount.
+  and the inner one is ignored. An inline wrapper (`display: inline` or `contents`) is ignored too, because a box that
+  wraps over lines has no one rectangle to outline: use a block or `inline-block` element. Each case is named by a
+  `console.warn`, once per mount.
 - Any two dashed outlines that cross (a field's, a group's or a list's) are named by a `console.warn`, once per pair
   per mount. The chrome checks again when the page resizes. Hidden fields are skipped.
 - The outline and lines are placed from the boxes on the page, through custom properties, and redrawn when the group
