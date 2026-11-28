@@ -727,6 +727,20 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     added.push(addRow);
   }
 
+  // The painter. Invariants:
+  // - Measurement policy (as in groups.ts): never parse a CSS length in JS; `--cms-list-pad` is never read. Boxes are
+  //   measured in the host's padding box (`paddingBox`), where the frame, bands and tools are positioned. The pad is the
+  //   frame's rect against that padding box (its `left` is -pad); the frame's border is its computed
+  //   `border-left-width` / `border-right-width` (real properties, so px). Only an unreadable value (a frame with no
+  //   box, an empty style: an engine without layout) takes the fallback.
+  // - Measure after styling: `cms-list` and the frame are on the host before the first paint, so host CSS keyed on
+  //   `.cms-list` is in every box a paint reads. The axis classes are set from the boxes a paint read; no chrome rule
+  //   keyed on them moves a box.
+  // - Nodes: the frame is appended to the host (after its items, before the Add row), so host `:first-child` rules
+  //   match the same item in edit mode. Each item's toolbar stays its first child: Tab reaches it before the item's
+  //   fields (#28).
+  // - `paint` is the only writer of separators, bands' and tools' positions and the axis classes; `schedule` coalesces
+  //   any number of requests into one paint per animation frame.
   const separators: HTMLElement[] = [];
   let axis: Axis = "column";
   const paint = () => {

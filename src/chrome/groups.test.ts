@@ -2,6 +2,7 @@
 // Field groups (#44). happy-dom has no layout, so boxes are stubbed by element id: this proves the chrome's logic, not
 // how a browser lays the page out (e2e/groups.spec.ts does that).
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { createOutlineWatch } from "./groups.ts";
 import { mountEditor } from "./index.ts";
 import type { EditorHandle } from "./types.ts";
 
@@ -10,6 +11,13 @@ let canEdit: boolean;
 let handle: EditorHandle | undefined;
 /** `id -> [left, top, width, height]`. An element with no entry has no box, like one that isn't rendered. */
 let boxes: Record<string, [number, number, number, number]>;
+/** Boxes that replace `boxes` while a `.cms-group` is on the page: host CSS keyed on the class moves them. */
+let groupedBoxes: Record<string, [number, number, number, number]>;
+/**
+ * Where a frame is drawn: its parent's padding box grown by this much on each side, as the chrome's CSS lays it out
+ * (`inset` / `left` / `right` of `calc(-1 * --cms-list-pad)`). Undefined: frames have no box, as in happy-dom.
+ */
+let framePad: number | undefined;
 let boxCalls: Record<string, number>;
 let warn: MockInstance<typeof console.warn>;
 const realRect = Element.prototype.getBoundingClientRect;
@@ -102,15 +110,29 @@ function column(): void {
 beforeEach(() => {
   canEdit = true;
   boxes = {};
+  groupedBoxes = {};
+  framePad = undefined;
   boxCalls = {};
   observed = [];
   watching = [];
   borders = {};
   document.head.innerHTML = "";
   sessionStorage.clear();
+  const layout = (id: string) => (document.querySelector(".cms-group") ? (groupedBoxes[id] ?? boxes[id]) : boxes[id]);
   Element.prototype.getBoundingClientRect = function (this: Element) {
     boxCalls[this.id] = (boxCalls[this.id] ?? 0) + 1;
-    const box = boxes[this.id];
+    const parent = this.parentElement;
+    if (framePad !== undefined && parent && this.matches(".cms-group__frame, .cms-list__frame")) {
+      const [left, top, width, height] = layout(parent.id) ?? [0, 0, 0, 0];
+      const [sideX, sideY] = borders[parent.id] ?? [0, 0];
+      return new DOMRect(
+        left + sideX - framePad,
+        top + sideY - framePad,
+        width - 2 * sideX + 2 * framePad,
+        height - 2 * sideY + 2 * framePad,
+      );
+    }
+    const box = layout(this.id);
     return box ? new DOMRect(...box) : new DOMRect(0, 0, 0, 0);
   };
   vi.stubGlobal(
@@ -134,7 +156,7 @@ beforeEach(() => {
   );
   // The padding box: the border box less the host border (stubbed by id).
   const sides = (node: Element) => borders[node.id] ?? [0, 0];
-  const size = (node: Element) => boxes[node.id] ?? [0, 0, 0, 0];
+  const size = (node: Element) => layout(node.id) ?? [0, 0, 0, 0];
   const values = {
     clientLeft: (node: Element) => sides(node)[0],
     clientTop: (node: Element) => sides(node)[1],
@@ -435,6 +457,7 @@ describe("geometry: measured in the wrapper's padding box", () => {
 
   test("a pad of 0 is a pad of 0, not the 12px fallback", async () => {
     css(".cms-group__frame { --cms-list-pad: 0px; }");
+    framePad = 0;
     page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>`);
     boxes = { g: [0, 0, 400, 40], a: [0, 0, 180, 40], b: [220, 0, 180, 40] };
     await mount();
@@ -454,6 +477,7 @@ describe("geometry: measured in the wrapper's padding box", () => {
 
   test("a list's pad of 0 is a pad of 0 too", async () => {
     css(".cms-list__frame { --cms-list-pad: 0px; }");
+    framePad = 0;
     page(
       `<ul id="l" data-edit-list="${KEY}:items"><li id="i1" data-edit-item="${KEY}:items[_key=i1]">${field("x", "items[_key=i1].a")}</li></ul>`,
     );
@@ -461,6 +485,70 @@ describe("geometry: measured in the wrapper's padding box", () => {
     await mount();
     const listFrame = document.querySelector<HTMLElement>(".cms-list__frame");
     expect(listFrame?.style.getPropertyValue("--cms-frame-top")).toBe("0px");
+  });
+});
+
+describe("geometry: read from rendered boxes, never parsed from a custom property", () => {
+  test("the pad is where the frame is drawn: a 1rem pad is 16px, not 1", async () => {
+    // An unregistered custom property computes to its token: `1rem`, which parses as 1.
+    css(".cms-group__frame { --cms-list-pad: 1rem; }");
+    framePad = 16;
+    column();
+    await mount();
+    // Edge to edge inside the frame's 2px border: 400 + 2 * (16 - 2).
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-length"))).toEqual(["428px", "428px"]);
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-x"))).toEqual(["-14px", "-14px"]);
+  });
+
+  test("lines are measured once .cms-group is on: host padding keyed on the class counts", async () => {
+    column();
+    // `.hero.cms-group { padding-top: 20px }` in the host's CSS: with the class on, the fields sit 20px lower.
+    groupedBoxes = {
+      g: [100, 100, 400, 220],
+      a: [100, 120, 400, 40],
+      b: [100, 180, 400, 40],
+      c: [100, 240, 400, 40],
+    };
+    await mount();
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-top"))).toEqual(["70px", "130px"]);
+  });
+
+  test("a group frame's reach in the crossing check is where it is drawn", async () => {
+    framePad = 16;
+    page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>${field("c", "c")}`);
+    // c's outline starts at 114 (6px above it); the frame ends at 116 with a 16px pad, at 112 with the 12px fallback.
+    boxes = { g: [0, 0, 400, 100], a: [0, 0, 400, 40], b: [0, 60, 400, 40], c: [0, 120, 400, 40] };
+    await mount();
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes("cross"))).toHaveLength(1);
+  });
+});
+
+describe("an inline wrapper (G11)", () => {
+  test.each(["inline", "contents"])(
+    "with display: %s is dropped: its fields keep their own outlines, and the console says so once per mount",
+    async (display) => {
+      css(`#g { display: ${display}; }`);
+      column();
+      await mount();
+      const group = document.getElementById("g") as HTMLElement;
+      expect(frames()).toHaveLength(0);
+      expect(seps()).toHaveLength(0);
+      expect(group.hasAttribute("class")).toBe(false);
+      expect(document.getElementById("a")?.classList.contains("cms-field")).toBe(true);
+      const told = () => warn.mock.calls.filter((call) => String(call[0]).includes("inline-block"));
+      expect(told()).toHaveLength(1);
+      expect(String(told()[0]?.[0])).toContain('id="g"');
+      await handle?.api.refresh();
+      await settle();
+      expect(told()).toHaveLength(1);
+    },
+  );
+
+  test("an inline-block wrapper is drawn", async () => {
+    css("#g { display: inline-block; }");
+    column();
+    await mount();
+    expect(frames()).toHaveLength(1);
   });
 });
 
@@ -511,12 +599,52 @@ describe("warnings: once per element per mount", () => {
 });
 
 describe("crossing watch", () => {
-  test("the field outline offset is read from --cms-space-1: at 0, touching fields don't cross", async () => {
-    css(".cms-field { --cms-space-1: 0px; }");
+  const crossings = () => warn.mock.calls.filter((call) => String(call[0]).includes("cross"));
+
+  test("a plain field's outline reaches outline-offset + outline-width: with both 0, touching fields don't cross", async () => {
+    css(".cms-field { outline-offset: 0px; outline-width: 0px; }");
     page(`${field("a", "a")}${field("b", "b")}`);
     boxes = { a: [0, 0, 100, 40], b: [100, 10, 100, 40] };
     await mount();
-    expect(warn.mock.calls.filter((call) => String(call[0]).includes("cross"))).toHaveLength(0);
+    expect(crossings()).toHaveLength(0);
+  });
+
+  test("fields 10px apart cross: each outline reaches 4px offset + 2px width", async () => {
+    css(".cms-field { outline-offset: 4px; outline-width: 2px; }");
+    page(`${field("a", "a")}${field("b", "b")}`);
+    boxes = { a: [0, 0, 100, 40], b: [110, 10, 100, 40] };
+    await mount();
+    expect(crossings()).toHaveLength(1);
+  });
+
+  test("a group that starts drawing after the frame's check is checked again", async () => {
+    page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>${field("c", "c")}`);
+    // b has no box: the group draws nothing, and nothing crosses.
+    // c sits clear of b's own outline (6px past it) but inside the frame's reach (12px past the wrapper).
+    boxes = { g: [0, 0, 400, 100], a: [0, 0, 400, 40], c: [0, 114, 400, 40] };
+    await mount();
+    expect(crossings()).toHaveLength(0);
+    // The watch's resize listener runs its check before the group's paint draws the frame that c crosses.
+    boxes.b = [0, 60, 400, 40];
+    window.dispatchEvent(new Event("resize"));
+    await settle();
+    expect(crossings()).toHaveLength(1);
+    expect(String(crossings()[0]?.[0])).toContain('id="g"');
+  });
+
+  test("a destroyed watch neither checks nor schedules", async () => {
+    page(`<p id="a" class="cms-field"></p><p id="b" class="cms-field"></p>`);
+    boxes = { a: [0, 0, 100, 40], b: [90, 30, 100, 40] };
+    const frame = vi.spyOn(window, "requestAnimationFrame");
+    const watch = createOutlineWatch(document.getElementById("page") as HTMLElement, () => true);
+    watch.destroy();
+    watch.check();
+    watch.schedule();
+    await settle();
+    expect(crossings()).toHaveLength(0);
+    expect(frame).not.toHaveBeenCalled();
+    expect(watching.every((targets) => targets.size === 0)).toBe(true);
+    frame.mockRestore();
   });
 
   test("watches exactly the outlines of the last check: a removed field is let go", async () => {

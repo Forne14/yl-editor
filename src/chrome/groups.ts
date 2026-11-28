@@ -8,23 +8,35 @@
 //   afresh on every paint. Fewer than two members: the group draws nothing and the wrapper holds no `cms-group` class,
 //   so its fields look plain; the next paint with two members draws it again. Candidates (the fields the chrome knew
 //   inside the wrapper at attach) are fixed per attach; a wrapper with fewer than two is never attached.
-// - Geometry: everything is measured in the wrapper's padding box (border box + clientLeft/clientTop, clientWidth /
-//   clientHeight), where its absolutely positioned children sit. The pad (`--cms-list-pad`), the frame's border
-//   (`border-left-width`) and a field outline's offset (`--cms-space-1`) are computed styles; 0 is a value, and only an
-//   unreadable one (NaN) takes the fallback.
+// - Measurement policy (shared with the list painter in lists.ts): never parse a CSS length in JS. An unregistered
+//   custom property computes to its unresolved token (`1rem`, `calc()`), so `--cms-list-pad` and `--cms-space-1` are
+//   never read. Geometry comes from rendered boxes: the wrapper's padding box (border box + clientLeft/clientTop,
+//   clientWidth/clientHeight), where its absolutely positioned children sit; the pad is the frame's rect against that
+//   padding box (the frame's inset is -pad); the frame's border is its computed `border-*-width`, and a plain field's
+//   outline reach is its computed `outline-offset` + `outline-width` (real properties, so px). 0 is a value; only an
+//   unreadable one (no box, an empty style: an engine without layout) takes the fallback.
+// - Measure after styling: a paint adds `cms-group` and puts the frame in place before it measures anything but
+//   membership, so host CSS keyed on `.cms-group` is in the boxes it reads. Membership is decided first, from the boxes
+//   as they are, so a class that changes a member's size can't make a paint retire what it just drew.
 // - Nodes: the frame and separators are appended to the wrapper, never prepended, so host `:first-child` and
 //   `> * + *` rules match the same elements in edit mode.
-// - Never a group inside a group (the outermost wins), a group holding a list, or a group inside a list item: each is
-//   dropped at scan time.
-// - Warnings: scan-time ones (G5, G7, G8) and the clipping one (a wrapper whose overflow clips its outline) are once per
-//   element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 4 kinds.
+// - Never a group inside a group (the outermost wins), a group holding a list, a group inside a list item, or an
+//   inline wrapper (computed display `inline` or `contents`: it has no box of its own to frame, G11): each is dropped
+//   at scan time and its fields keep their own outlines.
+// - Warnings: scan-time ones (G5, G7, G8, G11) and the clipping one (a wrapper whose overflow clips its outline) are
+//   once per element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 5 kinds.
 // - `paint` is the only writer of separators, positions and the group classes; `schedule` coalesces any number of
 //   requests into one paint per animation frame. `detach` cancels the frame, disconnects the observer (which watches
 //   the wrapper and the candidates, nothing else), and removes every node and class added.
+// - Crossing hand-off: a paint whose member set differs from the last paint's (drawn, retired, or a member in or out)
+//   calls `changed` once, which the mount wires to the crossing watch's `schedule`: one scheduled check per change,
+//   coalesced with any other into one check per frame. `detach` doesn't call it: every caller of detach either stops
+//   editing (no check), rescans and attaches again (which schedules), or destroys the mount.
 // - The crossing check (`createOutlineWatch`) only reads boxes, and warns once per pair of elements per mount; it never
 //   changes the page. On each check its observer watches exactly the current outlines: it is disconnected and
 //   re-observed only when that set changed, so a removed node isn't held and a recheck triggers at most one more check
-//   (the new observations' first report), which finds the same set and stops.
+//   (the new observations' first report), which finds the same set and stops. Once destroyed, `schedule` and `check`
+//   are no-ops: no frame is requested and nothing is observed again.
 import { element } from "./dom.ts";
 import { boxOf, cellLines, cssPixels, layOut, paddingBox, px, type Box } from "./lists.ts";
 
