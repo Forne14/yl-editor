@@ -415,11 +415,12 @@ one document's helper, but a group can hold fields of any document.
 - A locked field stays in its group, with its muted badge and reason. The outline is muted only when every field in
   the group is locked.
 - Which fields form a group is decided from your markup when the chrome scans the page, again after a list's markup
-  is replaced and on a refresh: the fields inside the wrapper, not those in a list, nor those of a document a Discard
-  deleted. Layout never changes it. A group of fewer than two such fields draws nothing: its field looks like any other.
+  is replaced and on a refresh: the fields inside the wrapper, not those in a list, nor those of a document the editor
+  doesn't have (one the store didn't return, or one a Discard deleted). Those keep their own outline. Layout never changes it. A group of fewer than two such fields draws nothing: its field looks like any other.
   A field hidden at some width keeps its group: the outline still goes round the wrapper, with no line beside it.
 - A group never holds a list or sits in one. A wrapper that contains a `data-edit-list` is ignored and its fields get
-  their own outlines. A `data-edit-group` inside a list, in an item or between the list and its items, is ignored. In a group inside a group, the outer one wins
+  their own outlines. A `data-edit-group` inside a list, in an item or between the list and its items, is ignored, and so is one on a
+  field's own element. In a group inside a group, the outer one wins
   and the inner one is ignored. An inline wrapper (`display: inline` or `contents`) is ignored too, because a box that
   wraps over lines has no one rectangle to outline: use a block or `inline-block` element. It is checked when the page is scanned, so keep it that way at every width in
   edit mode: a wrapper that turns inline at a breakpoint is not supported. Each case is named by a

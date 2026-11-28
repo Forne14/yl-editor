@@ -17,7 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   wins) and a group inside a list item are ignored with a `console.warn`. A warning also names any pair of dashed
   outlines that cross and a wrapper whose `overflow` clips its outline. An inline wrapper is ignored with a warning. Lists now honour
   `--cms-list-pad: 0` and lengths other than px, measure inside a border on the list, and add their outline at the end
-  of the list instead of the start. Ungrouped fields look as before. Design: `docs/specs/artefacts/2026-11-field-groups.html`.
+  of the list instead of the start. A list's own `display`, padding and bullets are no longer reset in edit mode (the
+  chrome's rule for its sheet lists matched host lists too). Ungrouped fields look as before. Design: `docs/specs/artefacts/2026-11-field-groups.html`.
 - Chrome: list items can be dragged to reorder (#43, lists: drag to reorder, row and grid lists, data-order
   announcement). In a `manual` list, each item's toolbar starts with a drag handle (`.cms-item__grip`, dragged with a pointer,
   `touch-action: none`). A drop makes one `move` write, like Move up and Move down, which stay as the single-pointer
