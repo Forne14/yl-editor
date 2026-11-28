@@ -1,9 +1,13 @@
 // @vitest-environment happy-dom
 // Field groups (#44). happy-dom has no layout, so boxes are stubbed by element id: this proves the chrome's logic, not
 // how a browser lays the page out (e2e/groups.spec.ts does that).
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { attachGroup, createOutlineWatch, createWarnings, scanGroups } from "./groups.ts";
 import { mountEditor } from "./index.ts";
+import { defaultStrings } from "./strings.ts";
 import type { EditorHandle } from "./types.ts";
 
 const KEY = "page/home";
@@ -782,5 +786,97 @@ describe("crossing watch", () => {
     await settle();
     expect(watching.some((targets) => targets.has(b))).toBe(false);
     expect(watching.some((targets) => targets.has(document.getElementById("a") as HTMLElement))).toBe(true);
+  });
+});
+
+/** The chrome's own stylesheet, as a host page links it. */
+function chromeCss(): void {
+  css(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "chrome.css"), "utf8"));
+}
+
+const clickDone = () =>
+  [...document.querySelectorAll<HTMLButtonElement>(".cms-bar button")]
+    .find((button) => button.textContent === "Done")
+    ?.click();
+
+describe("a field in a drawn group that isn't a member", () => {
+  const crossings = () => warn.mock.calls.filter((call) => String(call[0]).includes("cross"));
+  /** a and b are members; u's document is one the editor doesn't have. */
+  const withStranger = (stranger: [number, number, number, number]) => {
+    page(
+      `<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}<p id="u" data-edit-field="page/unknown:u" data-edit-type="text">u</p></section>`,
+    );
+    boxes = { g: [0, 0, 400, 100], a: [0, 0, 400, 40], b: [0, 60, 400, 40], u: stranger };
+  };
+
+  test("keeps its own outline, while the members lose theirs", async () => {
+    chromeCss();
+    withStranger([0, 60, 400, 40]);
+    await mount();
+    expect(frames()).toHaveLength(1);
+    const outline = (id: string) => getComputedStyle(document.getElementById(id) as HTMLElement).outlineStyle;
+    expect(outline("a")).toBe("none");
+    expect(outline("u")).toBe("dashed");
+    expect(document.getElementById("a")?.hasAttribute("data-cms-member")).toBe(true);
+    expect(document.getElementById("u")?.hasAttribute("data-cms-member")).toBe(false);
+  });
+
+  test("is counted by the crossing check: its outline crosses the group's frame", async () => {
+    // u starts inside the wrapper and ends past the frame's bottom edge, 12px under the wrapper.
+    withStranger([0, 90, 400, 40]);
+    await mount();
+    expect(crossings()).toHaveLength(1);
+    expect(String(crossings()[0]?.[0])).toContain('id="u"');
+    expect(String(crossings()[0]?.[0])).toContain('id="g"');
+  });
+
+  test("the member marker comes off on Done and when the group goes, and back on with Edit", async () => {
+    column();
+    const before = document.body.innerHTML;
+    await mount();
+    expect(document.querySelectorAll("[data-cms-member]")).toHaveLength(3);
+    clickDone();
+    expect(document.body.querySelector("main")?.outerHTML).toBe(before);
+    document.querySelector<HTMLButtonElement>(".cms-enter")?.click();
+    await settle();
+    expect(document.querySelectorAll("[data-cms-member]")).toHaveLength(3);
+    await handle?.api.discard(KEY);
+    await settle();
+    expect(document.querySelectorAll("[data-cms-member]")).toHaveLength(0);
+  });
+});
+
+describe("membership doesn't hang on a string the host can override", () => {
+  test("locked fields stay members when the host words unknownDocument like notEditable", async () => {
+    page(
+      `<section id="g" data-edit-group><p id="a" data-edit-field="${LOCKED}:a" data-edit-type="text">a</p><p id="b" data-edit-field="${LOCKED}:b" data-edit-type="text">b</p></section>`,
+    );
+    boxes = { g: [0, 0, 400, 100], a: [0, 0, 400, 40], b: [0, 60, 400, 40] };
+    handle = mountEditor({ strings: { unknownDocument: defaultStrings.notEditable } });
+    await handle.ready;
+    await settle();
+    expect(frames()).toHaveLength(1);
+    expect(document.getElementById("g")?.classList.contains("cms-group--locked")).toBe(true);
+  });
+});
+
+describe("a wrapper that is itself a field", () => {
+  test("is dropped at scan, named once per mount, and Done gives its markup back as it was", async () => {
+    page(
+      `<section id="g" data-edit-group data-edit-field="${KEY}:a" data-edit-type="text">${field("b", "b")}${field("c", "c")}</section>`,
+    );
+    boxes = { g: [0, 0, 400, 100], b: [0, 0, 400, 40], c: [0, 60, 400, 40] };
+    const before = document.body.innerHTML;
+    await mount();
+    expect(frames()).toHaveLength(0);
+    expect(document.getElementById("g")?.classList.contains("cms-group")).toBe(false);
+    const told = () => warn.mock.calls.filter((call) => String(call[0]).includes("is itself a data-edit-field"));
+    expect(told()).toHaveLength(1);
+    expect(String(told()[0]?.[0])).toContain('id="g"');
+    await handle?.api.refresh();
+    await settle();
+    expect(told()).toHaveLength(1);
+    clickDone();
+    expect(document.body.querySelector("main")?.outerHTML).toBe(before);
   });
 });
