@@ -4,6 +4,16 @@
 type Attributes = Record<string, string | boolean | undefined>;
 type Child = Node | string | null | undefined | false;
 
+/** Adds chrome classes to a host element. */
+export function addHostClass(_node: Element, ..._names: string[]): void {
+  throw new Error("not implemented");
+}
+
+/** Takes chrome classes back off a host element. */
+export function removeHostClass(_node: Element, ..._names: string[]): void {
+  throw new Error("not implemented");
+}
+
 export function element<Tag extends keyof HTMLElementTagNameMap>(
   tag: Tag,
   attributes: Attributes = {},

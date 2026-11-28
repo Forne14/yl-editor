@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { editable, itemPath, type EditableListAttrs } from "../editable.ts";
 import { applyArrayOp, parsePath } from "../path.ts";
 import type { ArrayOp } from "../types.ts";
-import { element } from "./dom.ts";
+import { addHostClass, element, removeHostClass } from "./dom.ts";
 import { mountEditor } from "./index.ts";
 import { attachList, scanLists, type ListHandlers } from "./lists.ts";
 import { defaultStrings } from "./strings.ts";
@@ -2840,5 +2840,57 @@ describe("the chrome's stylesheet and a host list", () => {
     document.body.append(surface);
     expect(look(own)).toMatchObject({ display: "grid", padding: "0px", margin: "0px" });
     surface.remove();
+  });
+});
+
+describe("a host element two chrome parts dress gives its class attribute back as it was", () => {
+  test.each([
+    ["no class attribute", null],
+    ["an empty one", ""],
+    ["its own classes", "card wide"],
+  ])("with %s, whichever part lets go first", (_name, original) => {
+    for (const order of [
+      ["cms-field", "cms-item"],
+      ["cms-item", "cms-field"],
+    ]) {
+      const node = document.createElement("li");
+      if (original !== null) node.setAttribute("class", original);
+      addHostClass(node, "cms-field");
+      addHostClass(node, "cms-item");
+      for (const name of order) removeHostClass(node, name);
+      expect(node.getAttribute("class")).toBe(original);
+    }
+  });
+
+  /** Each item is a field too: its name is edited on the `<li>` itself. */
+  const itemsAreFields = () => {
+    for (const item of items()) {
+      const h3 = item.querySelector("h3") as HTMLElement;
+      for (const name of ["data-edit-field", "data-edit-type"]) {
+        item.setAttribute(name, h3.getAttribute(name) ?? "");
+        h3.removeAttribute(name);
+      }
+    }
+  };
+
+  test("a list item that is also a field: Done gives back identical markup", async () => {
+    itemsAreFields();
+    const before = list().outerHTML;
+    await mount();
+    expect(items()[0]?.classList.contains("cms-item")).toBe(true);
+    expect(items()[0]?.classList.contains("cms-field")).toBe(true);
+    [...document.querySelectorAll<HTMLButtonElement>(".cms-bar button")]
+      .find((button) => button.textContent === "Done")
+      ?.click();
+    expect(list().outerHTML).toBe(before);
+  });
+
+  test("a list item that is also a field: destroy gives back identical markup", async () => {
+    itemsAreFields();
+    const before = list().outerHTML;
+    await mount();
+    handle?.destroy();
+    handle = undefined;
+    expect(list().outerHTML).toBe(before);
   });
 });
