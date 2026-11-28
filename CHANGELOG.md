@@ -7,7 +7,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `MediaStore` is reshaped as `MediaStore<V>` (#3, Media: reshape MediaStore and ship a default media
+  widget). `upload(body: ReadableStream<Uint8Array>, file, field, context & { signal })` streams the file instead of
+  taking a `Uint8Array`, and answers `{ status: "ready", media }` or `{ status: "processing", job, retryAfterMs? }`.
+  The new optional `accept` refuses early, `job` and `cancelJob` serve a job, and `resolve(ids)` is batched and answers
+  a `Map` of `{ id, render, variants }`: `variants` is the host's own shape (`V`), and `render` (`MediaRender`) is what
+  the editor reads, in HTML's vocabulary (`src`, `srcset`, `sources`, `width`, `height`, `poster`). `role` is gone (the
+  store gets the field as `{ key, path }`), and `alt` is no longer upload metadata: it lives in the field's value.
+  Refusals are `MediaRefusal` (`too_large`, `unsupported`, `invalid`, `busy`). See `docs/store.md` → Media.
+- **Breaking:** `MediaVariantSchema` and `MediaVariant` are removed; `MediaRender` and `ResolvedMedia<V>` replace them.
+- **Breaking:** `ErrorCode` gains `job_not_found` (404), `too_large` (413), `unsupported` (415) and `busy` (503), so an
+  exhaustive switch over it needs the new cases. `ErrorEnvelope.error` may carry `limit` on `too_large`.
+- `ContentRequestError` has `retryAfterMs` (from a `Retry-After` header) and `limit`, and takes them as a sixth
+  constructor argument. A `413`, `415` or `503` without the error envelope now maps to `too_large`, `unsupported` or
+  `busy` by its status instead of `internal`.
+- The router takes several methods per route name; a wrong method's `405` lists all of them in `Allow`.
+
 ### Added
+
+- `mediaValue()` from `@yl/editor` (#3): the zod schema of a `media` field's value, `{ id, alt }` or
+  `{ id, alt: "", decorative: true }` (`mediaValue().nullable()` for an optional image). It refuses `decorative` with
+  alt text and any other key, so URLs and variants never get into content.
+- `runMediaStoreContract(name, makeStore, { sample, processesAsync?, maxBytes?, count? })` from `@yl/editor/contract`
+  (#3): the `MediaStore` contract as vitest tests (streams, aborts, limits, refusals, untrusted filenames, batched
+  resolve, jobs scoped to their field).
+- HTTP: `createContentHandlers({ media: { store, maxBytes } })` adds `POST media`, `GET media`, `GET media-job` and
+  `DELETE media-job` (#3), gated by `canEdit` on the field's document, with the usual guard and envelope. Uploads
+  stream through a byte counter; a declared length past `maxBytes` and a refusal from `accept` answer before the body
+  is read. `201 { media: { id, render } }` or `202 { job, retryAfterMs? }`; `busy` carries `Retry-After`; variants
+  never leave the server. Without the option the routes are `404` with one `console.warn`. See `docs/http.md` → Media.
+- Client: `uploadMedia(field, file, { onProgress, onSent, signal })` over `XMLHttpRequest` (injectable with the new
+  `xhr` option), `mediaJob(field, job)`, `cancelMediaJob(field, job)` and `media(key, ids)` (#3). Bodies are
+  hand-checked without zod. `parseRetryAfter` and the media wire types (`WireMedia`, `WireMediaRender`,
+  `MediaUploadResult`, `MediaJobResponse`, …) are exported from `@yl/editor/http`.
+- Chrome (internal, for the default media widget to come): `src/chrome/media-task.ts`, the upload and poll task with
+  the failure policy (poll backoff 1, 2, 4, 8 then 15 s; `Retry-After` clamped to 1–60 s; give-up after 10 minutes or
+  6 failed polls in a row, never while the tab is hidden; a 60 s stall timer; at most 3 automatic resends on `503`).
+  Not exported yet.
 
 - Chrome: plain fields can be grouped in one outline (#44, group close plain fields in one outline). Wrap them in an
   element with `editable(docKey).group()` (`data-edit-group`, set only in edit mode). The group gets one dashed outline
