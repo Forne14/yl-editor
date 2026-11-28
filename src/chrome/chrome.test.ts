@@ -2369,6 +2369,35 @@ describe("a field left open through a conflict catch-up (#48)", () => {
     expect(title.dataset.cmsState).toBeUndefined();
     expect(title.classList.contains("cms-field--saved")).toBe(false);
   });
+
+  test.each([
+    ["saved", undefined],
+    ["failed", serverError],
+  ] as const)(
+    "a save that lands %s after Done leaves the host's markup as Done gave it back; Edit then shows the slot's state",
+    async (state, answer) => {
+      serve({ "pages/home": live });
+      if (answer) handlers["POST /api/content/field"] = answer;
+      const title = field("pages/home:title");
+      const classBefore = title.getAttribute("class");
+      await mount();
+      const { release } = hold("POST /api/content/field");
+      commitText("pages/home:title", "Mine");
+      await settle();
+      expect(title.dataset.cmsState).toBe("saving");
+      buttonNamed("Done", document.querySelector(".cms-bar") as HTMLElement).click();
+      const doneMarkup = title.outerHTML;
+      expect(title.getAttribute("class")).toBe(classBefore);
+      release();
+      await settle();
+      expect(posts("field")).toHaveLength(1);
+      expect(title.outerHTML).toBe(doneMarkup);
+      document.querySelector<HTMLButtonElement>(".cms-enter")?.click();
+      await settle();
+      expect(title.dataset.cmsState).toBe(state);
+      expect(title.classList.contains(`cms-field--${state}`)).toBe(true);
+    },
+  );
 });
 
 test("Session: Retry on a slot holding a conflict sends nothing; Keep mine sends", async () => {
