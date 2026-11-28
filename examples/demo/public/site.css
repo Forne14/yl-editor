@@ -29,6 +29,15 @@ body {
   margin: 2rem 0;
 }
 
+/* While editing with `?groups=1`, room around the frames the chrome draws on the hero and the facts. */
+.hero.cms-group {
+  padding: 0.75rem 0;
+}
+
+.facts.cms-group {
+  margin: 3rem 0;
+}
+
 .facts dt {
   font-weight: bold;
 }
