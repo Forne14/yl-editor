@@ -862,3 +862,58 @@ describe("review round 1", () => {
     expect(pollTimes(0)).toEqual([1000, 3000, 7000, 15_000, 30_000, 45_000, 60_000]);
   });
 });
+
+describe("review round 2: a 503 wait while hidden past the deadline", () => {
+  /** Polls at 1, 3, 7 s, then the 15 s one (past a 10 s deadline) answers 503 with Retry-After 2 s. */
+  const busyPastDeadline = async () => {
+    scripted.respond((_poll, index) => {
+      if (index === 3) throw requestError(503, "busy", { retryAfterMs: 2000 });
+      return processing();
+    });
+    await startProcessing(undefined, { jobTimeoutMs: 10_000 });
+    env.flags.hidden = true;
+    await advance(15_000);
+    expect(scripted.polls).toHaveLength(4);
+  };
+
+  test("the busy wait keeps the server's Retry-After: no 60 s floor", async () => {
+    await busyPastDeadline();
+    await advance(2000);
+    expect(pollTimes(0)).toEqual([1000, 3000, 7000, 15_000, 17_000]);
+  });
+
+  test("visible 3 s after the 503 (Retry-After 2) polls at once", async () => {
+    await busyPastDeadline();
+    await advance(3000);
+    const sent = scripted.polls.length;
+    env.becomeVisible();
+    await flush();
+    expect(scripted.polls).toHaveLength(sent + 1);
+    expect(scripted.lastPoll().at).toBe(18_000);
+  });
+
+  test("a throttled timer: visible once Retry-After has passed polls at once, before it does not", async () => {
+    // A hidden tab's timers fire late; this one fires a minute late while hidden.
+    scripted.respond((_poll, index) => {
+      if (index === 3) throw requestError(503, "busy", { retryAfterMs: 2000 });
+      return processing();
+    });
+    await startProcessing(undefined, { jobTimeoutMs: 10_000 });
+    env.flags.hidden = true;
+    await advance(14_000);
+    const base = env.environment.setTimeout;
+    env.environment.setTimeout = (callback, ms) => base(callback, env.flags.hidden ? ms + 60_000 : ms);
+    await advance(1000);
+    expect(scripted.polls).toHaveLength(4);
+    await advance(1000);
+    env.becomeVisible();
+    await flush();
+    expect(scripted.polls).toHaveLength(4);
+    env.flags.hidden = true;
+    await advance(2000);
+    env.becomeVisible();
+    await flush();
+    expect(scripted.polls).toHaveLength(5);
+    expect(scripted.lastPoll().at).toBe(18_000);
+  });
+});
