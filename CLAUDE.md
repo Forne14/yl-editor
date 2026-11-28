@@ -17,6 +17,12 @@ In-place editing core: draft/publish `ContentStore`, schema registry, path ops, 
 
 Any change to the visual interface or design needs a hi-fidelity prototype in an HTML file first. Keep prototypes in `docs/specs/artefacts/`. Show it to Yassine and get his approval before building. Decide from the rendered page, not from a text description.
 
+A chrome prototype also settles the host contract, ruled with the look before anything is built: what decides what the
+chrome dresses (markup, not layout), what it adds to host markup and how Done gives it back, host CSS it can't support,
+interactions with lists, groups and fields, every lifecycle event (Edit, Done, `destroy()`, Discard, Restore, catch-up,
+list swap, refresh, a late save), its console warnings, and the known limits. `/next-ticket` §0 has the checklist.
+Anything it leaves open is a question for Yassine, never a default picked during the build.
+
 ## Public surface
 
 - Breaking changes are allowed before 1.0; mark them **Breaking** in the changelog. After 1.0, avoid them. Public means exports, wire shapes, documented attributes such as `data-edit-value`, and `defaultStrings` keys.
@@ -33,11 +39,22 @@ Any change to the visual interface or design needs a hi-fidelity prototype in an
 - Chrome text goes through `src/chrome/strings.ts` so hosts can override it.
 - Hosts run strict CSPs, so chrome output has no inline `style=` attributes or inline scripts. Dynamic positions are set only as CSS custom properties through `style.setProperty` (`fields.ts`, `widgets.ts`), which CSP allows.
 - Chrome must meet WCAG 2.2 AA: full keyboard operation and visible focus.
+- Chrome geometry is read from rendered boxes, never parsed from CSS. Custom properties compute to their unresolved
+  token (`1rem`, `calc()`), so read a pad from where the frame is drawn, a border or outline from its real computed
+  property (`border-left-width`, `outline-offset`), and measure in the host element's padding box (`clientLeft`,
+  `clientWidth`). Measure after the classes that style it are on. Layout positions things; it never decides what the
+  chrome dresses (which fields, groups or items): that is decided from the markup at scan, attach, swap and refresh.
+- Host markup comes back exactly as found. Done and `destroy()` restore every class, attribute and child the chrome
+  added, including a `class` attribute the host never had, whichever part lets go first. While not editing, the
+  chrome writes no classes or attributes to host markup (content renders are the only writes). Chrome nodes added to
+  host elements are documented, with any `:first-child` / `:last-child` effect.
+- Chrome rules in `chrome.css` that style the chrome's own surfaces are scoped to `.cms-root`, so they never match a
+  host element that carries the same class.
 - Chrome tests run in happy-dom, which doesn't prove browser behaviour. Say so when reporting chrome work unless it was run in a real browser.
 - Test logic changes. Use descriptive names. Comment only a non-obvious why. Never commit secrets or `.env` files.
 
 ## Git and release
 
 - Work is tracked in GitHub issues. Branch from `main` and PR back to `main`. Use `Closes #n` only when the issue is really finished. Commits are `type(scope): summary`.
-- CI `verify` is the automated gate. There is no CodeRabbit here: run the `code-review` skill on any PR that changes code before merging, and again after each round of fixes, until a round finds no severe or major issues and at most a few minor ones. If two or three rounds keep finding the same kind of bug, take the product decision behind it to Yassine as an in-situ artefact instead of patching further.
+- CI `verify` is the automated gate. There is no CodeRabbit here: run the `code-review` skill on any PR that changes code before merging, and again after each round of fixes, until a round finds no severe or major issues and at most a few minor ones. If two or three rounds keep finding the same kind of bug, take the product decision behind it to Yassine as an in-situ artefact instead of patching further. Pre-existing bugs a review finds in code the PR touches are fixed in the same PR, but listed apart: they don't decide whether a round is clean.
 - Release: bump the version and date the changelog in a `chore: release X.Y.Z` commit on `main`, then `npm run release -- vX.Y.Z`, then `git push origin vX.Y.Z`. Branches never track `dist/`; it exists only on the tag.
