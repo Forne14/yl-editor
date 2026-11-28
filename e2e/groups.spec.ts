@@ -40,7 +40,8 @@ test.describe("field groups", () => {
       const frame = await page.locator(`${selector} > .cms-group__frame`).boundingBox();
       if (!wrapper || !frame) throw new Error("no box");
       const pad = await page.locator(`${selector} > .cms-group__frame`).evaluate((node) => {
-        const probe = node.ownerDocument.createElement("span");
+        // A block probe: an inline element ignores width.
+        const probe = node.ownerDocument.createElement("div");
         probe.style.width = getComputedStyle(node).getPropertyValue("--cms-list-pad");
         node.append(probe);
         const width = probe.getBoundingClientRect().width;
