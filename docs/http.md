@@ -226,6 +226,11 @@ A `MediaRefusal` from the store maps to `too_large` 413 (with `limit` in the env
 `unsupported` 415, `invalid` → `bad_request` 400 with the store's message, or `busy` 503 with a `Retry-After` header in
 whole seconds (rounded up; 5 seconds when the refusal names no wait).
 
+Numbers a store provides are checked before they go out: a `retryAfterMs` (on a refusal, a `202` or a job state) or a
+`limit` that is not finite and positive is treated as absent, and a job's `progress` is clamped to 0..1, or left out
+when it is not a finite number. A request whose signal has already aborted when the upload starts hands the store an
+aborted `signal`.
+
 Mounting is unchanged, except that an upload's body must reach the handlers as a stream: a server that buffers request
 bodies with a cap of its own (the demo's 1 MB for JSON, a serverless platform's 4.5 MB) refuses large files before
 the handlers see them. The demo site streams `POST media` and buffers everything else.

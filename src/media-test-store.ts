@@ -132,6 +132,8 @@ export function createTestMediaStore(options: TestMediaStoreOptions): TestMediaS
     const reader = body.getReader();
     const stop = () => void reader.cancel(signal.reason).catch(() => {});
     signal.addEventListener("abort", stop);
+    // A listener added after the abort never fires.
+    if (signal.aborted) stop();
     try {
       const chunks: Uint8Array[] = [];
       let size = 0;
