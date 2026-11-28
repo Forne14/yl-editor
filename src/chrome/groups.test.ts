@@ -582,7 +582,8 @@ describe("geometry: measured in the wrapper's padding box", () => {
   });
 
   test("the frame's border width is read from its style, not assumed to be 2px", async () => {
-    css(".cms-group__frame { border-left-width: 5px; }");
+    // The vertical lines run from the top border to the bottom one.
+    css(".cms-group__frame { border-top-width: 5px; border-bottom-width: 5px; }");
     page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>`);
     boxes = { g: [0, 0, 400, 40], a: [0, 0, 180, 40], b: [220, 0, 180, 40] };
     await mount();

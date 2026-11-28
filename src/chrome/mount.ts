@@ -552,15 +552,24 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       for (const record of fields) record.detach?.();
       for (const list of lists) list.detach?.();
       for (const group of groups) group.detach?.();
+      // Not editing: this check watches nothing, so the watch lets go of every outline it held.
+      outlines.check();
       enterButton.focus();
     }
   }
 
-  /** Draws every group from the fields the chrome knows now, and queues the crossing check. */
+  /**
+   * Decides every group's members from the fields the chrome dresses now and draws it, and queues the crossing check.
+   * The only place membership changes (G12): a field whose document the editor no longer has isn't a member.
+   */
   function attachGroups(): void {
-    // A group that draws, retires or changes members moves outlines: one scheduled check per change.
+    // A group that is drawn, goes or changes members moves outlines: one scheduled check per change.
     const recheck = () => outlines.schedule();
-    for (const group of groups) attachGroup(group, (element) => byElement.get(element), groupWarnings, recheck);
+    const memberOf = (element: HTMLElement) => {
+      const record = byElement.get(element);
+      return record?.reason === strings.unknownDocument ? undefined : record;
+    };
+    for (const group of groups) attachGroup(group, memberOf, groupWarnings, recheck);
     outlines.schedule();
   }
 
@@ -976,9 +985,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     }
     // Swaps take outermost lists, and a rearranged list holds none with chrome, so only the new records need dressing.
     if (editing) for (const list of addedLists) attachListRecord(list);
-    // The swap moved what is around the groups: repaint them and look for crossings again.
-    for (const group of groups) group.schedule();
-    outlines.schedule();
+    // The swap moved what is around the groups: decide them again (which looks for crossings), or just look.
+    if (editing) attachGroups();
+    else outlines.schedule();
     updateBar();
   }
 
@@ -2452,11 +2461,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             record.reason = strings.unknownDocument;
           }
           session.documents.delete(key);
-          // Its fields are no longer dressed: a group left with fewer than two members goes, and outlines move.
-          if (!destroyed) {
-            for (const group of groups) group.paint();
-            outlines.schedule();
-          }
+          // Its fields left the editor: the groups are decided again (one left with fewer than two members goes), and
+          // the crossing check is queued.
+          if (!destroyed && editing) attachGroups();
         }
         updateBar();
         return written;
