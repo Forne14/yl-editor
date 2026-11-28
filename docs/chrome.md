@@ -381,7 +381,8 @@ chrome creates (see docs/paths.md).
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.
 - The chrome adds `.cms-list` to the list and `.cms-item` to each item, and its own `.cms-root` children:
   `.cms-list__frame` (the outline and `.cms-list__tag`), `.cms-list__add`, and in each item `.cms-item__tools`,
-  `.cms-item__band` and `.cms-item__sep`. Leave room between items for the toolbar on the line between them, for
+  `.cms-item__band` and `.cms-item__sep`. A border on an item is allowed too: its band, toolbar and lines sit inside it. In a column,
+  the toolbar's right edge is the list's right edge, also for an item narrower than the list. Leave room between items for the toolbar on the line between them, for
   example `.my-list.cms-list { gap: 3.75rem; }`: the chrome never changes your layout, so with a smaller gap the
   toolbar overlaps the items next to it. The outline is added at the end of the list and each item's toolbar at the
   start of the item (it comes first in Tab order), so in edit mode an item's `:first-child` is the toolbar, and a `:last-child` rule on the list's children can match
@@ -428,7 +429,8 @@ one document's helper, but a group can hold fields of any document.
 - Any two dashed outlines that cross (a field's, a group's or a list's) are named by a `console.warn`, once per pair
   per mount. The chrome checks again when the page resizes. Hidden fields are skipped.
 - The outline and lines are placed from the boxes on the page, through custom properties, and redrawn when the group
-  or a field resizes. Style them through `.cms-group`, `.cms-group__frame` and `.cms-group__sep`. They are added at the
+  or a field resizes. Style them through `.cms-group`, `.cms-group__frame` and `.cms-group__sep`; while editing, each
+  field in the group carries `data-cms-member`. They are added at the
   end of the wrapper, so in edit mode a `:last-child` rule of yours on the wrapper's children matches a chrome node
   instead. A border on the wrapper is allowed; `--cms-list-pad: 0` puts the outline on the wrapper's edge.
 - The outline sits outside the wrapper's box, so a wrapper that clips (`overflow` other than `visible`) hides it. A
