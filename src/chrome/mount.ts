@@ -558,7 +558,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Draws every group from the fields the chrome knows now, and queues the crossing check. */
   function attachGroups(): void {
-    for (const group of groups) attachGroup(group, (element) => byElement.get(element), groupWarnings);
+    // A group that draws, retires or changes members moves outlines: one scheduled check per change.
+    const recheck = () => outlines.schedule();
+    for (const group of groups) attachGroup(group, (element) => byElement.get(element), groupWarnings, recheck);
     outlines.schedule();
   }
 
@@ -2451,8 +2453,10 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
           }
           session.documents.delete(key);
           // Its fields are no longer dressed: a group left with fewer than two members goes, and outlines move.
-          for (const group of groups) group.paint();
-          outlines.schedule();
+          if (!destroyed) {
+            for (const group of groups) group.paint();
+            outlines.schedule();
+          }
         }
         updateBar();
         return written;

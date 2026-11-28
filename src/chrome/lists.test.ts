@@ -2667,7 +2667,8 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     // Inside the frame's 2px border: -16 + 2 on the left, 600 + 16 - 2 on the right.
     expect(prop(band(0), "--cms-band-left")).toBe("-14px");
     expect(prop(band(2), "--cms-band-width")).toBe("224px");
-    expect(prop(frame, "--cms-frame-top")).toBe("-16px");
+    // The Add row's line ends at 180, the pad below it; the frame starts 20 above the first line (half the gap).
+    expect(prop(frame, "--cms-frame-height")).toBe("216px");
   });
 
   test("the frame's border is its real width, not assumed to be 2px", async () => {
