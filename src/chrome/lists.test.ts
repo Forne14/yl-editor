@@ -2478,7 +2478,17 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     }
     items().forEach((item, index) => {
       const place = places[index];
-      if (place) item.getBoundingClientRect = box(place);
+      if (!place) return;
+      item.getBoundingClientRect = box(place);
+      // No item border: its padding box is its border box (`itemBorder` gives it one).
+      for (const [name, value] of [
+        ["clientLeft", 0],
+        ["clientTop", 0],
+        ["clientWidth", place[2]],
+        ["clientHeight", place[3]],
+      ] as const) {
+        Object.defineProperty(item, name, { configurable: true, get: () => value });
+      }
     });
     const addRow = list().querySelector<HTMLElement>(".cms-list__add");
     if (addRow) addRow.getBoundingClientRect = box(add);

@@ -339,7 +339,10 @@
   gap: var(--cms-space-3);
 }
 
-:where(.cms-list) {
+/* The chrome's own lists, in its surfaces. A host list carries .cms-list too while it is dressed, and is never inside a
+ * .cms-root: it keeps its own layout. Two :where()s, not one with a descendant inside, so engines that skip a combinator
+ * inside :where() still match it. */
+:where(.cms-root) :where(.cms-list) {
   display: grid;
   gap: var(--cms-space-2);
   margin: 0;
@@ -698,8 +701,9 @@
 }
 
 /* A group (#44): the list frame's look for plain fields inside a [data-edit-group] wrapper. One dashed outline, the
- * wrapper's box plus --cms-list-pad; thin dashed lines between the fields, set by the chrome from the fields' boxes. Fields
- * inside lose their own outline; their states are solid and inset, as in a list item. No tint, tag or Tab stop. */
+ * wrapper's box plus --cms-list-pad; thin dashed lines between the fields, set by the chrome from the fields' boxes. Its
+ * members ([data-cms-member], set by the chrome while the group is drawn) lose their own outline; their states are solid
+ * and inset, as in a list item. A field inside that isn't a member keeps its own. No tint, tag or Tab stop. */
 :where(.cms-group) {
   position: relative;
 }
@@ -739,37 +743,37 @@
   border-top: var(--cms-list-line);
 }
 
-:where(.cms-group .cms-field) {
+:where(.cms-field[data-cms-member]) {
   outline: none;
 }
 
-:where(.cms-group .cms-field:hover) {
+:where(.cms-field[data-cms-member]:hover) {
   outline: thin solid var(--cms-fg);
   outline-offset: calc(-1 * var(--cms-space-1) / 4);
 }
 
-:where(.cms-group .cms-field--editing, .cms-group .cms-field--saving, .cms-group .cms-field--failed) {
+:where(.cms-field--editing[data-cms-member], .cms-field--saving[data-cms-member], .cms-field--failed[data-cms-member]) {
   outline: medium solid var(--cms-accent);
   outline-offset: calc(-1 * var(--cms-space-1) / 2);
 }
 
-:where(.cms-group .cms-field--saving) {
+:where(.cms-field--saving[data-cms-member]) {
   outline-color: var(--cms-warning);
 }
 
-:where(.cms-group .cms-field--failed) {
+:where(.cms-field--failed[data-cms-member]) {
   outline-color: var(--cms-danger);
 }
 
-:where(.cms-group .cms-field--locked) {
+:where(.cms-field--locked[data-cms-member]) {
   cursor: not-allowed;
 }
 
-:where(.cms-group .cms-field--locked:hover) {
+:where(.cms-field--locked[data-cms-member]:hover) {
   outline: thin dashed var(--cms-muted);
 }
 
-:where(.cms-group .cms-field:focus-visible) {
+:where(.cms-field[data-cms-member]:focus-visible) {
   outline: medium solid var(--cms-accent);
   outline-offset: calc(-3 * var(--cms-space-1) / 4);
 }

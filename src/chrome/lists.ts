@@ -757,7 +757,9 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
 
   // The painter. Invariants:
   // - Measurement policy (as in groups.ts): never parse a CSS length in JS; `--cms-list-pad` is never read. Boxes are
-  //   measured in the host's padding box (`paddingBox`), where the frame, bands and tools are positioned. The pad is the
+  //   measured in the host's padding box (`paddingBox`), where the frame is positioned. Lines are laid out from the
+  //   items' border boxes; what is placed inside an item (its band, tools and field separators) is placed against that
+  //   item's own padding box, and its fields are measured from there, so an item border shifts nothing. The pad is the
   //   frame's rect against that padding box (its `left` is -pad); the frame's border is its computed
   //   `border-left-width` / `border-right-width` (real properties, so px). Only an unreadable value (a frame with no
   //   box, an empty style: an engine without layout) takes the fallback.
@@ -813,27 +815,36 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         const right = next ? (box.r + next.box.l) / 2 : innerRight;
         const hasTop = lineIndex > 0;
         const hasLeft = at > 0;
+        // The band, tools and separators are the row's absolutely positioned children: placed in its padding box, which
+        // an item border moves in from the border box the lines were laid out from. Here in the host's padding box.
+        const own = paddingBox(row);
+        const inner = {
+          l: own.left - origin.left,
+          t: own.top - origin.top,
+          r: own.left - origin.left + own.width,
+          b: own.top - origin.top + own.height,
+        };
         band.classList.toggle("cms-item__band--top", hasTop);
         band.classList.toggle("cms-item__band--left", hasLeft);
-        band.style.setProperty("--cms-band-top", px(top - box.t));
-        band.style.setProperty("--cms-band-bottom", px(box.b - bottom));
-        band.style.setProperty("--cms-band-left", px(left - box.l));
+        band.style.setProperty("--cms-band-top", px(top - inner.t));
+        band.style.setProperty("--cms-band-bottom", px(inner.b - bottom));
+        band.style.setProperty("--cms-band-left", px(left - inner.l));
         band.style.setProperty("--cms-band-width", px(right - left));
         if (tools) {
-          // On the item's leading line: the top left in a row or grid, the top right of the outline in a column.
-          tools.style.setProperty("--cms-tools-above", px(box.t - top));
-          tools.style.setProperty("--cms-tools-right", axis === "column" ? px(origin.width - box.r) : "auto");
-          tools.style.setProperty("--cms-tools-left", axis === "column" ? "auto" : px(left + pad - box.l));
+          // On the item's leading line: the top left in a row or grid; in a column its right edge on the host's.
+          tools.style.setProperty("--cms-tools-above", px(inner.t - top));
+          tools.style.setProperty("--cms-tools-right", axis === "column" ? px(inner.r - origin.width) : "auto");
+          tools.style.setProperty("--cms-tools-left", axis === "column" ? "auto" : px(left + pad - inner.l));
         }
         if (!cell.item) return;
-        const itemOrigin = row.getBoundingClientRect();
+        const itemOrigin = { left: own.left, top: own.top };
         const fields = [...row.querySelectorAll("[data-edit-field]")]
           .filter((node) => node.closest(".cms-item") === row)
           .map((node) => boxOf(node, itemOrigin));
         // The cell's own top and left borders take a pixel; field lines start past them.
-        const lineTop = top - box.t + (hasTop ? 1 : 0);
-        const cellLeft = left - box.l + (hasLeft ? 1 : 0);
-        const cellRight = right - box.l;
+        const lineTop = top - inner.t + (hasTop ? 1 : 0);
+        const cellLeft = left - inner.l + (hasLeft ? 1 : 0);
+        const cellRight = right - inner.l;
         const inside = cellLines(fields, { left: cellLeft, right: cellRight });
         for (const x of inside.vertical) {
           const sep = element("span", { class: "cms-root cms-item__sep cms-item__sep--v", "aria-hidden": "true" });

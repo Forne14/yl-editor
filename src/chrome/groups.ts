@@ -8,9 +8,15 @@
 //   `attachGroup`, which runs at the mount's scan and dress, setEditing(true), a list swap's rescan, a refresh, and the
 //   Discard of a never-published document. Members are the wrapper's `[data-edit-field]` elements the chrome dresses
 //   now (`recordOf` knows them and they are attached), not inside a `[data-edit-list]` or `[data-edit-item]`; the mount's
-//   `recordOf` already leaves out fields whose document the editor no longer has (`strings.unknownDocument`), so a
-//   Discard-deleted field never rejoins. Fewer than two members at attach: no group, no class, no node. Layout (boxes,
-//   display, host CSS keyed on `.cms-group`) never changes membership: paint has no retire path, so it can't loop.
+//   `recordOf` leaves out fields whose document the editor doesn't have (a set the mount keeps beside their reason, never
+//   a comparison with an overridable string), so a Discard-deleted field never rejoins. Fewer than two members at
+//   attach: no group, no class, no node. Layout (boxes, display, host CSS keyed on `.cms-group`) never changes
+//   membership: paint has no retire path, so it can't loop.
+// - Members carry `data-cms-member` exactly while their group is drawn: attach sets it on this attach's members, retire
+//   (every detach, and the re-attach's detach first) takes it off them. The chrome's CSS and the crossing check key on it,
+//   never on being inside `.cms-group`, so a field in a drawn group that isn't a member keeps its own outline and is
+//   checked. An attribute, not a class: a field's detach drops its class attribute from what it saw at its own attach,
+//   which a class the group added before or after it would make wrong in one order or the other.
 // - Paint only places the frame and lines from the members' boxes. A member with no box (hidden at this width) gets no
 //   line beside it and isn't laid out; the frame still goes round the wrapper. The locked class is set at attach from
 //   the members' editability (G3), which only changes through a path that re-attaches.
@@ -27,21 +33,25 @@
 // - Nodes: the frame and separators are appended to the wrapper, never prepended, so host `:first-child` and
 //   `> * + *` rules match the same elements in edit mode.
 // - Never a group inside a group (the outermost wins), a group holding a list, a group inside a list (between the list
-//   and its items, or inside an item), or an inline wrapper (computed display `inline` or `contents`: it has no box of
-//   its own to frame, G11): each is dropped at scan time and its fields keep their own outlines.
-// - Warnings: scan-time ones (G5, G7, G8, G11) and the clipping one (a wrapper whose overflow clips its outline) are
-//   once per element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 5 kinds.
-// - `attachGroup` is the only writer of the group classes and the frame; `paint` the only writer of separators and
-//   their positions; `schedule` coalesces any number of requests into one paint per animation frame. `detach` cancels
-//   the frame, disconnects the observer (which watches the wrapper and the members, nothing else), and removes every
-//   node and class added.
+//   and its items, or inside an item), an inline wrapper (computed display `inline` or `contents`: it has no box of
+//   its own to frame, G11), or a wrapper that is itself a `[data-edit-field]` (the field's classes and outline are the
+//   field's): each is dropped at scan time and its fields keep their own outlines. So the wrapper's class attribute has
+//   one chrome writer, and `hadClass` read at attach is the host's.
+// - Warnings: scan-time ones (G5, G7, G8, G11, a field wrapper) and the clipping one (a wrapper whose overflow clips its
+//   outline) are once per element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by
+//   elements x 6 kinds.
+// - `attachGroup` is the only writer of the group classes, the member attribute and the frame; `paint` the only writer
+//   of separators and their positions; `schedule` coalesces any number of requests into one paint per animation frame.
+//   `detach` cancels the frame, disconnects the observer (which watches the wrapper and the members, nothing else), and
+//   removes every node, class and attribute added.
 // - Crossing hand-off: an attach whose member set differs from the one it replaces (a group drawn, gone, or a member in
 //   or out) calls `changed` once, which the mount wires to the crossing watch's `schedule`: one scheduled check per
 //   change, coalesced with any other into one check per frame. A paint never calls it. `detach` doesn't either: every
 //   caller of detach either stops editing (which runs one check that lets the watch go), rescans and attaches again
 //   (which schedules), or destroys the mount.
 // - The crossing check (`createOutlineWatch`) only reads boxes, and warns once per pair of elements per mount; it never
-//   changes the page. On each check its observer watches exactly the current outlines: it is disconnected and
+//   changes the page. Its outlines are each drawn group's frame, each list's frame, and every `.cms-field` that is
+//   neither a member nor in a list item (those share a frame), the same fields the CSS leaves an outline on. On each check its observer watches exactly the current outlines: it is disconnected and
 //   re-observed only when that set changed, so a removed node isn't held and a recheck triggers at most one more check
 //   (the new observations' first report), which finds the same set and stops. A check while not editing watches
 //   nothing; the mount runs one on Done, so the watch holds no node while the page is the host's. Once destroyed,
@@ -72,7 +82,11 @@ export interface GroupRecord {
 }
 
 /** Warns about `node` once per kind; one per mount, so a rescan doesn't repeat a warning but a new mount does. */
-export type Warnings = (node: Element, kind: "item" | "list" | "nested" | "inline" | "clip", message: string) => void;
+export type Warnings = (
+  node: Element,
+  kind: "item" | "list" | "nested" | "inline" | "field" | "clip",
+  message: string,
+) => void;
 
 export function createWarnings(): Warnings {
   const told = new WeakMap<Element, Set<string>>();
@@ -102,6 +116,15 @@ export function scanGroups(root: HTMLElement, warn: Warnings): GroupRecord[] {
   ];
   for (const target of candidates) {
     if (target.closest(".cms-root")) continue;
+    // The field's own outline and classes are the field's: framing it too would put two outlines on one element.
+    if (target.matches("[data-edit-field]")) {
+      warn(
+        target,
+        "field",
+        "is itself a data-edit-field, so it is ignored: its fields keep their own outlines. Put data-edit-group on an element around the fields.",
+      );
+      continue;
+    }
     if (target.closest("[data-edit-item]")) {
       warn(
         target,
@@ -147,6 +170,9 @@ export function scanGroups(root: HTMLElement, warn: Warnings): GroupRecord[] {
   }
   return records;
 }
+
+/** On each member while its group is drawn: the chrome's CSS and the crossing check key on members, not on position. */
+const MEMBER = "data-cms-member";
 
 /** Overflow values that cut off what reaches past the padding box, as the frame does by the pad. */
 const CLIPS = new Set(["hidden", "clip", "auto", "scroll"]);
@@ -199,6 +225,7 @@ export function attachGroup(
   const retire = () => {
     for (const node of separators.splice(0)) node.remove();
     frame.remove();
+    for (const node of members) node.removeAttribute(MEMBER);
     host.classList.remove("cms-group", "cms-group--locked");
     if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
   };
@@ -209,6 +236,8 @@ export function attachGroup(
     "cms-group--locked",
     members.every((node) => recordOf(node)?.editable !== true),
   );
+  // An attribute, not a class: a field's own detach decides whether its class attribute goes, from what it found.
+  for (const node of members) node.setAttribute(MEMBER, "");
   host.append(frame);
   const clipping = clips(host);
   if (clipping) {
@@ -342,7 +371,8 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
     };
     const viewport = { left: 0, top: 0 };
     for (const node of root.querySelectorAll(".cms-field")) {
-      if (node.closest(".cms-group, .cms-item")) continue;
+      // A member shares its group's frame; a field in a group that isn't a member keeps its own outline.
+      if (node.hasAttribute(MEMBER) || node.closest(".cms-item")) continue;
       // The outline is drawn outline-offset outside the border box, and is outline-width thick.
       const style = getComputedStyle(node);
       const reach =
