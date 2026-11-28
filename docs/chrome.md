@@ -411,14 +411,19 @@ one document's helper, but a group can hold fields of any document.
   solid, drawn inside the field. The badge is unchanged. There is no tint and no extra Tab stop.
 - A locked field stays in its group, with its muted badge and reason. The outline is muted only when every field in
   the group is locked.
-- A group with fewer than two fields draws nothing: its field looks like any other.
+- A group with fewer than two fields shown draws nothing: its field looks like any other. Hidden fields don't count,
+  nor do fields of a document a Discard deleted.
 - A group never holds a list or sits in one. A wrapper that contains a `data-edit-list` is ignored and its fields get
   their own outlines. A `data-edit-group` inside a list item is ignored. In a group inside a group, the outer one wins
-  and the inner one is ignored. Each case is named by a `console.warn`.
+  and the inner one is ignored. Each case is named by a `console.warn`, once per mount.
 - Any two dashed outlines that cross (a field's, a group's or a list's) are named by a `console.warn`, once per pair
   per mount. The chrome checks again when the page resizes. Hidden fields are skipped.
 - The outline and lines are placed from the boxes on the page, through custom properties, and redrawn when the group
-  or a field resizes. Style them through `.cms-group`, `.cms-group__frame` and `.cms-group__sep`.
+  or a field resizes. Style them through `.cms-group`, `.cms-group__frame` and `.cms-group__sep`. They are added at the
+  end of the wrapper, so in edit mode a `:last-child` rule of yours on the wrapper's children matches a chrome node
+  instead. A border on the wrapper is allowed; `--cms-list-pad: 0` puts the outline on the wrapper's edge.
+- The outline sits outside the wrapper's box, so a wrapper that clips (`overflow` other than `visible`) hides it. A
+  `console.warn` names such a wrapper.
 
 The design is `docs/specs/artefacts/2026-11-field-groups.html`.
 
