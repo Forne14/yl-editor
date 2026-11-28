@@ -103,16 +103,19 @@ async function call(request: Request, on: ContentHandlers = handlers) {
   return { response, status: response.status, text, body };
 }
 
-/** A stream that records whether anything read from it. */
+/** A stream that records whether anything read from it. No queue, so only a read pulls. */
 function watchedStream(bytes: Uint8Array) {
   const seen = { pulled: false };
-  const stream = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      seen.pulled = true;
-      controller.enqueue(bytes);
-      controller.close();
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        seen.pulled = true;
+        controller.enqueue(bytes);
+        controller.close();
+      },
     },
-  });
+    { highWaterMark: 0 },
+  );
   return { stream, seen };
 }
 

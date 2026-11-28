@@ -1,6 +1,12 @@
 import { z } from "zod";
-import { ArrayOpSchema, type ArrayOp, type StoredDocument } from "../types.ts";
-import { ERROR_STATUS, type ErrorCode, type WireArrayOp, type WireDocument } from "./wire-types.ts";
+import { ArrayOpSchema, type ArrayOp, type MediaRender, type StoredDocument } from "../types.ts";
+import {
+  ERROR_STATUS,
+  type ErrorCode,
+  type WireArrayOp,
+  type WireDocument,
+  type WireMediaRender,
+} from "./wire-types.ts";
 
 /** Every wire type and constant, so server code can import the whole contract from one module. */
 export * from "./wire-types.ts";
@@ -60,6 +66,15 @@ export const RevisionsQuerySchema = z.object({ key });
 /** Query of `GET document`. */
 export const DocumentQuerySchema = z.object({ key });
 
+/** Query of `POST media`: the field the upload is for. */
+export const MediaFieldQuerySchema = z.object({ key, path: z.string().min(1) });
+
+/** Query of `GET media-job` and `DELETE media-job`. */
+export const MediaJobQuerySchema = z.object({ key, path: z.string().min(1), job: z.string().min(1) });
+
+/** Query of `GET media`: the document whose `canEdit` gates it. The ids are repeated `id` params, read apart. */
+export const MediaQuerySchema = z.object({ key });
+
 const errorCodes = Object.keys(ERROR_STATUS) as [ErrorCode, ...ErrorCode[]];
 
 export const ErrorEnvelopeSchema = z.object({
@@ -68,10 +83,15 @@ export const ErrorEnvelopeSchema = z.object({
     message: z.string(),
     issues: z.unknown().optional(),
     current: z.custom<WireDocument>((value) => typeof value === "object" && value !== null).optional(),
+    limit: z.number().optional(),
   }),
 });
 
 /** Compile-time guard: the dependency-free wire types must stay identical to the core types they mirror. */
 type Same<Left, Right> = [Left] extends [Right] ? ([Right] extends [Left] ? true : false) : false;
-const wireMatchesCore: [Same<WireDocument, StoredDocument>, Same<WireArrayOp, ArrayOp>] = [true, true];
+const wireMatchesCore: [
+  Same<WireDocument, StoredDocument>,
+  Same<WireArrayOp, ArrayOp>,
+  Same<WireMediaRender, MediaRender>,
+] = [true, true, true];
 void wireMatchesCore;
