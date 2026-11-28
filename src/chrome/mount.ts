@@ -17,7 +17,7 @@ import {
   type ItemRecord,
   type ListRecord,
 } from "./lists.ts";
-import { attachGroup, createOutlineWatch, scanGroups, type GroupRecord } from "./groups.ts";
+import { attachGroup, createOutlineWatch, createWarnings, scanGroups, type GroupRecord } from "./groups.ts";
 import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
@@ -167,6 +167,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let byElement = new Map<HTMLElement, FieldRecord>();
   let lists: ListRecord[] = [];
   let groups: GroupRecord[] = [];
+  /** The groups' console warnings, once per element per mount. */
+  const groupWarnings = createWarnings();
   /** A field's emptied state, kept for an element that left the page, in case Undo puts it back. */
   const clearedOf = new WeakMap<HTMLElement, FieldRecord["cleared"]>();
   /** The reason fields are locked after the last load failed, until one succeeds. */
@@ -556,7 +558,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
 
   /** Draws every group from the fields the chrome knows now, and queues the crossing check. */
   function attachGroups(): void {
-    for (const group of groups) attachGroup(group, (element) => byElement.get(element));
+    for (const group of groups) attachGroup(group, (element) => byElement.get(element), groupWarnings);
     outlines.schedule();
   }
 
@@ -2448,6 +2450,9 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             record.reason = strings.unknownDocument;
           }
           session.documents.delete(key);
+          // Its fields are no longer dressed: a group left with fewer than two members goes, and outlines move.
+          for (const group of groups) group.paint();
+          outlines.schedule();
         }
         updateBar();
         return written;
@@ -2508,7 +2513,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
     lists = scanLists(scanRoot);
-    groups = scanGroups(scanRoot);
+    groups = scanGroups(scanRoot, groupWarnings);
   }
 
   /** Marks each field editable or locked from what the session knows, and dresses fields and lists while editing. */
