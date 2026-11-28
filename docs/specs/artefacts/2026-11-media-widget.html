@@ -1,0 +1,3310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Media widget</title>
+    <meta name="color-scheme" content="light dark" />
+
+    <!--
+      Self-contained: the rules below are COPIED from src/chrome/chrome.css (tokens, fields, buttons, focus, inputs,
+      badge, toast, popover, sheet, the 40em bottom-sheet rule) so this file opens offline from anywhere. The block
+      marked "proposed" is what the media widget would add to chrome.css: tokens only, every rule in :where().
+    -->
+    <style id="chrome-copy">
+      :where(.cms-root, .cms-field) {
+        --cms-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --cms-size-sm: 0.8125rem;
+        --cms-size-md: 0.9375rem;
+        --cms-line: 1.4;
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-success: #1f7a45;
+        --cms-warning: #a15c07;
+        --cms-outline: 2px dashed #2557d6;
+        --cms-radius: 6px;
+        --cms-space-1: 4px;
+        --cms-space-2: 8px;
+        --cms-space-3: 12px;
+        --cms-space-4: 16px;
+        --cms-space-5: 24px;
+        --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+        --cms-z: 1000;
+        --cms-control-h: 44px;
+        --cms-sheet-max-h: 70vh;
+        --cms-list-pad: 12px;
+        --cms-list-line: thin dashed var(--cms-accent);
+        --cms-list-tint: color-mix(in srgb, var(--cms-accent) 7%, transparent);
+      }
+      @media (prefers-color-scheme: dark) {
+        :where(.cms-root, .cms-field) {
+          --cms-bg: #1b1d24;
+          --cms-fg: #f3f4f8;
+          --cms-muted: #aab0bf;
+          --cms-border: #3a3e4a;
+          --cms-accent: #6b9bff;
+          --cms-accent-fg: #0b1020;
+          --cms-danger: #ff8a7a;
+          --cms-success: #5fd394;
+          --cms-warning: #f0b429;
+          --cms-outline: 2px dashed #6b9bff;
+          --cms-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+        }
+      }
+      :where(.cms-field) {
+        outline: var(--cms-outline);
+        outline-offset: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        cursor: text;
+      }
+      :where(.cms-field:hover, .cms-field:focus-visible) {
+        outline-color: var(--cms-fg);
+      }
+      :where(.cms-field--editing) {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+      }
+      :where(.cms-field--locked) {
+        outline-color: var(--cms-muted);
+        cursor: not-allowed;
+      }
+      :where(.cms-field--saving) {
+        outline-color: var(--cms-warning);
+      }
+      :where(.cms-field--failed) {
+        outline-style: solid;
+        outline-color: var(--cms-danger);
+      }
+      :where(.cms-root) {
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        line-height: var(--cms-line);
+        color: var(--cms-fg);
+      }
+      .cms-root [hidden] {
+        display: none;
+      }
+      :where(.cms-root *, .cms-root *::before, .cms-root *::after) {
+        box-sizing: border-box;
+      }
+      :where(.cms-btn) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--cms-space-1);
+        min-height: var(--cms-control-h);
+        min-width: var(--cms-control-h);
+        padding: 0 var(--cms-space-3);
+        border: thin solid var(--cms-border);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        color: var(--cms-fg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      :where(.cms-btn--primary) {
+        border-color: var(--cms-accent);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+      }
+      :where(.cms-btn--danger) {
+        border-color: var(--cms-danger);
+        color: var(--cms-danger);
+      }
+      :where(.cms-btn--ghost) {
+        background: transparent;
+      }
+      :where(.cms-btn:disabled) {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      :where(.cms-root :focus-visible, .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: var(--cms-space-1);
+      }
+      :where(.cms-field--saving:focus-visible) {
+        outline-color: var(--cms-warning);
+      }
+      :where(.cms-field--failed:focus-visible) {
+        outline-color: var(--cms-danger);
+      }
+      :where(.cms-input) {
+        min-height: var(--cms-control-h);
+        width: 100%;
+        padding: 0 var(--cms-space-2);
+        border: thin solid var(--cms-border);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        color: var(--cms-fg);
+        font: inherit;
+      }
+      :where(.cms-muted) {
+        color: var(--cms-muted);
+      }
+      :where(.cms-error) {
+        color: var(--cms-danger);
+      }
+      :where(.cms-visually-hidden, .cms-live) {
+        position: absolute;
+        inline-size: 1em;
+        block-size: 1em;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      :where(.cms-badge) {
+        position: fixed;
+        top: var(--cms-badge-top, 0);
+        left: var(--cms-badge-left, 0);
+        z-index: var(--cms-z);
+        transform: translateY(calc(-100% - var(--cms-space-1)));
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+        font-size: var(--cms-size-sm);
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      :where(.cms-badge--locked) {
+        background: var(--cms-muted);
+        color: var(--cms-bg);
+      }
+      :where(.cms-toast) {
+        position: fixed;
+        top: var(--cms-space-4);
+        left: 50%;
+        z-index: var(--cms-z);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--cms-space-2) var(--cms-space-3);
+        max-width: calc(100vw - 2 * var(--cms-space-4));
+        padding: var(--cms-space-2) var(--cms-space-4);
+        transform: translateX(-50%);
+        border-radius: var(--cms-radius);
+        border-inline-start: medium solid var(--cms-accent);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-toast[data-kind="saving"]) {
+        border-inline-start-color: var(--cms-warning);
+      }
+      :where(.cms-toast[data-kind="saved"]) {
+        border-inline-start-color: var(--cms-success);
+      }
+      :where(.cms-toast[data-kind="error"]) {
+        border-inline-start-color: var(--cms-danger);
+      }
+      :where(.cms-toast__message) {
+        margin: 0;
+      }
+      :where(.cms-toast__actions, .cms-popover__actions, .cms-sheet__actions) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--cms-space-2);
+      }
+      :where(.cms-sheet) {
+        position: fixed;
+        right: var(--cms-space-4);
+        bottom: calc(var(--cms-control-h) * 2 + var(--cms-space-5));
+        z-index: var(--cms-z);
+        width: min(28em, calc(100vw - 2 * var(--cms-space-4)));
+        max-height: var(--cms-sheet-max-h);
+        overflow: auto;
+        padding: var(--cms-space-4);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-sheet__header) {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--cms-space-3);
+        margin-bottom: var(--cms-space-3);
+      }
+      :where(.cms-sheet__title) {
+        margin: 0;
+        font-size: var(--cms-size-md);
+      }
+      :where(.cms-sheet__body) {
+        display: grid;
+        gap: var(--cms-space-3);
+      }
+      :where(.cms-diff) {
+        margin-block-start: var(--cms-space-1);
+        font-size: var(--cms-size-sm);
+        overflow-wrap: anywhere;
+      }
+      :where(.cms-diff p) {
+        margin: 0;
+      }
+      :where(.cms-field-label) {
+        display: grid;
+        gap: var(--cms-space-1);
+        margin-block: var(--cms-space-3);
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-popover) {
+        position: absolute;
+        top: calc(var(--cms-popover-top, 0) + var(--cms-space-2));
+        left: var(--cms-popover-left, 0);
+        z-index: var(--cms-z);
+        display: grid;
+        gap: var(--cms-space-2);
+        width: min(22em, calc(100vw - 2 * var(--cms-space-4)));
+        padding: var(--cms-space-3);
+        border-radius: var(--cms-radius);
+        background: var(--cms-bg);
+        box-shadow: var(--cms-shadow);
+      }
+      :where(.cms-popover__title) {
+        margin: 0;
+        font-size: var(--cms-size-sm);
+        font-weight: 600;
+      }
+      :where(.cms-toggle) {
+        display: flex;
+        align-items: center;
+        gap: var(--cms-space-2);
+        min-height: var(--cms-control-h);
+      }
+      :where(.cms-switch) {
+        inline-size: var(--cms-space-5);
+        block-size: var(--cms-space-5);
+        accent-color: var(--cms-accent);
+      }
+      @media (max-width: 40em) {
+        :where(.cms-sheet, .cms-popover) {
+          position: fixed;
+          inset-inline: 0;
+          top: auto;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          width: auto;
+          max-height: var(--cms-sheet-max-h);
+          overflow: auto;
+          border-radius: var(--cms-radius) var(--cms-radius) 0 0;
+          padding-bottom: calc(var(--cms-space-3) + env(safe-area-inset-bottom));
+        }
+      }
+    </style>
+
+    <!-- PROPOSED ADDITIONS to chrome.css. Tokens only, every rule in :where(), no raw colours or pixel sizes. -->
+    <style id="proposed">
+      /* The media popover is wider than a form popover: it holds a preview. */
+      :where(.cms-root.cms-media) {
+        width: min(26em, calc(100vw - 2 * var(--cms-space-4)));
+      }
+
+      /* Picker: one real button, the drop target around it, and the accepted types. */
+      :where(.cms-media__drop) {
+        display: grid;
+        justify-items: center;
+        gap: var(--cms-space-2);
+        padding: var(--cms-space-4) var(--cms-space-3);
+        border: medium dashed var(--cms-border);
+        border-radius: var(--cms-radius);
+        text-align: center;
+      }
+      :where(.cms-media__drop[data-over]) {
+        border-color: var(--cms-accent);
+        background: var(--cms-list-tint);
+      }
+      :where(.cms-media__drop p) {
+        margin: 0;
+        font-size: var(--cms-size-sm);
+      }
+
+      /* The file being sent: a thumbnail (or a placeholder tile), its name and size. */
+      :where(.cms-media__file) {
+        display: grid;
+        grid-template-columns: calc(var(--cms-control-h) * 1.5) 1fr auto;
+        align-items: center;
+        gap: var(--cms-space-3);
+      }
+      :where(.cms-media__thumb) {
+        inline-size: calc(var(--cms-control-h) * 1.5);
+        block-size: var(--cms-control-h);
+        border-radius: var(--cms-radius);
+        object-fit: cover;
+        background: var(--cms-list-tint);
+      }
+      :where(.cms-media__name) {
+        margin: 0;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      :where(.cms-media__meta) {
+        margin: 0;
+        color: var(--cms-muted);
+        font-size: var(--cms-size-sm);
+      }
+
+      /* The preview of the value the widget holds: contained, never cropped, so the editor sees the whole image. */
+      :where(.cms-media__preview) {
+        display: grid;
+        place-items: center;
+        margin: 0;
+        min-block-size: calc(var(--cms-control-h) * 3);
+        max-block-size: calc(var(--cms-control-h) * 5);
+        border-radius: var(--cms-radius);
+        background: var(--cms-list-tint);
+        overflow: hidden;
+      }
+      :where(.cms-media__preview img) {
+        max-inline-size: 100%;
+        max-block-size: calc(var(--cms-control-h) * 5);
+        object-fit: contain;
+      }
+
+      /* Native <progress>, so assistive technology reads its value; restyled from tokens. */
+      :where(.cms-progress) {
+        appearance: none;
+        inline-size: 100%;
+        block-size: var(--cms-space-2);
+        border: none;
+        border-radius: var(--cms-radius);
+        background: var(--cms-border);
+        color: var(--cms-accent);
+        overflow: hidden;
+      }
+      :where(.cms-progress)::-webkit-progress-bar {
+        background: var(--cms-border);
+      }
+      /* Pseudo-elements can't sit inside :where(), so they follow it. */
+      :where(.cms-progress)::-webkit-progress-value {
+        background: var(--cms-accent);
+      }
+      :where(.cms-progress)::-moz-progress-bar {
+        background: var(--cms-accent);
+      }
+      /* Indeterminate: a moving stripe; under reduced motion a still, half-filled striped bar. */
+      :where(.cms-progress:indeterminate) {
+        background: linear-gradient(90deg, transparent 0 30%, var(--cms-accent) 30% 60%, transparent 60% 100%) 0 0 /
+          200% 100% var(--cms-border);
+        animation: cms-progress-slide 1.4s linear infinite;
+      }
+      :where(.cms-progress:indeterminate)::-webkit-progress-bar {
+        background: transparent;
+      }
+      :where(.cms-progress:indeterminate)::-moz-progress-bar {
+        background: transparent;
+      }
+      @keyframes cms-progress-slide {
+        from {
+          background-position: 100% 0;
+        }
+        to {
+          background-position: -100% 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :where(.cms-progress:indeterminate) {
+          animation: none;
+          background: repeating-linear-gradient(
+            45deg,
+            var(--cms-accent) 0 var(--cms-space-1),
+            var(--cms-border) var(--cms-space-1) var(--cms-space-2)
+          );
+        }
+      }
+      :where(.cms-media__status) {
+        margin: 0;
+        font-size: var(--cms-size-sm);
+      }
+      :where(.cms-media__status--warn) {
+        color: var(--cms-warning);
+      }
+
+      /* The host element while a file is dragged over it (edit mode only, removed on dragleave, drop and Done). */
+      :where(.cms-field--drop) {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+        outline-offset: calc(var(--cms-space-1) * -1);
+      }
+
+      /* An empty media field: the chrome sets data-cms-empty (the mediaAdd string) while editing, and removes it. */
+      :where(.cms-field[data-cms-empty]) {
+        min-block-size: calc(var(--cms-control-h) * 3);
+        background: var(--cms-list-tint);
+        cursor: pointer;
+      }
+      :where(.cms-field[data-cms-empty])::before {
+        content: attr(data-cms-empty);
+        display: block;
+        padding: var(--cms-space-5) var(--cms-space-3);
+        color: var(--cms-accent);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-md);
+        font-weight: 600;
+        text-align: center;
+      }
+
+      /* Progress over the field while an upload goes on with its popover closed. A .cms-root in body, like the badge,
+         placed from the field's box through --cms-veil-* (style.setProperty): nothing is added to host markup. */
+      :where(.cms-media-veil) {
+        position: fixed;
+        top: var(--cms-veil-top, 0);
+        left: var(--cms-veil-left, 0);
+        z-index: var(--cms-z);
+        display: grid;
+        align-content: end;
+        gap: var(--cms-space-1);
+        inline-size: var(--cms-veil-width, 0);
+        block-size: var(--cms-veil-height, 0);
+        box-sizing: border-box;
+        padding: var(--cms-space-2);
+        background: linear-gradient(transparent 40%, color-mix(in srgb, var(--cms-bg) 85%, transparent));
+        pointer-events: none;
+      }
+
+      /* The veil is a .cms-root itself, so the [hidden] rule above, which reaches descendants, doesn't cover it. */
+      .cms-media-veil[hidden] {
+        display: none;
+      }
+
+      /* "No alt text": a second chip after the badge, in the warning colour. */
+      :where(.cms-badge--warning) {
+        background: var(--cms-warning);
+        color: var(--cms-bg);
+      }
+
+      @media (hover: none) {
+        :where(.cms-media__drop-hint) {
+          display: none;
+        }
+      }
+    </style>
+
+    <style>
+      /* Prototype page only. */
+      :root {
+        --page-bg: #f4f5f8;
+        --page-fg: #16181d;
+        --page-muted: #5b6170;
+        --page-cell: #ffffff;
+        --page-line: #e3e5eb;
+        --page-ask: #fff8ec;
+        --page-rec: #e8f5ed;
+        --page-rec-fg: #1f7a45;
+        --page-code: #eef0f5;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --page-bg: #0f1116;
+          --page-fg: #e6e8ee;
+          --page-muted: #aab0bf;
+          --page-cell: #161820;
+          --page-line: #2a2d36;
+          --page-ask: #2a2112;
+          --page-rec: #12261b;
+          --page-rec-fg: #5fd394;
+          --page-code: #1f222b;
+          color-scheme: dark;
+        }
+      }
+      :root[data-theme="dark"] {
+        --page-bg: #0f1116;
+        --page-fg: #e6e8ee;
+        --page-muted: #aab0bf;
+        --page-cell: #161820;
+        --page-line: #2a2d36;
+        --page-ask: #2a2112;
+        --page-rec: #12261b;
+        --page-rec-fg: #5fd394;
+        --page-code: #1f222b;
+        color-scheme: dark;
+      }
+      /* The theme switch forces the chrome's tokens too (the real chrome follows prefers-color-scheme only). */
+      :root[data-theme="dark"] :is(.cms-root, .cms-field),
+      .cell.dark :is(.cms-root, .cms-field) {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        --cms-success: #5fd394;
+        --cms-warning: #f0b429;
+        --cms-outline: 2px dashed #6b9bff;
+        --cms-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+      }
+      :root[data-theme="light"] :is(.cms-root, .cms-field) {
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-success: #1f7a45;
+        --cms-warning: #a15c07;
+        --cms-outline: 2px dashed #2557d6;
+        --cms-shadow: 0 8px 28px rgb(15 18 30 / 18%);
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 96px;
+        background: var(--page-bg);
+        color: var(--page-fg);
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 4px;
+      }
+      main > h2 {
+        font-size: 1.15rem;
+        margin: 56px 0 4px;
+        padding-top: 16px;
+        border-top: 1px solid var(--page-line);
+      }
+      main > h3 {
+        font-size: 1rem;
+        margin: 28px 0 4px;
+      }
+      p.lead,
+      p.note,
+      main > p,
+      main > ul,
+      main > ol {
+        max-width: 80ch;
+      }
+      p.lead,
+      p.note {
+        color: var(--page-muted);
+        margin: 4px 0 16px;
+      }
+      .topbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: center;
+        margin: 12px 0 8px;
+      }
+      .topbar fieldset {
+        display: flex;
+        gap: 4px;
+        border: 1px solid var(--page-line);
+        border-radius: 8px;
+        padding: 4px;
+        margin: 0;
+      }
+      .topbar legend {
+        position: absolute;
+        clip-path: inset(50%);
+      }
+      .topbar label {
+        padding: 4px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .topbar input {
+        position: absolute;
+        opacity: 0;
+      }
+      .topbar label:has(input:checked) {
+        background: var(--page-cell);
+        box-shadow: 0 0 0 1px var(--page-line);
+        font-weight: 600;
+      }
+      .topbar label:has(input:focus-visible) {
+        outline: 2px solid #2557d6;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 99px;
+        background: var(--page-ask);
+        color: #a15c07;
+        font-size: 0.8rem;
+        font-weight: 600;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+        gap: 16px;
+      }
+      .cell {
+        position: relative;
+        border-radius: 10px;
+        padding: 16px;
+        background: var(--page-cell);
+        border: 1px solid var(--page-line);
+        min-width: 0;
+      }
+      .cell.dark {
+        background: #0f1116;
+        border-color: #2a2d36;
+        color: #e6e8ee;
+      }
+      .cell.wide {
+        grid-column: 1 / -1;
+      }
+      .cell h3 {
+        margin: 0 0 12px;
+        font-size: 0.78rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--page-muted);
+      }
+      .cell.dark h3,
+      .cell.dark .caption {
+        color: #aab0bf;
+      }
+      .caption {
+        margin: 12px 0 0;
+        font-size: 0.82rem;
+        color: var(--page-muted);
+      }
+      code {
+        font-size: 0.85em;
+        background: var(--page-code);
+        padding: 1px 4px;
+        border-radius: 4px;
+      }
+      pre {
+        background: var(--page-code);
+        border: 1px solid var(--page-line);
+        border-radius: 8px;
+        padding: 12px 14px;
+        overflow-x: auto;
+        font:
+          12.5px/1.5 ui-monospace,
+          Menlo,
+          monospace;
+        max-width: 100%;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        background: var(--page-cell);
+        border: 1px solid var(--page-line);
+        font-size: 0.88rem;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        border-radius: 10px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--page-line);
+        vertical-align: top;
+      }
+      th {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--page-muted);
+      }
+      td kbd {
+        font:
+          12px ui-monospace,
+          Menlo,
+          monospace;
+        padding: 1px 5px;
+        border: 1px solid var(--page-line);
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+      .rec {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 7px;
+        border-radius: 4px;
+        background: var(--page-rec);
+        color: var(--page-rec-fg);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        vertical-align: 1px;
+      }
+      .options {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+        gap: 12px;
+        margin: 8px 0 12px;
+      }
+      .opt {
+        border: 1px solid var(--page-line);
+        border-radius: 10px;
+        padding: 12px 14px;
+        background: var(--page-cell);
+      }
+      .opt.is-rec {
+        border-color: var(--page-rec-fg);
+        box-shadow: 0 0 0 1px var(--page-rec-fg);
+      }
+      .opt h4 {
+        margin: 0 0 6px;
+        font-size: 0.92rem;
+      }
+      .opt p,
+      .opt ul {
+        margin: 4px 0;
+        font-size: 0.88rem;
+      }
+      .opt ul {
+        padding-left: 18px;
+      }
+      .policy {
+        border-left: 4px solid #2557d6;
+        background: var(--page-cell);
+        border-radius: 6px;
+        padding: 12px 16px;
+        max-width: 90ch;
+      }
+      .policy dt {
+        font-weight: 700;
+        margin-top: 8px;
+      }
+      .policy dd {
+        margin: 2px 0 0;
+      }
+      .ask {
+        border-left: 4px solid #a15c07;
+        background: var(--page-ask);
+        padding: 12px 16px 12px 36px;
+        border-radius: 6px;
+        max-width: 90ch;
+      }
+      .ask li {
+        margin: 6px 0;
+      }
+      .contract > li {
+        margin: 0 0 18px;
+      }
+      .contract > li > strong:first-child {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      /* A host page's own look: the demo site the widget dresses. */
+      .host {
+        font-family: Georgia, "Times New Roman", serif;
+        color: inherit;
+      }
+      .host figure {
+        margin: 0;
+      }
+      .host .hero {
+        display: block;
+        inline-size: 100%;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+        border-radius: 4px;
+      }
+      .host figcaption {
+        margin-top: 8px;
+        font-size: 0.95rem;
+        font-style: italic;
+      }
+      .host .card-img {
+        display: block;
+        inline-size: 100%;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+      }
+      /* Still surfaces: the chrome positions them; on this page the gallery copies sit in the flow. */
+      .cell .cms-popover.still,
+      .cell .cms-sheet.still,
+      .cell .cms-toast.still {
+        position: relative;
+        top: auto;
+        left: auto;
+        right: auto;
+        bottom: auto;
+        transform: none;
+        max-width: 100%;
+        margin-top: 12px;
+      }
+      .cell .cms-badge.still {
+        position: absolute;
+        transform: none;
+      }
+      .cell .cms-media-veil.still {
+        position: absolute;
+      }
+      .veil-host {
+        position: relative;
+      }
+      .veil-host .cms-media-veil.still {
+        inset: 0;
+        inline-size: auto;
+        block-size: auto;
+      }
+      .field-wrap {
+        position: relative;
+        padding-top: 30px;
+      }
+      .field-wrap > .cms-badge.still {
+        top: 0;
+        left: 0;
+      }
+      .field-wrap > .cms-badge.still + .cms-badge.still {
+        left: auto;
+        right: auto;
+        margin-left: 0;
+      }
+      .badges {
+        position: absolute;
+        top: 0;
+        left: 0;
+        display: flex;
+        gap: 4px;
+      }
+      .badges .cms-badge.still {
+        position: static;
+      }
+      .sim-focus {
+        outline: medium solid var(--cms-accent) !important;
+        outline-offset: var(--cms-space-1);
+      }
+      .phone {
+        position: relative;
+        max-width: 375px;
+        min-height: 560px;
+        margin: 0 auto;
+        border: 1px solid var(--page-line);
+        border-radius: 18px;
+        overflow: hidden;
+        background: var(--page-bg);
+      }
+      .phone .host {
+        padding: 16px;
+      }
+      .phone .cms-popover.still {
+        position: absolute;
+        inset-inline: 0;
+        bottom: 0;
+        top: auto;
+        width: auto;
+        margin: 0;
+        border-radius: var(--cms-radius) var(--cms-radius) 0 0;
+      }
+      .phone .cms-btn.full {
+        inline-size: 100%;
+      }
+      .wire {
+        font:
+          12px/1.55 ui-monospace,
+          Menlo,
+          monospace;
+        background: var(--page-code);
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-top: 12px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 14em;
+        overflow-y: auto;
+      }
+      /* Interactive stage */
+      .stage {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+        gap: 24px;
+        padding-top: 30px;
+        min-height: 560px;
+      }
+      @media (max-width: 760px) {
+        .stage {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+        align-content: start;
+        font-size: 0.88rem;
+      }
+      .controls label {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+      }
+      .controls select,
+      .controls button {
+        max-width: 100%;
+        font: inherit;
+        padding: 6px 8px;
+      }
+      /* Wide screens: placed in the stage. Under 40em the proposed rule's bottom sheet applies, as in the chrome. */
+      @media (min-width: 40.0625em) {
+        .stage .demo-pop {
+          position: absolute;
+          z-index: 5;
+        }
+      }
+      .stage .demo-badges {
+        position: absolute;
+        top: 0;
+        left: 0;
+        display: flex;
+        gap: 4px;
+      }
+      .stage .demo-badges .cms-badge {
+        position: static;
+        transform: none;
+      }
+      #demo-veil {
+        position: absolute;
+      }
+      #demo-toast[hidden] {
+        display: none;
+      }
+      #demo-toast {
+        position: absolute;
+        top: auto;
+        bottom: 0;
+        left: 50%;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Media widget and <code>MediaStore</code> reshape (#3)</h1>
+      <p class="lead">
+        Issue #3 (Media: reshape MediaStore and ship a default media widget). This page proposes the default
+        <code>media</code> widget, drawn with the real chrome tokens and classes, the reshaped
+        <code>MediaStore</code> seam and its wire, and the host contract. Nothing here is ruled: every
+        <span class="rec">Recommended</span> is a proposal for Yassine to accept or overrule, and the open points are
+        listed at the end. All on-screen text is proposed copy, keyed for <code>src/chrome/strings.ts</code> (§4).
+      </p>
+      <div class="topbar">
+        <span class="pill">Proposal · not built</span>
+        <fieldset id="theme">
+          <legend>Theme</legend>
+          <label><input type="radio" name="theme" value="auto" checked /> Auto</label>
+          <label><input type="radio" name="theme" value="light" /> Light</label>
+          <label><input type="radio" name="theme" value="dark" /> Dark</label>
+        </fieldset>
+        <span class="caption">The switch forces the chrome tokens; the shipped chrome follows the OS setting.</span>
+      </div>
+
+      <h2>0 · The proposal in one screen</h2>
+      <ol>
+        <li>
+          <strong>Widget.</strong> A popover (bottom sheet under 40em) with one <em>Choose file</em> button inside a
+          drop target, paste support, a native <code>&lt;progress&gt;</code>, a preview, an alt text input and a
+          <em>Decorative</em> checkbox. Done and Cancel as everywhere else.
+        </li>
+        <li>
+          <strong>Value.</strong> The field stores <code>{ id, alt }</code>, or
+          <code>{ id, alt: "", decorative: true }</code>, or <code>null</code>. Alt text is content: it is drafted,
+          published and revisioned with the page.
+        </li>
+        <li>
+          <strong>When it saves.</strong> The value is committed only once the media is ready (stored, with a preview).
+          An upload or job in progress is not a change yet: leaving the popover lets it go on and saves it when it is
+          ready; Esc or Cancel upload stops it and saves nothing.
+        </li>
+        <li>
+          <strong>Store.</strong> <code>upload</code> takes a <code>ReadableStream</code>, answers ready or
+          <em>processing + job id</em>; <code>job(id)</code> reports progress; <code>resolve</code> is batched and
+          returns a host-shaped <code>variants</code> plus a package-shaped <code>render</code> (HTML's own
+          <code>src</code>/<code>srcset</code>/<code>&lt;source type&gt;</code> vocabulary), which is all the chrome
+          reads.
+        </li>
+        <li>
+          <strong>Wire.</strong> An opt-in <code>media</code> option on <code>createContentHandlers</code> adds
+          <code>POST media</code> (raw body), <code>GET media?ids=</code> and <code>GET media-job</code> (+ optional
+          <code>DELETE</code>), behind the same CSRF guard, gated by <code>canEdit</code> on the document the field
+          belongs to.
+        </li>
+        <li>
+          <strong>Host markup.</strong> A media field is an <code>&lt;img&gt;</code>, a <code>&lt;picture&gt;</code>, or
+          a wrapper (<code>&lt;figure&gt;</code>) holding at most one of them. The chrome's content render rewrites only
+          <code>src</code>, <code>srcset</code>, <code>alt</code>, <code>width</code>/<code>height</code> and the
+          <code>&lt;source&gt;</code> list, and fires <code>cms:change</code> as today. Anything else is the host's, via
+          <code>cms:change</code>.
+        </li>
+      </ol>
+
+      <h2>1 · Try it</h2>
+      <p class="note">
+        A demo host page with a real file input, drag and drop and paste. Nothing is uploaded: the server is simulated
+        and the preview is your own file (an object URL). Pick an outcome on the right first. Tab to the image and press
+        Enter, or click it. While it uploads, click elsewhere to let it go on in the background, or press Esc to cancel.
+        The log shows the requests the widget would make.
+      </p>
+      <div class="cell wide">
+        <div class="stage" id="stage">
+          <div class="host" id="demo-host">
+            <div class="demo-badges" id="demo-badges" aria-hidden="true">
+              <span class="cms-root cms-badge">Hero image</span>
+            </div>
+            <figure class="cms-field" id="demo-field" tabindex="0" aria-describedby="demo-desc">
+              <img class="hero" id="demo-img" alt="A sourdough loaf on a floured board" data-ph="loaf" />
+            </figure>
+            <span id="demo-desc" hidden>Media · Press Enter to edit</span>
+            <div class="cms-root cms-media-veil" id="demo-veil" hidden>
+              <progress class="cms-progress" id="demo-veil-progress" max="100"></progress>
+              <p class="cms-media__status" id="demo-veil-text"></p>
+            </div>
+          </div>
+          <div class="controls">
+            <label
+              >Simulated server outcome
+              <select id="demo-outcome">
+                <option value="ready">200 · stored at once (small image)</option>
+                <option value="job" selected>202 · job, ready after a few polls</option>
+                <option value="indeterminate">202 · job, no upload length known</option>
+                <option value="large">413 · too large</option>
+                <option value="type">415 · wrong type</option>
+                <option value="network">Network drops mid-upload</option>
+                <option value="failed">Job fails</option>
+                <option value="busy">503 busy, then 202</option>
+                <option value="slow">Job never finishes (give-up after 10 min, sped up)</option>
+              </select>
+            </label>
+            <label
+              >Document access
+              <select id="demo-access">
+                <option value="edit">Editable</option>
+                <option value="locked">Locked (no edit access)</option>
+              </select>
+            </label>
+            <button type="button" id="demo-empty">Empty the field (as after Discard on a wrapper)</button>
+            <button type="button" id="demo-reset">Reset demo</button>
+            <div>
+              <strong>Stored value</strong>
+              <div class="wire" id="demo-value"></div>
+            </div>
+            <div>
+              <strong>Wire log</strong>
+              <div class="wire" id="demo-log" aria-live="off"></div>
+            </div>
+          </div>
+          <div class="cms-root cms-toast" id="demo-toast" role="status" hidden>
+            <p class="cms-toast__message" id="demo-toast-msg"></p>
+            <div class="cms-toast__actions" id="demo-toast-actions"></div>
+          </div>
+        </div>
+        <div class="cms-root cms-live" aria-live="polite" id="demo-live"></div>
+        <p class="caption">
+          The demo's popover is placed inside the stage for the page; the chrome places it under the field through
+          <code>--cms-popover-top</code>/<code>--cms-popover-left</code>, and under 40em it is the bottom sheet (resize
+          the window to see it). The figcaption a real page might carry would be its own <code>text</code> field,
+          grouped with the image by <code>data-edit-group</code>.
+        </p>
+      </div>
+
+      <h2>2 · States</h2>
+      <p class="note">
+        Still copies of every state. Badges, popovers and toasts sit in the flow here; the chrome positions them. The
+        outline colours are the existing ones: dashed accent at rest, solid accent while editing, warning while a save
+        or upload runs, danger when it failed, muted when locked.
+      </p>
+
+      <h3>2.1 · At rest, in edit mode</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Filled field</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Hero image</span>
+            <figure class="cms-field" tabindex="0">
+              <img class="hero" alt="A sourdough loaf on a floured board" data-ph="loaf" />
+            </figure>
+          </div>
+          <p class="caption">
+            Unchanged from other fields: dashed outline, badge, <code>tabindex="0"</code> and
+            <code>aria-describedby</code> "Hero image, media. Press Enter to edit".
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Empty field (wrapper with no image)</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Hero image</span>
+            <figure class="cms-field" tabindex="0" data-cms-empty="Add image"></figure>
+          </div>
+          <p class="caption">
+            The chrome sets <code>data-cms-empty</code> (<code>mediaAdd</code>) on an empty wrapper while editing, so it
+            has a box to click and drop on. Its description reads <code>mediaEmpty</code>. Removed at Done.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Filled, no alt text</h3>
+          <div class="field-wrap host">
+            <span class="badges"
+              ><span class="cms-root cms-badge still">Hero image</span
+              ><span class="cms-root cms-badge cms-badge--warning still">No alt text</span></span
+            >
+            <figure class="cms-field" tabindex="0">
+              <img class="hero" alt="" data-ph="loaf" />
+            </figure>
+          </div>
+          <p class="caption">
+            Saved with <code>alt: ""</code> and not marked decorative (it was left during upload, or Done with the input
+            empty). A warning chip, not an error: the draft is saved. The Publish sheet repeats it (§2.6).
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Locked field</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge cms-badge--locked still">Hero image · not editable</span>
+            <figure class="cms-field cms-field--locked" tabindex="0">
+              <img class="hero" alt="A sourdough loaf on a floured board" data-ph="loaf" />
+            </figure>
+          </div>
+          <p class="caption">
+            As today. A click, Enter, a drop or a paste on it shows <code>notEditable</code> as a toast and uploads
+            nothing.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>File dragged over the field</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Drop to upload to Hero image</span>
+            <figure class="cms-field cms-field--drop" tabindex="0">
+              <img class="hero" alt="" data-ph="loaf" />
+            </figure>
+          </div>
+          <p class="caption">
+            <code>cms-field--drop</code> while a file is over an editable media field; the badge reads
+            <code>mediaDropHere</code>. Dropping opens the popover and starts the upload. A drop anywhere else on the
+            page is swallowed in edit mode, so a missed drop never navigates away to the file.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Uploading in the background</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Hero image · uploading</span>
+            <figure class="cms-field cms-field--saving veil-host" tabindex="0">
+              <img class="hero" alt="" data-ph="loaf" />
+              <span class="cms-root cms-media-veil still">
+                <progress class="cms-progress" max="100" value="62"></progress>
+                <span class="cms-media__status">Uploading… 62%</span>
+              </span>
+            </figure>
+          </div>
+          <p class="caption">
+            The editor left the popover mid-upload. The field keeps its old image with a warning outline and a veil (a
+            <code>.cms-root</code> in <code>body</code>, placed over the field's box; nothing goes into host markup).
+            Opening the field again shows the popover in the same state.
+          </p>
+        </div>
+      </div>
+
+      <h3>2.2 · Picker open</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Empty field · picker</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__drop">
+              <button type="button" class="cms-btn cms-btn--primary">Choose file</button>
+              <p class="cms-media__drop-hint cms-muted">or drop an image here, or paste one</p>
+              <p class="cms-muted">JPEG, PNG, WebP, AVIF or HEIC · up to 40 MB</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">
+            Focus starts on Choose file, which opens a hidden <code>&lt;input type="file" accept&gt;</code> (never a Tab
+            stop). The second line is <code>mediaAccepts</code>, from the field's <code>accept</code> and
+            <code>maxBytes</code> when the host gave them; without them it is left out and the server decides.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>File over the picker</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__drop" data-over>
+              <button type="button" class="cms-btn cms-btn--primary">Choose file</button>
+              <p class="cms-media__drop-hint">Drop to upload</p>
+              <p class="cms-muted">JPEG, PNG, WebP, AVIF or HEIC · up to 40 MB</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">The drop target tints with <code>--cms-list-tint</code> and its border turns accent.</p>
+        </div>
+        <div class="cell">
+          <h3>Filled field · replace</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <figure class="cms-media__preview"><img alt="" data-ph="loaf" /></figure>
+            <label class="cms-field-label"
+              >Alt text <input class="cms-input" value="A sourdough loaf on a floured board"
+            /></label>
+            <label class="cms-toggle"
+              ><input type="checkbox" class="cms-switch" /> Decorative: screen readers skip it</label
+            >
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn">Replace</button>
+              <button type="button" class="cms-btn cms-btn--danger">Remove image</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+              <button type="button" class="cms-btn cms-btn--primary">Done</button>
+            </div>
+          </div>
+          <p class="caption">
+            Opening a filled field edits its alt text in place; Replace opens the file dialog; a drop or paste here
+            replaces too. Focus starts in Alt text. Remove commits <code>null</code>.
+          </p>
+        </div>
+      </div>
+
+      <h3>2.3 · Uploading and processing</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Uploading · determinate</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">cardamom-buns.jpg</p>
+                <p class="cms-media__meta">12.4 MB</p>
+              </div>
+            </div>
+            <progress class="cms-progress" max="100" value="42" aria-label="Upload progress"></progress>
+            <p class="cms-media__status">Uploading… 42%</p>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--danger">Cancel upload</button>
+            </div>
+          </div>
+          <p class="caption">
+            From <code>XMLHttpRequest.upload</code> progress (fetch has no upload progress). The browser streams the
+            file from disk: it is never read into memory. Announced at start, then at 25%, 50%, 75%.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Uploading · indeterminate</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <span class="cms-media__thumb" aria-hidden="true"></span>
+              <div>
+                <p class="cms-media__name">IMG_2041.HEIC</p>
+                <p class="cms-media__meta">4.1 MB · no preview in this browser</p>
+              </div>
+            </div>
+            <progress class="cms-progress" aria-label="Upload progress"></progress>
+            <p class="cms-media__status">Finishing upload…</p>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--danger">Cancel upload</button>
+            </div>
+          </div>
+          <p class="caption">
+            Indeterminate when the browser reports no length, and between 100% sent and the server's answer
+            (<code>mediaFinishing</code>). A HEIC file, or a host CSP without <code>img-src blob:</code>, gets the plain
+            tile until the server's preview arrives.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Processing · server answered 202</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">cardamom-buns.jpg</p>
+                <p class="cms-media__meta">12.4 MB</p>
+              </div>
+            </div>
+            <progress class="cms-progress" aria-label="Processing"></progress>
+            <p class="cms-media__status">Processing on the server. You can keep editing.</p>
+            <label class="cms-field-label">Alt text <input class="cms-input" placeholder="" /></label>
+            <label class="cms-toggle"
+              ><input type="checkbox" class="cms-switch" /> Decorative: screen readers skip it</label
+            >
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--danger">Cancel upload</button>
+              <button type="button" class="cms-btn cms-btn--primary" disabled>Done</button>
+            </div>
+          </div>
+          <p class="caption">
+            Polling <code>GET media-job</code> (§5.3). Alt text can be written while it waits. Done is disabled until
+            ready; leaving is allowed and saves on ready. A job that reports <code>progress</code> makes the bar
+            determinate.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Processing · gave up waiting</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">loop-final.mp4</p>
+                <p class="cms-media__meta">58.0 MB</p>
+              </div>
+            </div>
+            <div class="cms-diff">
+              <p class="cms-error">loop-final.mp4 is still processing after 10 minutes. It may still finish.</p>
+            </div>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--primary">Keep waiting</button>
+              <button type="button" class="cms-btn">Choose another file</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+            </div>
+          </div>
+          <p class="caption">
+            The give-up state (<code>mediaJobSlow</code>). Nothing was written; the field shows its old value with the
+            failed outline. Keep waiting restarts the poll with a fresh bound.
+          </p>
+        </div>
+      </div>
+
+      <h3>2.4 · Done with preview, alt text</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Ready · alt text focused</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <figure class="cms-media__preview"><img alt="" data-ph="buns" /></figure>
+            <p class="cms-media__meta">cardamom-buns.jpg · 2400 × 1600</p>
+            <label class="cms-field-label"
+              >Alt text
+              <input class="cms-input sim-focus" value="Cardamom buns cooling on a rack" aria-describedby="alt-help-1"
+            /></label>
+            <p class="cms-media__meta" id="alt-help-1">Say what the image shows, for people who can’t see it.</p>
+            <label class="cms-toggle"
+              ><input type="checkbox" class="cms-switch" /> Decorative: screen readers skip it</label
+            >
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn">Replace</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+              <button type="button" class="cms-btn cms-btn--primary">Done</button>
+            </div>
+          </div>
+          <p class="caption">
+            The preview is the server's <code>render.src</code>; until it arrives, the local file. Focus moves to Alt
+            text and <code>mediaReadyAnnounce</code> is announced. Enter or Done commits; the host image updates.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Decorative</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <figure class="cms-media__preview"><img alt="" data-ph="buns" /></figure>
+            <label class="cms-field-label">Alt text <input class="cms-input" value="" disabled /></label>
+            <label class="cms-toggle"
+              ><input type="checkbox" class="cms-switch sim-focus" checked /> Decorative: screen readers skip it</label
+            >
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn">Replace</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+              <button type="button" class="cms-btn cms-btn--primary">Done</button>
+            </div>
+          </div>
+          <p class="caption">
+            Checking Decorative empties and disables Alt text (the typed text comes back if unchecked before Done).
+            Stores <code>{ id, alt: "", decorative: true }</code>; the host renders <code>alt=""</code>.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Replaced · alt text kept, asked about</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <figure class="cms-media__preview"><img alt="" data-ph="buns" /></figure>
+            <label class="cms-field-label"
+              >Alt text <input class="cms-input sim-focus" value="A sourdough loaf on a floured board"
+            /></label>
+            <p class="cms-media__status cms-media__status--warn">
+              This alt text was written for the previous image. Is it still right?
+            </p>
+            <label class="cms-toggle"
+              ><input type="checkbox" class="cms-switch" /> Decorative: screen readers skip it</label
+            >
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn">Replace</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+              <button type="button" class="cms-btn cms-btn--primary">Done</button>
+            </div>
+          </div>
+          <p class="caption">
+            Recommended: keep the old alt text, selected, with <code>mediaAltCheck</code> under it, so a recrop costs
+            nothing and a new subject is one keystroke away. The other option clears it (question 3).
+          </p>
+        </div>
+      </div>
+
+      <h3>2.5 · Errors, retry, cancel</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Too large (checked before sending)</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__drop">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Choose file</button>
+              <p class="cms-media__drop-hint cms-muted">or drop an image here, or paste one</p>
+              <p class="cms-muted">JPEG, PNG, WebP, AVIF or HEIC · up to 40 MB</p>
+            </div>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">harbour-raw.tiff is 112 MB. The limit here is 40 MB.</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">
+            With <code>maxBytes</code> on the field, refused before a byte is sent; without it, the server's 413 says
+            the same (it checks <code>Content-Length</code> before reading the body). Nothing to retry: choose another.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Wrong type</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__drop">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Choose file</button>
+              <p class="cms-media__drop-hint cms-muted">or drop an image here, or paste one</p>
+              <p class="cms-muted">JPEG, PNG, WebP, AVIF or HEIC · up to 40 MB</p>
+            </div>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">menu.pdf isn’t a file this field takes. Use JPEG, PNG, WebP, AVIF or HEIC.</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">From the field's <code>accept</code> before sending, or the server's 415.</p>
+        </div>
+        <div class="cell">
+          <h3>Network dropped mid-upload</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">cardamom-buns.jpg</p>
+                <p class="cms-media__meta">12.4 MB</p>
+              </div>
+            </div>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">The upload stopped: couldn’t reach the server.</p>
+            </div>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Retry</button>
+              <button type="button" class="cms-btn">Choose another file</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+            </div>
+          </div>
+          <p class="caption">
+            Also a stall: no progress event for 60 s. Retry resends the same file from the start (the widget still holds
+            the <code>File</code>). No automatic retry.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Job failed</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">panorama.jpg</p>
+                <p class="cms-media__meta">31.0 MB</p>
+              </div>
+            </div>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">The server couldn’t process panorama.jpg: the image is too tall.</p>
+            </div>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Retry</button>
+              <button type="button" class="cms-btn">Choose another file</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+            </div>
+          </div>
+          <p class="caption">
+            The reason is the store's <code>message</code> when it gives one, else a generic line. Retry uploads the
+            file again (a content-addressed store dedupes it).
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Server busy (503 + Retry-After)</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">cardamom-buns.jpg</p>
+                <p class="cms-media__meta">12.4 MB</p>
+              </div>
+            </div>
+            <progress class="cms-progress" aria-label="Waiting"></progress>
+            <p class="cms-media__status cms-media__status--warn">The server is busy. Trying again in 20 s…</p>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--danger">Cancel upload</button>
+            </div>
+          </div>
+          <p class="caption">Tried again by itself after Retry-After (1 to 60 s), at most 3 times, then Retry.</p>
+        </div>
+        <div class="cell">
+          <h3>Cancelled mid-upload</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Hero image</span>
+            <figure class="cms-field sim-focus" tabindex="0">
+              <img class="hero" alt="" data-ph="loaf" />
+            </figure>
+          </div>
+          <div class="cms-root cms-toast still" data-kind="info" role="status">
+            <p class="cms-toast__message">Upload cancelled. Nothing was saved.</p>
+          </div>
+          <p class="caption">
+            Cancel upload or Esc: the request is aborted, a job is cancelled if the store can, the popover closes, focus
+            returns to the field, the field keeps its value. An info toast that hides itself.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Failed after the popover closed</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Hero image · upload failed</span>
+            <figure class="cms-field cms-field--failed" tabindex="0">
+              <img class="hero" alt="" data-ph="loaf" />
+            </figure>
+          </div>
+          <div class="cms-root cms-toast still" data-kind="error" role="alert">
+            <p class="cms-toast__message">Hero image: the upload stopped: couldn’t reach the server.</p>
+            <div class="cms-toast__actions">
+              <button type="button" class="cms-btn cms-btn--primary">Retry</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Close</button>
+            </div>
+          </div>
+          <p class="caption">
+            The same errors, as a failed save looks today: failed outline and an error toast that stays. Opening the
+            field shows the error state in the popover.
+          </p>
+        </div>
+      </div>
+
+      <h3>2.6 · Lifecycle surfaces</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Done with an upload still going</h3>
+          <div class="cms-root cms-sheet still" role="dialog" aria-label="Finish editing">
+            <div class="cms-sheet__header"><p class="cms-sheet__title">Finish editing?</p></div>
+            <div class="cms-sheet__body">
+              <p>1 upload is still going: Hero image (62%). If you finish now it stops and nothing from it is saved.</p>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--primary sim-focus">Keep uploading</button>
+                <button type="button" class="cms-btn cms-btn--danger">Stop and finish</button>
+              </div>
+            </div>
+          </div>
+          <p class="caption">
+            Only when something is uploading or processing. Keep uploading closes the sheet and stays in edit mode. A
+            finished upload saves as usual, then Done goes ahead as today.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Publish sheet notes</h3>
+          <div class="cms-root cms-sheet still" role="dialog" aria-label="Publish">
+            <div class="cms-sheet__header"><p class="cms-sheet__title">Publish 1 document</p></div>
+            <div class="cms-sheet__body">
+              <div>
+                <strong>pages/home</strong>
+                <div class="cms-diff">
+                  <p>hero: cardamom-buns.jpg (was sourdough-loaf.jpg)</p>
+                  <p class="cms-media__status--warn">Hero image has no alt text.</p>
+                  <p class="cms-media__status--warn">
+                    Gallery photo 2 is still uploading and won’t be in this publish.
+                  </p>
+                </div>
+              </div>
+              <div class="cms-sheet__actions">
+                <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary">Confirm</button>
+              </div>
+            </div>
+          </div>
+          <p class="caption">
+            Warnings, not blockers (question 1, question 5). The diff names a media value by the filename the store
+            reports, else its id.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Saved after the popover closed</h3>
+          <div class="field-wrap host">
+            <span class="cms-root cms-badge still">Hero image</span>
+            <figure class="cms-field" tabindex="0" data-cms-state="saved">
+              <img class="hero" alt="Cardamom buns cooling on a rack" data-ph="buns" />
+            </figure>
+          </div>
+          <div class="cms-root cms-toast still" data-kind="saved" role="status">
+            <p class="cms-toast__message">Hero image: upload finished and saved.</p>
+          </div>
+          <p class="caption">
+            A background upload that becomes ready commits through the save queue like any value. The host image is
+            repainted from <code>render</code>.
+          </p>
+        </div>
+      </div>
+
+      <h3>2.7 · Touch, under 40em</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Picker as a bottom sheet</h3>
+          <div class="phone">
+            <div class="host">
+              <div class="field-wrap">
+                <span class="cms-root cms-badge still">Hero image</span>
+                <figure class="cms-field cms-field--editing">
+                  <img class="hero" alt="" data-ph="loaf" />
+                </figure>
+              </div>
+            </div>
+            <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+              <p class="cms-popover__title">Hero image</p>
+              <figure class="cms-media__preview"><img alt="" data-ph="loaf" /></figure>
+              <label class="cms-field-label"
+                >Alt text <input class="cms-input" value="A sourdough loaf on a floured board"
+              /></label>
+              <label class="cms-toggle"
+                ><input type="checkbox" class="cms-switch" /> Decorative: screen readers skip it</label
+              >
+              <button type="button" class="cms-btn full">Replace</button>
+              <div class="cms-popover__actions">
+                <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+                <button type="button" class="cms-btn cms-btn--primary">Done</button>
+              </div>
+            </div>
+          </div>
+          <p class="caption">
+            The existing 40em rule makes it a bottom sheet with the safe-area inset. Every control is 44px. The drop
+            hint is hidden on <code>(hover: none)</code>; the OS file sheet offers the camera and library itself.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Uploading on a phone</h3>
+          <div class="phone">
+            <div class="host">
+              <div class="field-wrap">
+                <span class="cms-root cms-badge still">Hero image</span>
+                <figure class="cms-field cms-field--editing">
+                  <img class="hero" alt="" data-ph="loaf" />
+                </figure>
+              </div>
+            </div>
+            <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+              <p class="cms-popover__title">Hero image</p>
+              <div class="cms-media__file">
+                <img class="cms-media__thumb" alt="" data-ph="buns" />
+                <div>
+                  <p class="cms-media__name">IMG_2041.jpg</p>
+                  <p class="cms-media__meta">6.2 MB</p>
+                </div>
+              </div>
+              <progress class="cms-progress" max="100" value="18" aria-label="Upload progress"></progress>
+              <p class="cms-media__status">Uploading… 18%</p>
+              <label class="cms-field-label">Alt text <input class="cms-input" /></label>
+              <div class="cms-popover__actions">
+                <button type="button" class="cms-btn cms-btn--danger">Cancel upload</button>
+              </div>
+            </div>
+          </div>
+          <p class="caption">
+            On a phone the sheet can be swiped away (leaving), and the upload goes on. A screen lock may suspend it; the
+            stall rule then reports it as a network error with Retry.
+          </p>
+        </div>
+        <div class="cell dark">
+          <h3>Dark · ready</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <figure class="cms-media__preview"><img alt="" data-ph="buns" /></figure>
+            <label class="cms-field-label"
+              >Alt text <input class="cms-input sim-focus" value="Cardamom buns cooling on a rack"
+            /></label>
+            <label class="cms-toggle"
+              ><input type="checkbox" class="cms-switch" /> Decorative: screen readers skip it</label
+            >
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn">Replace</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+              <button type="button" class="cms-btn cms-btn--primary">Done</button>
+            </div>
+          </div>
+          <p class="caption">Dark tokens, unchanged. Use the theme switch at the top to see every state dark.</p>
+        </div>
+        <div class="cell dark">
+          <h3>Dark · uploading and error</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">cardamom-buns.jpg</p>
+                <p class="cms-media__meta">12.4 MB</p>
+              </div>
+            </div>
+            <progress class="cms-progress" max="100" value="71" aria-label="Upload progress"></progress>
+            <p class="cms-media__status">Uploading… 71%</p>
+            <div class="cms-diff"><p class="cms-error">The upload stopped: couldn’t reach the server.</p></div>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--primary">Retry</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+            </div>
+          </div>
+          <p class="caption">Progress and error colours in dark (both lines shown at once for comparison only).</p>
+        </div>
+      </div>
+
+      <h2>3 · Keyboard path and announcements</h2>
+      <p class="note">
+        Nothing traps focus, as with every popover. Every control is a native button, input, checkbox or progress, with
+        the existing <code>:focus-visible</code> ring (the focused controls drawn above use it).
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Where</th>
+              <th>Key</th>
+              <th>Does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Field</td>
+              <td><kbd>Tab</kbd>, then <kbd>Enter</kbd> or <kbd>Space</kbd></td>
+              <td>Opens the popover. Focus goes to Choose file (empty) or Alt text (filled).</td>
+            </tr>
+            <tr>
+              <td>Field or popover</td>
+              <td><kbd>Ctrl/⌘ V</kbd> with an image on the clipboard</td>
+              <td>
+                Uploads it (opens the popover first when pasted on the focused field). Text on the clipboard is ignored.
+              </td>
+            </tr>
+            <tr>
+              <td>Choose file / Replace</td>
+              <td><kbd>Enter</kbd>, <kbd>Space</kbd></td>
+              <td>Opens the system file dialog. Closing it without a file keeps focus on the button.</td>
+            </tr>
+            <tr>
+              <td>Uploading</td>
+              <td><kbd>Tab</kbd></td>
+              <td>Cancel upload, then Alt text and Decorative (writable while it uploads).</td>
+            </tr>
+            <tr>
+              <td>Ready</td>
+              <td>(automatic)</td>
+              <td>
+                Focus moves to Alt text only if it was on Choose file, Replace or Cancel upload; never out of a typed
+                input.
+              </td>
+            </tr>
+            <tr>
+              <td>Alt text</td>
+              <td><kbd>Enter</kbd></td>
+              <td>Done, when ready. Before ready it does nothing and the status line is announced again.</td>
+            </tr>
+            <tr>
+              <td>Decorative</td>
+              <td><kbd>Space</kbd></td>
+              <td>Toggles; Alt text is disabled while checked.</td>
+            </tr>
+            <tr>
+              <td>Anywhere in it</td>
+              <td><kbd>Esc</kbd></td>
+              <td>Cancel: stops an upload or job, writes nothing, focus back to the field.</td>
+            </tr>
+            <tr>
+              <td>Anywhere in it</td>
+              <td><kbd>Tab</kbd> out, or a click outside</td>
+              <td>
+                Leaving: commits if ready and changed; if uploading or processing, the popover closes and it goes on in
+                the background; nothing if untouched.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        <strong>Announcements</strong> (the one polite live region): upload start (<code>mediaUploadingAnnounce</code>),
+        each 25% step (<code>mediaProgressAnnounce</code>), processing, ready (<code>mediaReadyAnnounce</code>), each
+        error once, a give-up once, a background save (<code>mediaSavedLater</code>). Never every percent. Errors also
+        show in text (WCAG 3.3.1) as <code>.cms-diff &gt; .cms-error</code>, named by the popover's
+        <code>aria-describedby</code>.
+      </p>
+
+      <h2>4 · Proposed strings</h2>
+      <p class="note">
+        Candidate <code>defaultStrings</code> keys. Existing keys reused as they are: <code>done</code>,
+        <code>cancel</code>, <code>retry</code>, <code>close</code>, <code>notEditable</code>, <code>saved</code>,
+        <code>noWidget</code> stops applying to <code>media</code>. <code>{size}</code> and <code>{limit}</code> are
+        formatted with <code>Intl.NumberFormat</code> (unit byte, compact).
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Proposed text</th>
+            </tr>
+          </thead>
+          <tbody id="strings-table"></tbody>
+        </table>
+      </div>
+
+      <h2>5 · <code>MediaStore</code> reshape (Breaking)</h2>
+      <h3>5.1 · Today</h3>
+      <pre><code>// src/types.ts
+export const MediaVariantSchema = z.object({
+  width: z.number().int().positive(),
+  format: z.enum(["avif", "webp", "png", "mp4"]),
+  url: z.string(),
+});
+export interface MediaStore {
+  upload(file: Uint8Array, meta: { role: string; filename: string; alt: string }): Promise&lt;{ id: string }&gt;;
+  resolve(id: string): Promise&lt;MediaVariant[] | null&gt;;
+}</code></pre>
+      <ul>
+        <li>
+          The whole file sits in memory, and the answer waits for processing (minutes for a 60 MB loop in portfolio).
+        </li>
+        <li>
+          The variant shape is fixed: no height, crop or poster. South of the River's <code>{ w, key }</code> and
+          portfolio's <code>crop: "fold"</code> both have to squeeze into it.
+        </li>
+        <li>
+          <code>alt</code> is upload metadata, so one image can't carry different alt text on two pages, and it is never
+          drafted or revisioned.
+        </li>
+        <li>
+          <code>role</code> is a free string the host has to pass in; the store doesn't know which field the upload is
+          for.
+        </li>
+        <li>Nothing in the package calls it, and it has no contract tests.</li>
+      </ul>
+
+      <h3>5.2 · Streaming upload</h3>
+      <div class="options">
+        <div class="opt is-rec">
+          <h4>A · <code>ReadableStream</code> body <span class="rec">Recommended</span></h4>
+          <p>
+            <code>upload(body: ReadableStream&lt;Uint8Array&gt;, file, field, context)</code>. The handler passes
+            <code>request.body</code> through a byte counter that errors the stream past the limit or the declared size,
+            so a lying <code>Content-Length</code> can't overrun. Web standard: works in Node, Bun, Deno and workers.
+            The store can spool to disk (portfolio), pipe to S3, or buffer if it likes.
+          </p>
+        </div>
+        <div class="opt">
+          <h4>B · Pass the <code>Request</code></h4>
+          <p>Simplest for the handler, but ties the store to HTTP, and every store re-parses headers and limits. No.</p>
+        </div>
+        <div class="opt">
+          <h4>C · Keep <code>Uint8Array</code>, cap it</h4>
+          <p>No reshape, but a 60 MB loop is 60 MB of heap per upload. Fails the issue's goal.</p>
+        </div>
+        <div class="opt">
+          <h4>D · Direct to storage (signed URL), later</h4>
+          <p>
+            An optional <code>direct?(field, file)</code> returning <code>{ url, method, headers, token }</code>; the
+            browser uploads straight to S3 or Supabase, then <code>POST media-complete { token }</code>. Needed on hosts
+            with a request-body cap (serverless: Vercel's is 4.5 MB). Designed in, not built in v1 (question 8).
+          </p>
+        </div>
+      </div>
+      <p>
+        Browser side, whatever the option: the widget sends the <code>File</code> itself as the body of an
+        <code>XMLHttpRequest</code>, which streams it from disk and is the only API with upload progress in all three
+        engines. Fetch upload streaming is Chromium-only and has no progress. No chunked or resumable upload: an
+        interrupted upload restarts from zero (known limit).
+      </p>
+
+      <h3>5.3 · 202, the job and the poll</h3>
+      <p>
+        <code>upload</code> answers <code>{ status: "ready", media }</code> (handler: <code>201</code>) or
+        <code>{ status: "processing", job, retryAfterMs? }</code> (handler: <code>202</code>). A store that processes
+        synchronously never needs <code>job</code>. The widget polls <code>GET media-job</code>, which calls
+        <code>store.job(jobId, field)</code>.
+      </p>
+      <div class="policy" id="poll-policy">
+        <strong
+          >Failure policy for polling (proposed, to be written into <code>docs/chrome.md</code> and tested)</strong
+        >
+        <dl>
+          <dt>Interval</dt>
+          <dd>
+            First poll 1 s after the 202, then 2, 4, 8 s, then every 15 s (cap). A <code>retryAfterMs</code> from the
+            store (or a <code>Retry-After</code> header) sets the next wait instead, clamped to 1 to 60 s.
+          </dd>
+          <dt>Bound</dt>
+          <dd>
+            One request in flight per job; at most one job per field (a new pick aborts the old one), so the page polls
+            at most as many jobs as it has media fields. A job costs about 4 + 40 requests over its 10 minutes.
+          </dd>
+          <dt>Give-up</dt>
+          <dd>
+            10 minutes after the 202 (<code>mountEditor({ media: { jobTimeoutMs } })</code>, default 600 000), or 6
+            polls in a row that fail (network error, 5xx, an unreadable body).
+          </dd>
+          <dt>Terminal at once</dt>
+          <dd>
+            <code>ready</code> (commit, §6.5), <code>failed</code> (error with Retry), <code>404</code> (gone:
+            <code>mediaJobGone</code>), <code>403</code> (access lost: <code>notEditable</code>).
+          </dd>
+          <dt>What resets</dt>
+          <dd>
+            A readable <code>processing</code> answer sets the failure count back to 0; it does not move the deadline or
+            the backoff. <em>Keep waiting</em> starts over: new 10-minute deadline, failure count 0, next wait 1 s. A
+            tab coming back from hidden polls once straight away and changes nothing else. Nothing else resets.
+          </dd>
+          <dt>What the editor sees on give-up</dt>
+          <dd>
+            Nothing is written. The field keeps its value, gets the failed outline, and an error toast says
+            <code>mediaJobSlow</code> with <em>Keep waiting</em> and <em>Cancel upload</em>, announced once. The popover
+            shows the same with <em>Choose another file</em>. The job may still finish on the server; if it does and
+            nobody keeps waiting, its media is unreferenced and left for the host's garbage collection.
+          </dd>
+          <dt>Stops polling</dt>
+          <dd>
+            Any terminal state, give-up, Cancel upload, Esc, Done → Stop and finish, <code>destroy()</code>, Discard or
+            Restore on the field's document, and page unload. Each one aborts the request in flight.
+          </dd>
+          <dt>The send itself</dt>
+          <dd>
+            No overall timeout (large files take as long as they take). Stalled: no progress event for 60 s aborts it as
+            a network error. 503 with <code>Retry-After</code>: sent again after it (1 to 60 s), at most 3 times, then
+            an error with Retry. No other automatic retry.
+          </dd>
+        </dl>
+      </div>
+
+      <h3>5.4 · Host-defined variants: how the widget gets a preview</h3>
+      <div class="options">
+        <div class="opt">
+          <h4>A · Keep a fixed variant list</h4>
+          <p>
+            Hosts map their variants to <code>{ width, format, url }</code> and the chrome builds srcset. Loses height,
+            crop, poster; every host maps.
+          </p>
+        </div>
+        <div class="opt is-rec">
+          <h4>B · Opaque variants + a standard <code>render</code> <span class="rec">Recommended</span></h4>
+          <p>
+            <code>MediaStore&lt;V&gt;</code>: <code>resolve</code> returns the host's own <code>variants: V</code>,
+            which the package never reads and never sends, plus <code>render</code> in HTML's own vocabulary:
+            <code>src</code>, <code>srcset</code>, <code>sources: [{ type, srcset }]</code>, <code>width</code>,
+            <code>height</code>, <code>poster</code>. The host builds it from its variants once, in its store; the
+            chrome applies it without knowing what a variant is; the host's pages can use the same function.
+          </p>
+        </div>
+        <div class="opt">
+          <h4>C · A preview URL only</h4>
+          <p>
+            <code>preview: url</code>. Enough for the popover, but the host image after a change would show one fixed
+            size and the chrome couldn't fill a <code>&lt;picture&gt;</code>.
+          </p>
+        </div>
+      </div>
+
+      <h3>5.5 · The interface, recommended</h3>
+      <pre><code>// src/types.ts (core, zod allowed)
+export interface MediaFieldRef { key: string; path: string }  // the field the upload is for
+
+export interface MediaRender {               // all the chrome reads; also the wire shape (wire-types.ts)
+  kind: "image" | "video";
+  src: string;                               // a URL the browser can show at once: preview and &lt;img src&gt;
+  srcset?: string;                           // for &lt;img srcset&gt;
+  sources?: { type: string; srcset: string }[]; // for &lt;picture&gt;&lt;source type&gt;, best first
+  width: number; height: number;             // intrinsic size, for width/height and the aspect ratio
+  poster?: string;                           // video
+  filename?: string;                         // for the publish diff and the popover
+}
+export interface ResolvedMedia&lt;V = unknown&gt; { id: string; render: MediaRender; variants: V }
+
+export type MediaUploadAnswer&lt;V&gt; =
+  | { status: "ready"; media: ResolvedMedia&lt;V&gt; }
+  | { status: "processing"; job: string; retryAfterMs?: number };
+
+export type MediaJobState&lt;V&gt; =
+  | { status: "processing"; progress?: number; retryAfterMs?: number }   // progress 0..1, optional
+  | { status: "ready"; media: ResolvedMedia&lt;V&gt; }
+  | { status: "failed"; reason: string; message?: string };
+
+export class MediaRefusal extends Error {      // thrown by accept/upload; mapped to a status by the handler
+  constructor(readonly code: "too_large" | "unsupported" | "invalid" | "busy",
+              message: string, readonly detail?: { limit?: number; retryAfterMs?: number }) { super(message) }
+}
+
+export interface MediaStore&lt;V = unknown&gt; {
+  /** Before the body is read: refuse early on type or declared size. Optional. */
+  accept?(field: MediaFieldRef, file: MediaFileInfo, context: WriteContext): Promise&lt;void&gt; | void;
+  upload(body: ReadableStream&lt;Uint8Array&gt;, file: MediaFileInfo, field: MediaFieldRef,
+         context: WriteContext &amp; { signal: AbortSignal }): Promise&lt;MediaUploadAnswer&lt;V&gt;&gt;;
+  /** Required when upload can answer "processing". null: unknown job, or not this field's. */
+  job?(job: string, field: MediaFieldRef): Promise&lt;MediaJobState&lt;V&gt; | null&gt;;
+  cancelJob?(job: string, field: MediaFieldRef): Promise&lt;void&gt;;
+  /** Batched. A missing id is left out of the map. */
+  resolve(ids: readonly string[]): Promise&lt;Map&lt;string, ResolvedMedia&lt;V&gt;&gt;&gt;;
+}
+export interface MediaFileInfo { filename: string; type: string; size: number | null }</code></pre>
+      <ul>
+        <li>
+          <code>MediaVariantSchema</code> and <code>MediaVariant</code> go (Breaking). <code>role</code> goes: the store
+          reads the field and picks its own.
+        </li>
+        <li>
+          <code>runMediaStoreContract</code> joins <code>@yl/editor/contract</code>: limits, a job that belongs to
+          another field reads <code>null</code>, <code>resolve</code> leaves unknown ids out, an aborted
+          <code>signal</code> stores nothing.
+        </li>
+        <li>
+          A small in-memory test store in <code>examples/demo/</code> proves it in the real-browser harness, with a
+          switch for "answer 202" (the issue's done-when).
+        </li>
+      </ul>
+
+      <h3>5.6 · The wire</h3>
+      <div class="options">
+        <div class="opt is-rec">
+          <h4>A · An option on <code>createContentHandlers</code> <span class="rec">Recommended</span></h4>
+          <p>
+            <code>createContentHandlers({ …, media: mediaStore })</code>. Same base, CSRF and same-origin guard,
+            <code>locals</code>, <code>access</code> and error envelope. The routes exist only with the option, like
+            <code>publishDue</code>; without it they are <code>404</code>.
+          </p>
+        </div>
+        <div class="opt">
+          <h4>B · A separate <code>createMediaHandlers</code></h4>
+          <p>
+            Its own base (<code>/api/media</code>), but it repeats the guard and still needs the content store to gate
+            by document.
+          </p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Body</th>
+              <th>Success</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>{base}/media?key=k&amp;path=p</code></td>
+              <td>
+                The raw file. <code>Content-Type</code> its type, <code>Content-Length</code>,
+                <code>X-Upload-Filename</code> (URI-encoded)
+              </td>
+              <td><code>201 { media: { id, render } }</code> or <code>202 { job, retryAfterMs? }</code></td>
+              <td><code>canEdit</code> on the stored row of <code>k</code></td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>{base}/media-job?key=k&amp;path=p&amp;job=j</code></td>
+              <td>none</td>
+              <td>
+                <code>200 { status: "processing", progress?, retryAfterMs? }</code> ·
+                <code>{ status: "ready", media }</code> · <code>{ status: "failed", reason, message? }</code>; unknown
+                job
+                <code>404</code>
+              </td>
+              <td><code>canEdit</code> on <code>k</code></td>
+            </tr>
+            <tr>
+              <td>DELETE</td>
+              <td><code>{base}/media-job?key&amp;path&amp;job</code></td>
+              <td>none</td>
+              <td><code>204</code>; <code>405</code> when the store has no <code>cancelJob</code></td>
+              <td><code>canEdit</code> on <code>k</code></td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>{base}/media?key=k&amp;ids=a,b</code></td>
+              <td>none</td>
+              <td><code>200 { media: { [id]: render } }</code>, unknown ids left out, at most 100</td>
+              <td><code>canEdit</code> on <code>k</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li>
+          New error codes: <code>too_large</code> 413, <code>unsupported</code> 415, <code>busy</code> 503 (with
+          <code>Retry-After</code>). <code>invalid</code> maps to the existing <code>bad_request</code>. A refusal from
+          <code>accept</code> answers before the body is read.
+        </li>
+        <li>
+          Gated by the document the field is in, not by a separate media permission: who may edit the page may put an
+          image in it. The path is passed to the store, not checked against the schema (the field write that follows
+          is). A media id is not secret: the gate is on uploading and on job state, and <code>GET media</code> asks for
+          a key so the same verdict applies.
+        </li>
+        <li>
+          <code>onChange</code> is not fired for uploads: nothing in content changed. The field write that follows fires
+          <code>field</code> as usual.
+        </li>
+        <li>
+          Client: <code>client.uploadMedia(field, file, { onProgress, signal })</code> (XHR),
+          <code>client.mediaJob(field, job)</code>, <code>client.cancelMediaJob(field, job)</code>,
+          <code>client.media(key, ids)</code>. Types live in <code>wire-types.ts</code> as plain TypeScript,
+          hand-checked like the existing error envelope: no zod in <code>client.ts</code>, <code>wire-types.ts</code> or
+          the chrome. The zod request schemas go in <code>wire.ts</code>.
+        </li>
+      </ul>
+
+      <h3>5.7 · The stored field value</h3>
+      <div class="options">
+        <div class="opt">
+          <h4>A · The id alone</h4>
+          <p><code>"m_9f2c…"</code>. Alt text would be a second field, or upload metadata (today). Easy to forget.</p>
+        </div>
+        <div class="opt is-rec">
+          <h4>B · <code>{ id, alt, decorative? }</code> <span class="rec">Recommended</span></h4>
+          <p>
+            <code>{ id: "m_9f2c", alt: "Cardamom buns cooling on a rack" }</code>, or
+            <code>{ id, alt: "", decorative: true }</code>, or <code>null</code> for no image. Alt text is per use,
+            drafted, published, diffed and revisioned. <code>decorative</code> tells "chose no alt text" from "hasn't
+            written it". Exported schema: <code>mediaValue()</code> from <code>@yl/editor</code> (zod; refuses
+            <code>decorative</code> with a non-empty <code>alt</code>).
+          </p>
+        </div>
+        <div class="opt">
+          <h4>C · <code>{ id, alt: string | null }</code></h4>
+          <p>
+            <code>null</code> = not written, <code>""</code> = decorative. Shorter, but a host that renders
+            <code>alt={value.alt}</code> drops the attribute for <code>null</code>, and the diff can't say "decorative".
+          </p>
+        </div>
+      </div>
+      <p>
+        The value never holds URLs or variants: those can change (a re-encode, a CDN move) without a content write. The
+        host's page renderer resolves the id, as it does today.
+      </p>
+
+      <h2>6 · Host contract</h2>
+      <ol class="contract">
+        <li>
+          <strong>1 · What decides what the chrome dresses</strong>
+          The markup, as for every field: <code>data-edit-field</code> with <code>data-edit-type="media"</code>, from
+          <code>field(path, "media", { label, accept?, maxBytes? })</code>. <code>accept</code> (a list of MIME types,
+          as for <code>&lt;input accept&gt;</code>) and <code>maxBytes</code> become <code>data-edit-accept</code> and
+          <code>data-edit-max-bytes</code>; both are hints for an early refusal, the server decides. What the content
+          render targets is decided at scan, attach, swap and refresh from the element, never from layout:
+          <ul>
+            <li>
+              the element itself when it is an <code>&lt;img&gt;</code>, <code>&lt;picture&gt;</code> or
+              <code>&lt;video&gt;</code>;
+            </li>
+            <li>
+              else its one descendant of those kinds (a <code>&lt;figure&gt;</code> wrapper, say), or none when it holds
+              none (an empty wrapper);
+            </li>
+            <li>
+              more than one, or any other element with a background-image look: no content render, a warning, and
+              <code>cms:change</code> only.
+            </li>
+          </ul>
+          <span class="rec">Recommended</span> markup: a wrapper for a field that may be empty, the
+          <code>&lt;img&gt;</code> itself for one that never is. A caption is its own text field, grouped with
+          <code>data-edit-group</code> on the figure.
+        </li>
+        <li>
+          <strong>2 · What the chrome adds to host markup, and how it is given back</strong>
+          While editing, on the field element only: the existing <code>cms-field</code> and state classes,
+          <code>tabindex</code>, <code>aria-describedby</code>, <code>data-cms-state</code>, plus
+          <code>cms-field--drop</code> during a drag and <code>data-cms-empty</code> on an empty wrapper. Badges, the
+          veil, the popover and toasts live in <code>body</code>. Done and <code>destroy()</code> remove all of it,
+          including a <code>class</code> attribute the host never had, whichever part lets go first, through the
+          existing restore path. The <em>content render</em> is the only write that stays, as for text: on the target it
+          sets <code>src</code>, <code>srcset</code> (or removes it when <code>render</code> has none),
+          <code>alt</code>, and <code>width</code>/<code>height</code> only when the host's element already had them; it
+          never touches <code>sizes</code>, <code>class</code>, <code>loading</code>, <code>decoding</code> or anything
+          else. In a <code>&lt;picture&gt;</code> it replaces the <code>&lt;source&gt;</code> elements with one per
+          <code>render.sources</code> entry, keeping the first old source's <code>sizes</code>. In an empty wrapper it
+          inserts one <code>&lt;img&gt;</code> (or <code>&lt;picture&gt;</code> when there are sources) as the only
+          child, so a host <code>:empty</code> rule stops matching and <code>&gt; img:first-child</code> starts. When
+          the value goes (Remove, or Discard to none) a wrapper is emptied of the element the render targets; an
+          <code>&lt;img&gt;</code> field can't be emptied and keeps showing, with <code>cms:change</code> carrying
+          <code>undefined</code>. <code>cms:change</code> fires after every content render with
+          <code>detail: { key, path, value, render }</code>; <span class="rec">Recommended</span> also cancelable: a
+          host that calls <code>preventDefault()</code> renders it itself and the chrome writes nothing.
+        </li>
+        <li>
+          <strong>3 · Host CSS it can't support</strong>
+          <ul>
+            <li>
+              Supported unchanged: <code>object-fit</code>, <code>object-position</code>, <code>aspect-ratio</code> on
+              the image or its wrapper, <code>sizes</code>, lazy loading, a <code>&lt;picture&gt;</code> with
+              type-switched sources.
+            </li>
+            <li>
+              Art-directed <code>&lt;picture&gt;</code> (<code>&lt;source media&gt;</code> with different crops): the
+              content render can't reproduce it, because <code>render</code> has no media queries. While editing the new
+              image shows one crop at every width. Warned; the host renders it from <code>cms:change</code>.
+            </li>
+            <li>
+              CSS <code>background-image</code> fields: not supported by the content render (a CSP-safe custom property
+              would need host CSS written for it). Warned; <code>cms:change</code> only.
+            </li>
+            <li>
+              An <code>&lt;img&gt;</code> field can't show an empty state (replaced elements draw no
+              <code>::before</code>), and a wrapper clipped to zero height has no box to click or drop on: give an empty
+              wrapper a size, or let <code>data-cms-empty</code>'s <code>min-block-size</code> stand.
+            </li>
+            <li>A new image with another aspect ratio shifts layout while editing unless the host fixes the ratio.</li>
+            <li>An ancestor with <code>overflow: hidden</code> clips the outline, as for every field.</li>
+          </ul>
+        </li>
+        <li>
+          <strong>4 · Lists, groups and plain fields</strong>
+          <ul>
+            <li>Plain field: as above.</li>
+            <li>
+              In a list item (<code>itemFields</code>, keyed): a cell like any field. An upload belongs to the field's
+              address (<code>artists[_key=a1].photo</code>), not to its element, so it survives a move, a swap or a
+              refresh. Add with <code>newItem</code> that has no media renders the new item's media field empty
+              (wrapper) or keeps the cloned image with the empty value (an <code>&lt;img&gt;</code> field, the same
+              limit as above). Duplicate copies <code>{ id, alt }</code>: both items show the same media, nothing is
+              copied in storage. Remove leaves the media in storage (host GC).
+            </li>
+            <li>
+              Positional addresses (<code>artists.2.photo</code>): the list keeps today's rule (no list chrome). An
+              upload finishing after the list changed under it would write to another item, so it is held as a conflict
+              instead (§6.5, catch-up).
+            </li>
+            <li>
+              In a group: one of the group's fields. The frame and lines go round the wrapper; nothing else changes.
+            </li>
+            <li>
+              Drag to reorder a list item and a file drag never mix: a file drag is told apart by
+              <code>dataTransfer.types</code> containing <code>Files</code>.
+            </li>
+          </ul>
+        </li>
+        <li>
+          <strong>5 · Lifecycle</strong>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>What happens to a media field and an upload or job in progress</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Edit</td>
+                  <td>
+                    Dressed at scan. No media request until a field is opened; then one <code>GET media</code> for the
+                    current value's preview, cached for the session. The page-wide file-drop guard goes on. A
+                    <code>beforeunload</code> prompt is registered only while an upload or job is in progress.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Leaving the popover</td>
+                  <td>
+                    Ready and changed: commit. Uploading or processing: the popover closes, the field shows the veil, it
+                    goes on and commits when ready (through a new <code>ctx.continueInBackground(task)</code>; bound:
+                    one task per field, a new pick aborts the old). Untouched: nothing.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Esc / Cancel / Cancel upload</td>
+                  <td>Stops the send or the poll (and <code>cancelJob</code> if the store has it). Writes nothing.</td>
+                </tr>
+                <tr>
+                  <td>Done</td>
+                  <td>
+                    An open popover that is ready commits, as today. Anything uploading or processing: the Finish
+                    editing sheet (§2.6). Keep uploading stays in edit mode; Stop and finish aborts them, writes
+                    nothing, then Done as today. Content renders already made stay.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>destroy()</code></td>
+                  <td>
+                    No prompt. A ready popover value is committed (the rule for open widgets); every upload and poll is
+                    aborted and writes nothing; the veil, guard and <code>beforeunload</code> go.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Discard</td>
+                  <td>
+                    Stops uploads and jobs for the document's fields first (the sheet names them: "The upload for Hero
+                    image will stop"), then repaints from the published value, resolving its ids with one
+                    <code>GET media</code>. Never published: the document is deleted, its fields stop being editable,
+                    wrappers are emptied, an <code>&lt;img&gt;</code> keeps showing until reload.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Restore</td>
+                  <td>
+                    Stops that document's uploads (toast <code>mediaStoppedBy</code>), then repaints like Discard.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Catch-up, Take theirs</td>
+                  <td>
+                    Repaint from their value. An upload still going for that document keeps going; when ready, it is
+                    held as a field <code>conflict</code> (Keep mine / Take theirs), never sent on the copy just taken:
+                    the rule for a widget left open through catch-up.
+                  </td>
+                </tr>
+                <tr>
+                  <td>List swap, refresh</td>
+                  <td>
+                    The upload follows the address. The veil re-attaches to the new element. If the address is gone when
+                    it becomes ready (its item removed), it is not written: <code>mediaItemGone</code>, failed outline
+                    nowhere, an error toast. The media stays in storage.
+                  </td>
+                </tr>
+                <tr>
+                  <td>A late finish</td>
+                  <td>
+                    After Done → Stop, <code>destroy()</code> or navigating away, the server's job may still finish.
+                    Nothing in the page listens any more: no write, no warning. The media is unreferenced (host GC).
+                    Navigating away while one is in progress gets the browser's own leave prompt.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Locked field</td>
+                  <td>
+                    No popover, no drop target, no paste: each attempt shows <code>notEditable</code>. A document that
+                    loses edit access mid-upload: the <code>403</code> ends it as an error.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Publish</td>
+                  <td>
+                    Commits an open ready popover first, as today. Uploads in progress are not changes: the sheet notes
+                    them (<code>mediaPublishPending</code>) and publishes what is saved. Missing alt text is a note
+                    (<code>mediaPublishNoAlt</code>).
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </li>
+        <li>
+          <strong>6 · Console warnings</strong> (all <code>console.warn</code>, once per field per mount, re-checked on
+          refresh and swap, like the group warnings)
+          <ul>
+            <li>
+              A media field whose element is not an image, picture, video or a wrapper of at most one: "…gets no content
+              render; listen for <code>cms:change</code>".
+            </li>
+            <li>
+              A <code>&lt;picture&gt;</code> with <code>&lt;source media&gt;</code>: art direction isn't kept while
+              editing.
+            </li>
+            <li>
+              A <code>&lt;video&gt;</code> target when the media for it answers <code>kind: "image"</code>, or the
+              reverse (once per field per value).
+            </li>
+            <li>
+              The server answered a <code>render</code> with no <code>src</code>, or an unreadable media body: once per
+              mount.
+            </li>
+            <li>
+              Not warned: a give-up, a refusal, a late finish, a missing alt (those are the editor's, shown on screen).
+            </li>
+          </ul>
+        </li>
+        <li>
+          <strong>7 · Known limits</strong>
+          <ul>
+            <li>No resumable upload: a dropped connection restarts from zero.</li>
+            <li>Hosts with a request-body cap (serverless) need the direct-to-storage path (5.2 D), not in v1.</li>
+            <li>
+              Unreferenced media (cancelled late, given up, removed items, replaced images) is the host's to collect.
+              The package never deletes media.
+            </li>
+            <li>
+              The local preview needs <code>img-src blob:</code> in the host CSP; without it, and for HEIC, the plain
+              tile shows until the server's preview.
+            </li>
+            <li>No media library: picking an existing image is a host panel (question 12).</li>
+            <li>No crop, focal point or rotation in v1.</li>
+            <li>
+              One file per field: no multi-file drop into a list (a drop of several takes the first, and says so).
+            </li>
+            <li>
+              After Done the page shows the render, not the host's own markup, until it re-renders or reloads (<code
+                >onExit: () =&gt; location.reload()</code
+              >
+              fixes that).
+            </li>
+            <li>
+              Chrome tests run in happy-dom; drag and drop, paste and XHR progress need the Playwright specs on three
+              engines.
+            </li>
+          </ul>
+        </li>
+      </ol>
+
+      <h2>7 · Questions for Yassine</h2>
+      <ol class="ask">
+        <li>
+          <strong>Alt text:</strong> a warning on the field and in the Publish sheet (recommended), or block Done until
+          alt text or Decorative, or block Publish?
+        </li>
+        <li>
+          <strong>Esc during an upload:</strong> stops it, as Esc cancels everywhere (recommended), or closes and lets
+          it go on like leaving?
+        </li>
+        <li><strong>Replace:</strong> keep the old alt text with "Is it still right?" (recommended), or clear it?</li>
+        <li>
+          <strong>Done with uploads going:</strong> ask Keep uploading / Stop and finish (recommended), stop silently,
+          or keep uploading after Done and save in the background?
+        </li>
+        <li>
+          <strong>Publish with an upload going:</strong> publish what is saved with a note (recommended), or wait for
+          it?
+        </li>
+        <li>
+          <strong>Poll bounds:</strong> 1 s doubling to 15 s, give up after 10 minutes or 6 failed polls, Keep waiting
+          restarts. Right numbers? Should <code>jobTimeoutMs</code> be an option at all?
+        </li>
+        <li>
+          <strong>Video:</strong> images only in v1 and <code>&lt;video&gt;</code> later (recommended), or loops with
+          posters now, as portfolio has them?
+        </li>
+        <li>
+          <strong>Direct-to-storage uploads</strong> (signed URLs, for serverless body limits and Supabase): design it
+          in and build later (recommended), or v1?
+        </li>
+        <li>
+          <strong>Stored value:</strong> <code>{ id, alt, decorative? }</code> (recommended) or
+          <code>{ id, alt: string | null }</code>?
+        </li>
+        <li>
+          <strong>Limits on the field:</strong> <code>accept</code> and <code>maxBytes</code> as
+          <code>editable</code> attributes for early refusal (recommended), or a policy request to the server?
+        </li>
+        <li>
+          <strong><code>cms:change</code> cancelable</strong> so a host can take over the render (recommended), or a
+          <code>renderMedia</code> option on <code>mountEditor</code>?
+        </li>
+        <li><strong>Media library:</strong> out of scope for #3, a host panel later. Agreed?</li>
+      </ol>
+    </main>
+
+    <script>
+      // ---------- Placeholder photos (inline SVG, nothing fetched) ----------
+      const svg = (bg1, bg2, body) =>
+        "data:image/svg+xml;charset=utf-8," +
+        encodeURIComponent(
+          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${bg1}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs><rect width="640" height="400" fill="url(#g)"/>${body}</svg>`,
+        );
+      const PH = {
+        loaf: svg(
+          "#e9dcc6",
+          "#c9a27a",
+          '<rect x="0" y="290" width="640" height="110" fill="#8a5a36" opacity=".55"/><ellipse cx="320" cy="250" rx="210" ry="105" fill="#a8672e"/><ellipse cx="320" cy="235" rx="190" ry="85" fill="#c4823f"/><path d="M200 220q40-40 80 0M290 210q40-40 80 0M380 220q40-40 80 0" stroke="#f1d6a8" stroke-width="10" fill="none" stroke-linecap="round"/>',
+        ),
+        buns: svg(
+          "#dfe8ef",
+          "#9fb4c4",
+          '<rect x="60" y="300" width="520" height="14" rx="7" fill="#5b6170"/><g fill="#c98b4a"><circle cx="190" cy="240" r="70"/><circle cx="330" cy="225" r="80"/><circle cx="465" cy="245" r="65"/></g><g fill="none" stroke="#f6e2c2" stroke-width="8" stroke-linecap="round"><path d="M160 230q30-25 60 0"/><path d="M295 215q35-30 70 0"/><path d="M440 238q25-22 50 0"/></g>',
+        ),
+      };
+      for (const img of document.querySelectorAll("img[data-ph]")) img.src = PH[img.dataset.ph];
+
+      // ---------- Theme switch ----------
+      for (const input of document.querySelectorAll("#theme input"))
+        input.addEventListener("change", () => {
+          if (input.value === "auto") delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = input.value;
+        });
+
+      // ---------- Proposed strings ----------
+      const STRINGS = {
+        mediaAdd: "Add image",
+        mediaEmpty: "No image yet. Press Enter to add one.",
+        mediaChoose: "Choose file",
+        mediaDropHint: "or drop an image here, or paste one",
+        mediaDropTarget: "Drop to upload",
+        mediaDropHere: "Drop to upload to {label}",
+        mediaAccepts: "{types} · up to {limit}",
+        mediaReplace: "Replace",
+        mediaRemove: "Remove image",
+        mediaUploading: "Uploading… {percent}%",
+        mediaUploadingUnknown: "Uploading…",
+        mediaFinishing: "Finishing upload…",
+        mediaProcessing: "Processing on the server. You can keep editing.",
+        mediaBadgeUploading: "{label} · uploading",
+        mediaBadgeFailed: "{label} · upload failed",
+        mediaCancelUpload: "Cancel upload",
+        mediaCancelled: "Upload cancelled. Nothing was saved.",
+        mediaAlt: "Alt text",
+        mediaAltHelp: "Say what the image shows, for people who can’t see it.",
+        mediaDecorative: "Decorative: screen readers skip it",
+        mediaAltMissing: "No alt text",
+        mediaAltCheck: "This alt text was written for the previous image. Is it still right?",
+        mediaFileMeta: "{name} · {width} × {height}",
+        mediaNoPreview: "no preview in this browser",
+        mediaTooLarge: "{name} is {size}. The limit here is {limit}.",
+        mediaWrongType: "{name} isn’t a file this field takes. Use {types}.",
+        mediaNetwork: "The upload stopped: couldn’t reach the server.",
+        mediaBusy: "The server is busy. Trying again in {seconds} s…",
+        mediaJobFailed: "The server couldn’t process {name}: {reason}",
+        mediaJobFailedGeneric: "The server couldn’t process {name}.",
+        mediaJobGone: "The server lost track of {name}. Upload it again.",
+        mediaJobSlow: "{name} is still processing after {minutes} minutes. It may still finish.",
+        mediaKeepWaiting: "Keep waiting",
+        mediaChooseAnother: "Choose another file",
+        mediaManyFiles: "Only the first file was used: this field takes one.",
+        mediaUploadingAnnounce: "{label}: uploading {name}",
+        mediaProgressAnnounce: "{label}: {percent}% uploaded",
+        mediaProcessingAnnounce: "{label}: uploaded, processing on the server",
+        mediaReadyAnnounce: "{label}: ready. Add alt text, then Done.",
+        mediaSavedLater: "{label}: upload finished and saved.",
+        mediaFinishTitle: "Finish editing?",
+        mediaUploadsPending:
+          "{count} uploads are still going: {labels}. If you finish now they stop and nothing from them is saved.",
+        mediaUploadPendingOne:
+          "1 upload is still going: {label} ({percent}%). If you finish now it stops and nothing from it is saved.",
+        mediaKeepUploading: "Keep uploading",
+        mediaStopAndFinish: "Stop and finish",
+        mediaDiscardStops: "The upload for {label} will stop.",
+        mediaStoppedBy: "{action} stopped the upload for {label}.",
+        mediaPublishPending: "{label} is still uploading and won’t be in this publish.",
+        mediaPublishNoAlt: "{label} has no alt text.",
+        mediaItemGone: "{label}: the item this image was for was removed, so it wasn’t saved.",
+        mediaDiffValue: "{name} (was {previous})",
+      };
+      const tbody = document.getElementById("strings-table");
+      for (const [key, text] of Object.entries(STRINGS)) {
+        const tr = document.createElement("tr");
+        const k = document.createElement("td");
+        const c = document.createElement("code");
+        c.textContent = key;
+        k.append(c);
+        const v = document.createElement("td");
+        v.textContent = text;
+        tr.append(k, v);
+        tbody.append(tr);
+      }
+      const fmt = (key, vars = {}) => STRINGS[key].replace(/\{(\w+)\}/g, (_, n) => String(vars[n] ?? `{${n}}`));
+      const human = (bytes) =>
+        bytes < 1048576
+          ? new Intl.NumberFormat("en", { style: "unit", unit: "kilobyte", maximumFractionDigits: 0 }).format(
+              Math.max(1, bytes / 1024),
+            )
+          : new Intl.NumberFormat("en", { style: "unit", unit: "megabyte", maximumFractionDigits: 1 }).format(
+              bytes / 1048576,
+            );
+      // A local preview that can't be decoded (or a CSP without blob:) falls back to the placeholder photo here; the
+      // proposed widget shows the plain tile instead.
+      document.addEventListener(
+        "error",
+        (e) => {
+          if (e.target instanceof HTMLImageElement && e.target.src.startsWith("blob:")) e.target.src = PH.buns;
+        },
+        true,
+      );
+
+      // ---------- Interactive demo ----------
+      // A small state machine standing in for the widget. The server is simulated with timers; nothing leaves the page.
+      const $ = (id) => document.getElementById(id);
+      const field = $("demo-field");
+      const stage = $("stage");
+      const log = (line) => {
+        const el = $("demo-log");
+        el.textContent += line + "\n";
+        el.scrollTop = el.scrollHeight;
+      };
+      const announce = (text) => {
+        const live = $("demo-live");
+        live.textContent = "";
+        setTimeout(() => (live.textContent = text), 100);
+      };
+      const LABEL = "Hero image";
+      const ACCEPT = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/heic"];
+      const TYPES = "JPEG, PNG, WebP, AVIF or HEIC";
+      const LIMIT = 40 * 1048576;
+      let value = { id: "m_7a1e", alt: "A sourdough loaf on a floured board" };
+      let shownSrc = PH.loaf;
+      let task = null; // the upload or job in progress: { file, url, phase, percent, timers, aborted }
+      let popover = null;
+      let draft = null; // what the open popover holds: { alt, decorative, ready, media }
+
+      const showValue = () => ($("demo-value").textContent = JSON.stringify(value, null, 2));
+      showValue();
+
+      function el(tag, attrs = {}, children = []) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs)) {
+          if (v === false || v == null) continue;
+          if (k === "text") node.textContent = v;
+          else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+          else node.setAttribute(k, v === true ? "" : v);
+        }
+        node.append(...children);
+        return node;
+      }
+      const btn = (text, onclick, kind) =>
+        el("button", { type: "button", class: `cms-btn${kind ? " cms-btn--" + kind : ""}`, onclick, text });
+
+      function toast(message, kind, actions = []) {
+        const t = $("demo-toast");
+        t.dataset.kind = kind;
+        t.setAttribute("role", kind === "error" ? "alert" : "status");
+        $("demo-toast-msg").textContent = message;
+        $("demo-toast-actions").replaceChildren(...actions);
+        t.hidden = false;
+        clearTimeout(toast.timer);
+        if (kind !== "error") toast.timer = setTimeout(() => (t.hidden = true), 3500);
+      }
+      const hideToast = () => ($("demo-toast").hidden = true);
+
+      function setFieldState(state) {
+        field.classList.remove("cms-field--saving", "cms-field--failed", "cms-field--editing", "cms-field--locked");
+        if (state) field.classList.add(`cms-field--${state}`);
+        const badges = [el("span", { class: "cms-root cms-badge", text: LABEL })];
+        if (state === "saving") badges[0].textContent = fmt("mediaBadgeUploading", { label: LABEL });
+        if (state === "failed") badges[0].textContent = fmt("mediaBadgeFailed", { label: LABEL });
+        if (state === "locked") {
+          badges[0].textContent = `${LABEL} · not editable`;
+          badges[0].classList.add("cms-badge--locked");
+        }
+        if (value && !value.alt && !value.decorative)
+          badges.push(el("span", { class: "cms-root cms-badge cms-badge--warning", text: STRINGS.mediaAltMissing }));
+        $("demo-badges").replaceChildren(...badges);
+      }
+
+      function renderHost() {
+        const img = field.querySelector("img");
+        if (!value) {
+          img?.remove();
+          field.setAttribute("data-cms-empty", STRINGS.mediaAdd);
+          $("demo-desc").textContent = STRINGS.mediaEmpty;
+        } else {
+          field.removeAttribute("data-cms-empty");
+          const target = img ?? field.appendChild(el("img", { class: "hero" }));
+          target.src = shownSrc;
+          target.alt = value.alt;
+          $("demo-desc").textContent = "Media · Press Enter to edit";
+        }
+        setFieldState(
+          locked()
+            ? "locked"
+            : task?.phase === "failed"
+              ? "failed"
+              : task && task.phase !== "refused" && task.phase !== "ready"
+                ? "saving"
+                : null,
+        );
+        showValue();
+      }
+
+      const locked = () => $("demo-access").value === "locked";
+
+      // ----- veil (background progress) -----
+      function renderVeil() {
+        const veil = $("demo-veil");
+        if (!task || popover || task.phase === "failed") {
+          veil.hidden = true;
+          return;
+        }
+        const r = field.getBoundingClientRect();
+        const s = stage.getBoundingClientRect();
+        // As proposed: placed through custom properties set with style.setProperty, which a strict CSP allows.
+        veil.style.setProperty("--cms-veil-top", `${r.top - s.top}px`);
+        veil.style.setProperty("--cms-veil-left", `${r.left - s.left}px`);
+        veil.style.setProperty("--cms-veil-width", `${r.width}px`);
+        veil.style.setProperty("--cms-veil-height", `${r.height}px`);
+        veil.hidden = false;
+        const p = $("demo-veil-progress");
+        if (task.phase === "uploading" && task.percent != null) p.value = task.percent;
+        else p.removeAttribute("value");
+        $("demo-veil-text").textContent = statusText();
+      }
+
+      function statusText() {
+        if (!task) return "";
+        if (task.phase === "uploading")
+          return task.percent == null
+            ? STRINGS.mediaUploadingUnknown
+            : fmt("mediaUploading", { percent: task.percent });
+        if (task.phase === "finishing") return STRINGS.mediaFinishing;
+        if (task.phase === "processing") return STRINGS.mediaProcessing;
+        if (task.phase === "busy") return fmt("mediaBusy", { seconds: task.wait });
+        return "";
+      }
+
+      // ----- popover -----
+      function openPopover(focusTarget) {
+        if (locked()) {
+          toast("Not editable: you don’t have edit access to this document", "info");
+          return;
+        }
+        if (popover) return;
+        draft = draft ?? {
+          alt: value?.alt ?? "",
+          decorative: !!value?.decorative,
+          altFromPrevious: false,
+        };
+        popover = el("div", {
+          class: "cms-root cms-popover cms-media demo-pop",
+          role: "dialog",
+          "aria-labelledby": "demo-pop-title",
+        });
+        const r = field.getBoundingClientRect();
+        const s = stage.getBoundingClientRect();
+        popover.style.setProperty("--cms-popover-top", `${r.bottom - s.top}px`);
+        popover.style.setProperty("--cms-popover-left", `${r.left - s.left}px`);
+        stage.append(popover);
+        field.classList.add("cms-field--editing");
+        popover.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        });
+        popover.addEventListener("focusout", (e) => {
+          if (e.relatedTarget && !popover?.contains(e.relatedTarget) && e.relatedTarget !== field) leave();
+        });
+        popover.addEventListener("paste", onPaste);
+        popover.addEventListener("dragover", (e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault();
+          popover.querySelector(".cms-media__drop")?.setAttribute("data-over", "");
+        });
+        popover.addEventListener("dragleave", () =>
+          popover?.querySelector(".cms-media__drop")?.removeAttribute("data-over"),
+        );
+        popover.addEventListener("drop", (e) => {
+          if (!hasFiles(e)) return;
+          e.preventDefault();
+          start(e.dataTransfer.files);
+        });
+        renderPopover(focusTarget);
+        renderVeil();
+      }
+
+      let fileInput;
+      function pick() {
+        fileInput = el("input", { type: "file", accept: ACCEPT.join(","), hidden: true, tabindex: "-1" });
+        fileInput.addEventListener("change", () => start(fileInput.files));
+        popover.append(fileInput);
+        fileInput.click();
+      }
+
+      function renderPopover(focus) {
+        if (!popover) return;
+        const kids = [el("p", { class: "cms-popover__title", id: "demo-pop-title", text: LABEL })];
+        const actions = [];
+        const altInput = () => {
+          const input = el("input", {
+            class: "cms-input",
+            id: "demo-alt",
+            value: draft.decorative ? "" : draft.alt,
+            disabled: draft.decorative,
+            "aria-describedby": "demo-alt-help",
+          });
+          input.addEventListener("input", () => {
+            draft.alt = input.value;
+            draft.altFromPrevious = false;
+          });
+          input.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            if (draft.ready || (!task && value)) done();
+            else announce(statusText());
+          });
+          const check = el("input", { type: "checkbox", class: "cms-switch", id: "demo-deco" });
+          check.checked = draft.decorative;
+          check.addEventListener("change", () => {
+            draft.decorative = check.checked;
+            renderPopover("demo-deco");
+          });
+          const parts = [
+            el("label", { class: "cms-field-label" }, [STRINGS.mediaAlt, " ", input]),
+            el("p", { class: "cms-media__meta", id: "demo-alt-help", text: STRINGS.mediaAltHelp }),
+          ];
+          if (draft.altFromPrevious && !draft.decorative)
+            parts.push(el("p", { class: "cms-media__status cms-media__status--warn", text: STRINGS.mediaAltCheck }));
+          parts.push(el("label", { class: "cms-toggle" }, [check, " ", STRINGS.mediaDecorative]));
+          return parts;
+        };
+        const fileRow = () =>
+          el("div", { class: "cms-media__file" }, [
+            task.url
+              ? el("img", { class: "cms-media__thumb", alt: "", src: task.url })
+              : el("span", { class: "cms-media__thumb", "aria-hidden": "true" }),
+            el("div", {}, [
+              el("p", { class: "cms-media__name", text: task.file.name }),
+              el("p", {
+                class: "cms-media__meta",
+                text: human(task.file.size) + (task.url ? "" : ` · ${STRINGS.mediaNoPreview}`),
+              }),
+            ]),
+          ]);
+        const errorLine = (text) =>
+          el("div", { class: "cms-diff", role: "alert" }, [el("p", { class: "cms-error", text })]);
+
+        if (task && task.phase === "refused") {
+          kids.push(dropZone(), errorLine(task.message));
+          actions.push(btn(STRINGS.cancel ?? "Cancel", cancel, "ghost"));
+        } else if (task && task.phase === "failed") {
+          kids.push(fileRow(), errorLine(task.message));
+          if (task.slow) actions.push(btn(STRINGS.mediaKeepWaiting, keepWaiting, "primary"));
+          else actions.push(btn("Retry", retry, "primary"));
+          actions.push(btn(STRINGS.mediaChooseAnother, pick), btn("Cancel", cancel, "ghost"));
+        } else if (task && !draft.ready) {
+          const progress = el("progress", { class: "cms-progress", max: "100", "aria-label": "Upload progress" });
+          if (task.phase === "uploading" && task.percent != null) progress.value = task.percent;
+          else progress.removeAttribute("value");
+          kids.push(
+            fileRow(),
+            progress,
+            el("p", {
+              class: `cms-media__status${task.phase === "busy" ? " cms-media__status--warn" : ""}`,
+              id: "demo-status",
+              text: statusText(),
+            }),
+            ...altInput(),
+          );
+          actions.push(btn(STRINGS.mediaCancelUpload, cancel, "danger"));
+          const d = btn("Done", done, "primary");
+          d.disabled = true;
+          actions.push(d);
+        } else if (draft.ready || value) {
+          const src = draft.ready ? draft.media.src : shownSrc;
+          kids.push(el("figure", { class: "cms-media__preview" }, [el("img", { alt: "", src })]));
+          if (draft.ready)
+            kids.push(
+              el("p", {
+                class: "cms-media__meta",
+                text: fmt("mediaFileMeta", { name: draft.media.name, width: 2400, height: 1600 }),
+              }),
+            );
+          kids.push(...altInput());
+          actions.push(btn(STRINGS.mediaReplace, pick));
+          if (!draft.ready) actions.push(btn(STRINGS.mediaRemove, remove, "danger"));
+          actions.push(btn("Cancel", cancel, "ghost"), btn("Done", done, "primary"));
+        } else {
+          kids.push(dropZone());
+          actions.push(btn("Cancel", cancel, "ghost"));
+        }
+        kids.push(el("div", { class: "cms-popover__actions" }, actions));
+        const active = document.activeElement;
+        const keepId = popover.contains(active) ? active.id : null;
+        popover.replaceChildren(...kids);
+        if (fileInput) popover.append(fileInput);
+        const target =
+          (focus && popover.querySelector(`#${focus}`)) ||
+          (keepId && popover.querySelector(`#${keepId}`)) ||
+          (focus === "first" && popover.querySelector("button, input:not([disabled])"));
+        target?.focus();
+        // A kept alt text from the previous image is selected, so typing replaces it (mediaAltCheck).
+        if (target?.id === "demo-alt" && draft.altFromPrevious) target.select();
+      }
+
+      function dropZone() {
+        const choose = btn(STRINGS.mediaChoose, pick, "primary");
+        choose.id = "demo-choose";
+        return el("div", { class: "cms-media__drop" }, [
+          choose,
+          el("p", { class: "cms-media__drop-hint cms-muted", text: STRINGS.mediaDropHint }),
+          el("p", { class: "cms-muted", text: fmt("mediaAccepts", { types: TYPES, limit: "40 MB" }) }),
+        ]);
+      }
+
+      function closePopover(returnFocus = true) {
+        popover?.remove();
+        popover = null;
+        fileInput = null;
+        field.classList.remove("cms-field--editing");
+        if (returnFocus) field.focus();
+        renderHost();
+        renderVeil();
+      }
+
+      // ----- outcomes -----
+      function commit(next, src) {
+        const before = value;
+        value = next;
+        if (src) shownSrc = src;
+        log(`POST /api/content/field {"key":"pages/home","path":"hero","value":${JSON.stringify(next)}} → 200`);
+        renderHost();
+        return before;
+      }
+
+      function done() {
+        if (task && !draft.ready) return;
+        if (draft.ready) {
+          commit(
+            draft.decorative
+              ? { id: draft.media.id, alt: "", decorative: true }
+              : { id: draft.media.id, alt: draft.alt.trim() },
+            draft.media.src,
+          );
+          task = null;
+        } else if (value) {
+          const next = draft.decorative
+            ? { id: value.id, alt: "", decorative: true }
+            : { id: value.id, alt: draft.alt.trim() };
+          if (JSON.stringify(next) !== JSON.stringify(value)) commit(next);
+        }
+        draft = null;
+        closePopover();
+      }
+
+      function cancel() {
+        if (task && task.phase !== "refused") {
+          stopTask();
+          log("XHR abort · DELETE /api/content/media-job?… → 204 (if a job had started)");
+          toast(STRINGS.mediaCancelled, "info");
+        }
+        task = null;
+        draft = null;
+        closePopover();
+      }
+
+      function leave() {
+        if (!popover) return;
+        if (task && !draft.ready && task.phase !== "refused" && task.phase !== "failed") {
+          // Goes on in the background and commits when ready.
+          task.background = true;
+          popover.remove();
+          popover = null;
+          fileInput = null;
+          field.classList.remove("cms-field--editing");
+          renderHost();
+          renderVeil();
+          return;
+        }
+        if (draft?.ready || (!task && value)) {
+          done();
+          return;
+        }
+        task = null;
+        draft = null;
+        closePopover(false);
+      }
+
+      function remove() {
+        commit(null);
+        draft = null;
+        closePopover();
+      }
+
+      // ----- the simulated upload -----
+      const hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes("Files");
+
+      function stopTask() {
+        if (!task) return;
+        task.aborted = true;
+        for (const t of task.timers) (clearTimeout(t), clearInterval(t));
+        task.timers = [];
+      }
+
+      function start(files) {
+        if (!files || files.length === 0) return;
+        if (files.length > 1) toast(STRINGS.mediaManyFiles, "info");
+        const file = files[0];
+        stopTask();
+        const outcome = $("demo-outcome").value;
+        const previousAlt = draft?.alt || value?.alt || "";
+        draft = { alt: previousAlt, decorative: false, altFromPrevious: !!previousAlt, ready: false };
+        let url = null;
+        if (file.type.startsWith("image/") && !/heic|heif/i.test(file.type)) url = URL.createObjectURL(file);
+        task = { file, url, phase: "uploading", percent: 0, timers: [], outcome, background: false };
+        if (outcome === "type" || !(file.type.startsWith("image/") || file.type === "")) {
+          refuse(fmt("mediaWrongType", { name: file.name, types: TYPES }), "415");
+          return;
+        }
+        if (outcome === "large" || file.size > LIMIT) {
+          const size = outcome === "large" ? Math.max(file.size, 112 * 1048576) : file.size;
+          refuse(fmt("mediaTooLarge", { name: file.name, size: human(size), limit: "40 MB" }), "413");
+          return;
+        }
+        if (outcome === "indeterminate") task.percent = null;
+        log(
+          `POST /api/content/media?key=pages/home&path=hero  (${file.type || "?"}, ${human(file.size)}, X-Upload-Filename: ${encodeURIComponent(file.name)})`,
+        );
+        announce(fmt("mediaUploadingAnnounce", { label: LABEL, name: file.name }));
+        renderPopover("demo-alt");
+        renderHost();
+        if (outcome === "busy" && !task.busyDone) {
+          task.phase = "busy";
+          task.wait = 3;
+          log("  → 503 busy, Retry-After: 3");
+          tick(
+            () => {
+              task.wait -= 1;
+              if (task.wait > 0) return update();
+              task.busyDone = true;
+              task.phase = "uploading";
+              log("POST /api/content/media?… (again, 1 of 3)");
+              return "stop";
+            },
+            1000,
+            () => send(),
+          );
+          update();
+          return;
+        }
+        send();
+      }
+
+      function tick(step, ms, after) {
+        const id = setInterval(() => {
+          if (task?.aborted) return clearInterval(id);
+          if (step() === "stop") {
+            clearInterval(id);
+            after?.();
+          }
+        }, ms);
+        task.timers.push(id);
+      }
+
+      function send() {
+        let sent = 0;
+        let lastStep = 0;
+        tick(
+          () => {
+            sent += 9;
+            if (task.outcome === "network" && sent >= 54) {
+              fail(STRINGS.mediaNetwork, "XHR error (connection dropped)");
+              return "halt";
+            }
+            if (task.percent != null) {
+              task.percent = Math.min(100, sent);
+              const step = Math.floor(task.percent / 25);
+              if (step > lastStep && step < 4) {
+                lastStep = step;
+                announce(fmt("mediaProgressAnnounce", { label: LABEL, percent: step * 25 }));
+              }
+            }
+            update();
+            return sent >= 100 ? "stop" : undefined;
+          },
+          220,
+          () => {
+            task.phase = "finishing";
+            update();
+            task.timers.push(setTimeout(answered, 600));
+          },
+        );
+      }
+
+      function answered() {
+        if (task.aborted) return;
+        if (task.outcome === "ready") {
+          log(`  → 201 { media: { id: "${nextId()}", render: { src, srcset, sources, width: 2400, height: 1600 } } }`);
+          return ready();
+        }
+        log('  → 202 { job: "j_51c0", retryAfterMs: 1000 }');
+        task.phase = "processing";
+        announce(fmt("mediaProcessingAnnounce", { label: LABEL }));
+        update();
+        const delays = [1, 2, 4];
+        let n = 0;
+        const poll = () => {
+          if (task.aborted) return;
+          if (task.outcome === "slow" && n >= 3) {
+            log("  (10 minutes since the 202: give up, nothing written)");
+            task.slow = true;
+            return fail(fmt("mediaJobSlow", { name: task.file.name, minutes: 10 }), null);
+          }
+          log(`GET /api/content/media-job?key=pages/home&path=hero&job=j_51c0  (after ${delays[n] ?? 15} s)`);
+          if (task.outcome === "failed" && n === 2) {
+            log('  → 200 { status: "failed", reason: "too_tall", message: "the image is too tall" }');
+            return fail(fmt("mediaJobFailed", { name: task.file.name, reason: "the image is too tall." }), null);
+          }
+          if (task.outcome !== "slow" && n === 2) {
+            log(`  → 200 { status: "ready", media: { id: "${nextId()}", render: { … } } }`);
+            return ready();
+          }
+          log('  → 200 { status: "processing" }');
+          n += 1;
+          task.timers.push(setTimeout(poll, 700));
+        };
+        task.timers.push(setTimeout(poll, 700));
+      }
+
+      let idCount = 0;
+      const ids = ["m_b31f", "m_c4d2", "m_e85a", "m_f017"];
+      const nextId = () => ids[idCount++ % ids.length];
+      const currentId = () => ids[(idCount - 1 + ids.length) % ids.length];
+
+      function ready() {
+        const media = { id: currentId(), src: task.url ?? PH.buns, name: task.file.name };
+        if (task.background && !popover) {
+          const alt = draft?.alt?.trim() ?? "";
+          commit(draft?.decorative ? { id: media.id, alt: "", decorative: true } : { id: media.id, alt }, media.src);
+          task = null;
+          draft = null;
+          renderHost();
+          renderVeil();
+          toast(fmt("mediaSavedLater", { label: LABEL }), "saved");
+          announce(fmt("mediaSavedLater", { label: LABEL }));
+          return;
+        }
+        draft.ready = true;
+        draft.media = media;
+        task.phase = "ready";
+        announce(fmt("mediaReadyAnnounce", { label: LABEL }));
+        const focused = document.activeElement;
+        const moveFocus = !focused || focused.tagName === "BUTTON" || !popover?.contains(focused);
+        renderPopover(moveFocus ? "demo-alt" : null);
+        renderHost();
+      }
+
+      function refuse(message, status) {
+        log(`  → refused before sending (${status})`);
+        task.phase = "refused";
+        task.message = message;
+        announce(message);
+        if (!popover) openPopover();
+        renderPopover("demo-choose");
+      }
+
+      function fail(message, logLine) {
+        if (logLine) log("  → " + logLine);
+        stopTask();
+        task.aborted = false;
+        task.phase = "failed";
+        task.message = message;
+        announce(message);
+        renderHost();
+        renderVeil();
+        if (popover) renderPopover("first");
+        else
+          toast(`${LABEL}: ${message}`, "error", [
+            btn(
+              task.slow ? STRINGS.mediaKeepWaiting : "Retry",
+              () => (hideToast(), task.slow ? keepWaiting() : retry()),
+              "primary",
+            ),
+            btn("Close", hideToast, "ghost"),
+          ]);
+      }
+
+      function retry() {
+        const file = task.file;
+        task = null;
+        $("demo-outcome").value = "job";
+        start([file]);
+      }
+
+      function keepWaiting() {
+        task.slow = false;
+        task.outcome = "job";
+        task.phase = "processing";
+        log("Keep waiting: new 10-minute bound, next poll in 1 s");
+        if (popover) renderPopover("demo-alt");
+        renderHost();
+        answeredAgain();
+      }
+      function answeredAgain() {
+        task.timers.push(
+          setTimeout(() => {
+            log(`GET /api/content/media-job?…  → 200 { status: "ready", media: { id: "${nextId()}", … } }`);
+            ready();
+          }, 1200),
+        );
+      }
+
+      function update() {
+        if (popover) {
+          const status = popover.querySelector("#demo-status");
+          const progress = popover.querySelector(".cms-progress");
+          if (status && progress) {
+            status.textContent = statusText();
+            status.className = `cms-media__status${task.phase === "busy" ? " cms-media__status--warn" : ""}`;
+            if (task.phase === "uploading" && task.percent != null) progress.value = task.percent;
+            else progress.removeAttribute("value");
+          } else renderPopover();
+        }
+        renderVeil();
+      }
+
+      function onPaste(e) {
+        const files = e.clipboardData?.files;
+        if (!files || files.length === 0) return;
+        e.preventDefault();
+        if (!popover) openPopover();
+        start(files);
+      }
+
+      // ----- field events -----
+      field.addEventListener("click", () => openPopover(value ? "demo-alt" : "demo-choose"));
+      field.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openPopover(value ? "demo-alt" : "demo-choose");
+        }
+      });
+      field.addEventListener("paste", (e) => {
+        if (locked()) return toast("Not editable: you don’t have edit access to this document", "info");
+        onPaste(e);
+      });
+      field.addEventListener("dragover", (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        if (locked()) return;
+        field.classList.add("cms-field--drop");
+        $("demo-badges").firstElementChild.textContent = fmt("mediaDropHere", { label: LABEL });
+      });
+      field.addEventListener("dragleave", () => {
+        field.classList.remove("cms-field--drop");
+        renderHost();
+      });
+      field.addEventListener("drop", (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        field.classList.remove("cms-field--drop");
+        if (locked()) return toast("Not editable: you don’t have edit access to this document", "info");
+        openPopover();
+        start(e.dataTransfer.files);
+      });
+      // The page-wide guard: a file dropped off target must not navigate the tab to it.
+      window.addEventListener("dragover", (e) => hasFiles(e) && e.preventDefault());
+      window.addEventListener("drop", (e) => hasFiles(e) && e.preventDefault());
+      document.addEventListener("pointerdown", (e) => {
+        if (popover && !popover.contains(e.target) && !field.contains(e.target) && e.button === 0) leave();
+      });
+
+      $("demo-access").addEventListener("change", () => {
+        if (popover) cancel();
+        renderHost();
+      });
+      $("demo-empty").addEventListener("click", () => {
+        if (popover) cancel();
+        value = null;
+        log("(Discard: the published value has no hero; the wrapper is emptied)");
+        renderHost();
+      });
+      $("demo-reset").addEventListener("click", () => {
+        stopTask();
+        task = null;
+        draft = null;
+        if (popover) closePopover(false);
+        value = { id: "m_7a1e", alt: "A sourdough loaf on a floured board" };
+        shownSrc = PH.loaf;
+        $("demo-log").textContent = "";
+        hideToast();
+        renderHost();
+      });
+      renderHost();
+    </script>
+  </body>
+</html>
