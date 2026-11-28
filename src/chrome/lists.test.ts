@@ -2896,7 +2896,7 @@ describe("a host element two chrome parts dress gives its class attribute back a
 });
 
 describe("a host's class attribute that the host empties while the chrome is on it", () => {
-  test("stays the host's: a later add and remove never deletes class=\"\"", () => {
+  test('stays the host\'s: a later add and remove never deletes class=""', () => {
     const node = document.createElement("p");
     addHostClass(node, "cms-field");
     node.className = "host";

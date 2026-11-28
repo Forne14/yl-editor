@@ -49,7 +49,8 @@
 //   change, coalesced with any other into one check per frame. A paint never calls it. `detach` doesn't either: every
 //   caller of detach either stops editing (which runs one check that lets the watch go), rescans and attaches again
 //   (which schedules), or destroys the mount.
-// - The crossing check (`createOutlineWatch`) only reads boxes, and warns once per pair of elements per mount; it never
+// - The crossing check (`createOutlineWatch`) looks at the scan root and everything under it (a root that is itself a
+//   drawn group, a field or a list counts), only reads boxes, and warns once per pair of elements per mount; it never
 //   changes the page. Its outlines are each drawn group's frame, each list's frame, and every `.cms-field` that is
 //   neither a member nor in a list item (those share a frame), the same fields the CSS leaves an outline on. On each check its observer watches exactly the current outlines: it is disconnected and
 //   re-observed only when that set changed, so a removed node isn't held and a recheck triggers at most one more check
@@ -367,7 +368,12 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
       found.push({ node, box: { l: box.l - grow, r: box.r + grow, t: box.t - grow, b: box.b + grow } });
     };
     const viewport = { left: 0, top: 0 };
-    for (const node of root.querySelectorAll(".cms-field")) {
+    // The scan root counts when it matches, as in `scanGroups`: `querySelectorAll` only looks below it.
+    const within = <Match extends Element>(selector: string): Match[] => [
+      ...(root.matches(selector) ? [root as unknown as Match] : []),
+      ...root.querySelectorAll<Match>(selector),
+    ];
+    for (const node of within(".cms-field")) {
       // A member shares its group's frame; a field in a group that isn't a member keeps its own outline.
       if (node.hasAttribute(MEMBER) || node.closest(".cms-item")) continue;
       // The outline is drawn outline-offset outside the border box, and is outline-width thick.
@@ -376,14 +382,14 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
         computedPixels(style, "outline-offset", FIELD_OFFSET) + computedPixels(style, "outline-width", FIELD_OUTLINE);
       add(node, boxOf(node, viewport), reach);
     }
-    for (const node of root.querySelectorAll<HTMLElement>(".cms-group")) {
+    for (const node of within<HTMLElement>(".cms-group")) {
       const frame = node.querySelector(":scope > .cms-group__frame");
       // The frame sits in the wrapper's padding box, reaching the pad past it.
       const inner = paddingBox(node);
       const pad = frame ? framePad(frame, inner) : FRAME_PAD;
       add(node, { l: inner.left, r: inner.left + inner.width, t: inner.top, b: inner.top + inner.height }, pad);
     }
-    for (const node of root.querySelectorAll(".cms-list__frame")) add(node, boxOf(node, viewport), 0);
+    for (const node of within(".cms-list__frame")) add(node, boxOf(node, viewport), 0);
     watch(seen);
     return found;
   };
