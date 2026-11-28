@@ -8,25 +8,48 @@
 //   afresh on every paint. Fewer than two members: the group draws nothing and the wrapper holds no `cms-group` class,
 //   so its fields look plain; the next paint with two members draws it again. Candidates (the fields the chrome knew
 //   inside the wrapper at attach) are fixed per attach; a wrapper with fewer than two is never attached.
-// - Geometry: everything is measured in the wrapper's padding box (border box + clientLeft/clientTop, clientWidth /
-//   clientHeight), where its absolutely positioned children sit. The pad (`--cms-list-pad`), the frame's border
-//   (`border-left-width`) and a field outline's offset (`--cms-space-1`) are computed styles; 0 is a value, and only an
-//   unreadable one (NaN) takes the fallback.
+// - Measurement policy (shared with the list painter in lists.ts): never parse a CSS length in JS. An unregistered
+//   custom property computes to its unresolved token (`1rem`, `calc()`), so `--cms-list-pad` and `--cms-space-1` are
+//   never read. Geometry comes from rendered boxes: the wrapper's padding box (border box + clientLeft/clientTop,
+//   clientWidth/clientHeight), where its absolutely positioned children sit; the pad is the frame's rect against that
+//   padding box (the frame's inset is -pad); the frame's border is its computed `border-*-width`, and a plain field's
+//   outline reach is its computed `outline-offset` + `outline-width` (real properties, so px). 0 is a value; only an
+//   unreadable one (no box, an empty style: an engine without layout) takes the fallback.
+// - Measure after styling: a paint adds `cms-group` and puts the frame in place before it measures anything but
+//   membership, so host CSS keyed on `.cms-group` is in the boxes it reads. Membership is decided first, from the boxes
+//   as they are, so a class that changes a member's size can't make a paint retire what it just drew.
 // - Nodes: the frame and separators are appended to the wrapper, never prepended, so host `:first-child` and
 //   `> * + *` rules match the same elements in edit mode.
-// - Never a group inside a group (the outermost wins), a group holding a list, or a group inside a list item: each is
-//   dropped at scan time.
-// - Warnings: scan-time ones (G5, G7, G8) and the clipping one (a wrapper whose overflow clips its outline) are once per
-//   element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 4 kinds.
+// - Never a group inside a group (the outermost wins), a group holding a list, a group inside a list item, or an
+//   inline wrapper (computed display `inline` or `contents`: it has no box of its own to frame, G11): each is dropped
+//   at scan time and its fields keep their own outlines.
+// - Warnings: scan-time ones (G5, G7, G8, G11) and the clipping one (a wrapper whose overflow clips its outline) are
+//   once per element and kind per mount: the mount owns the `Warnings` and passes it in. Bounded by elements x 5 kinds.
 // - `paint` is the only writer of separators, positions and the group classes; `schedule` coalesces any number of
 //   requests into one paint per animation frame. `detach` cancels the frame, disconnects the observer (which watches
 //   the wrapper and the candidates, nothing else), and removes every node and class added.
+// - Crossing hand-off: a paint whose member set differs from the last paint's (drawn, retired, or a member in or out)
+//   calls `changed` once, which the mount wires to the crossing watch's `schedule`: one scheduled check per change,
+//   coalesced with any other into one check per frame. `detach` doesn't call it: every caller of detach either stops
+//   editing (no check), rescans and attaches again (which schedules), or destroys the mount.
 // - The crossing check (`createOutlineWatch`) only reads boxes, and warns once per pair of elements per mount; it never
 //   changes the page. On each check its observer watches exactly the current outlines: it is disconnected and
 //   re-observed only when that set changed, so a removed node isn't held and a recheck triggers at most one more check
-//   (the new observations' first report), which finds the same set and stops.
+//   (the new observations' first report), which finds the same set and stops. Once destroyed, `schedule` and `check`
+//   are no-ops: no frame is requested and nothing is observed again.
 import { element } from "./dom.ts";
-import { boxOf, cellLines, cssPixels, layOut, paddingBox, px, type Box } from "./lists.ts";
+import {
+  FRAME_PAD,
+  boxOf,
+  cellLines,
+  computedPixels,
+  frameBorder,
+  framePad,
+  layOut,
+  paddingBox,
+  px,
+  type Box,
+} from "./lists.ts";
 
 export interface GroupRecord {
   element: HTMLElement;
@@ -38,7 +61,7 @@ export interface GroupRecord {
 }
 
 /** Warns about `node` once per kind; one per mount, so a rescan doesn't repeat a warning but a new mount does. */
-export type Warnings = (node: Element, kind: "item" | "list" | "nested" | "clip", message: string) => void;
+export type Warnings = (node: Element, kind: "item" | "list" | "nested" | "inline" | "clip", message: string) => void;
 
 export function createWarnings(): Warnings {
   const told = new WeakMap<Element, Set<string>>();
@@ -89,12 +112,22 @@ export function scanGroups(root: HTMLElement, warn: Warnings): GroupRecord[] {
       );
       continue;
     }
+    // An inline wrapper's box is its line boxes (none at all for `contents`): there is no one rectangle to frame (G11).
+    const display = getComputedStyle(target).display;
+    if (display === "inline" || display === "contents") {
+      warn(
+        target,
+        "inline",
+        `is display: ${display}, so it is ignored: its fields keep their own outlines. Make the wrapper block-level or inline-block to give them one.`,
+      );
+      continue;
+    }
     records.push({ element: target, paint: () => undefined, schedule: () => undefined });
   }
   return records;
 }
 
-/** Overflow values that cut off what reaches past the padding box, as the frame does by `--cms-list-pad`. */
+/** Overflow values that cut off what reaches past the padding box, as the frame does by the pad. */
 const CLIPS = new Set(["hidden", "clip", "auto", "scroll"]);
 
 function clips(node: Element): string | undefined {
@@ -104,20 +137,17 @@ function clips(node: Element): string | undefined {
   return values.find((value) => CLIPS.has(value));
 }
 
-/** What a group's frame reaches past its wrapper's padding box when the style can't be read. */
-const PAD = 12;
-/** The frame's border when the style can't be read: `--cms-outline`'s 2px. */
-const BORDER = 2;
-
 /**
  * Draws the group: a frame, and a line between its members from their boxes. `recordOf` answers for a field element
  * the chrome knows (`editable` false for a locked one, `detach` set while it is dressed); an element it doesn't know
- * isn't a candidate.
+ * isn't a candidate. `changed` is called once by each paint that draws a different set of members than the last one
+ * (drawn, retired, or a member in or out): the outlines on the page moved.
  */
 export function attachGroup(
   record: GroupRecord,
   recordOf: (element: HTMLElement) => { editable: boolean; detach?: unknown } | undefined,
   warn: Warnings,
+  changed: () => void,
 ): void {
   record.detach?.();
   const host = record.element;
@@ -125,14 +155,6 @@ export function attachGroup(
     (node) => !node.closest(".cms-root") && recordOf(node) !== undefined,
   );
   if (candidates.length < 2) return;
-  const clipping = clips(host);
-  if (clipping) {
-    warn(
-      host,
-      "clip",
-      `has overflow: ${clipping}, so it clips its group's outline, which sits --cms-list-pad outside it. Let it overflow, or give the group room inside an element that clips.`,
-    );
-  }
 
   const hadClass = host.hasAttribute("class");
   const childTag = host.tagName === "UL" || host.tagName === "OL" ? "li" : "div";
@@ -156,26 +178,43 @@ export function attachGroup(
     if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
   };
 
+  /** The members the last paint drew; empty while retired. */
+  let drawn: HTMLElement[] = [];
+  const settle = (members: HTMLElement[]) => {
+    const same = members.length === drawn.length && members.every((node, index) => drawn[index] === node);
+    drawn = members;
+    if (!same) changed();
+  };
+
+  const hasBox = (box: Box) => box.r - box.l > 0 && box.b - box.t > 0;
+  const viewport = { left: 0, top: 0 };
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
-    const origin = paddingBox(host);
-    const members = candidates
-      .filter((node) => recordOf(node)?.detach !== undefined)
-      .map((node) => ({ node, box: boxOf(node, origin) }))
-      .filter(({ box }) => box.r - box.l > 0 && box.b - box.t > 0);
-    if (members.length < 2) {
+    // Membership from the boxes as they are; everything else is measured once the group's styling is on.
+    const present = candidates.filter((node) => recordOf(node)?.detach !== undefined && hasBox(boxOf(node, viewport)));
+    if (present.length < 2) {
       retire();
+      settle([]);
       return;
     }
     host.classList.add("cms-group");
     host.classList.toggle(
       "cms-group--locked",
-      members.every(({ node }) => recordOf(node)?.editable !== true),
+      present.every((node) => recordOf(node)?.editable !== true),
     );
     if (frame.parentNode !== host) host.append(frame);
-    // Read once the frame is on the page: a detached element has no computed style.
-    const pad = cssPixels(frame, "--cms-list-pad", PAD);
-    const border = cssPixels(frame, "border-left-width", BORDER);
+    const clipping = clips(host);
+    if (clipping) {
+      warn(
+        host,
+        "clip",
+        `has overflow: ${clipping}, so it clips its group's outline, which sits --cms-list-pad outside it. Let it overflow, or give the group room inside an element that clips.`,
+      );
+    }
+    const origin = paddingBox(host);
+    const members = present.map((node) => ({ node, box: boxOf(node, origin) })).filter(({ box }) => hasBox(box));
+    const pad = framePad(frame, origin);
+    const border = frameBorder(frame);
     // Inside the frame's border.
     const edge = { left: -pad + border, right: origin.width + pad - border };
     const top = -pad + border;
@@ -200,6 +239,7 @@ export function attachGroup(
       for (const x of inside.vertical) separator("v", x, start, to - start);
       for (const { x, y, w } of inside.horizontal) separator("h", x, y, w);
     });
+    settle(present);
   };
 
   let frameRequest: number | undefined;
@@ -216,7 +256,7 @@ export function attachGroup(
     observer.observe(host);
     for (const node of candidates) observer.observe(node);
   }
-  // A viewport change can move `--cms-list-pad` through a media query without resizing any observed box.
+  // A viewport change can move the pad through a media query without resizing any observed box.
   window.addEventListener("resize", schedule);
   record.paint = paint;
   record.schedule = schedule;
@@ -242,8 +282,9 @@ export interface OutlineWatch {
   destroy(): void;
 }
 
-/** What a dashed outline overhangs its field by when `--cms-space-1` can't be read. */
+/** A plain field's outline when its style can't be read: `--cms-space-1`'s 4px offset and `--cms-outline`'s 2px. */
 const FIELD_OFFSET = 4;
+const FIELD_OUTLINE = 2;
 const EDGE = 0.5;
 
 /**
@@ -266,6 +307,7 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
   // Bounded by the pairs of outlines on the page, and by the number of elements ever seen crossing.
   const reported = new Set<string>();
 
+  let destroyed = false;
   let schedule: () => void = () => undefined;
   const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => schedule());
   /** What the observer watches: the outlines of the last check, whatever their size (showing one rechecks). */
@@ -288,13 +330,17 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
     const viewport = { left: 0, top: 0 };
     for (const node of root.querySelectorAll(".cms-field")) {
       if (node.closest(".cms-group, .cms-item")) continue;
-      add(node, boxOf(node, viewport), cssPixels(node, "--cms-space-1", FIELD_OFFSET));
+      // The outline is drawn outline-offset outside the border box, and is outline-width thick.
+      const style = getComputedStyle(node);
+      const reach =
+        computedPixels(style, "outline-offset", FIELD_OFFSET) + computedPixels(style, "outline-width", FIELD_OUTLINE);
+      add(node, boxOf(node, viewport), reach);
     }
     for (const node of root.querySelectorAll<HTMLElement>(".cms-group")) {
       const frame = node.querySelector(":scope > .cms-group__frame");
-      const pad = frame ? cssPixels(frame, "--cms-list-pad", PAD) : PAD;
       // The frame sits in the wrapper's padding box, reaching the pad past it.
       const inner = paddingBox(node);
+      const pad = frame ? framePad(frame, inner) : FRAME_PAD;
       add(node, { l: inner.left, r: inner.left + inner.width, t: inner.top, b: inner.top + inner.height }, pad);
     }
     for (const node of root.querySelectorAll(".cms-list__frame")) add(node, boxOf(node, viewport), 0);
@@ -311,6 +357,7 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
     !inside(b, a);
 
   const check = () => {
+    if (destroyed) return;
     if (!active()) {
       // Nothing is drawn: hold nothing until editing starts again (which schedules a check).
       watch([]);
@@ -333,7 +380,7 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
 
   let frameRequest: number | undefined;
   schedule = () => {
-    if (frameRequest !== undefined) return;
+    if (destroyed || frameRequest !== undefined) return;
     frameRequest = requestAnimationFrame(() => {
       frameRequest = undefined;
       check();
@@ -344,6 +391,7 @@ export function createOutlineWatch(root: HTMLElement, active: () => boolean): Ou
     schedule: () => schedule(),
     check,
     destroy() {
+      destroyed = true;
       observer?.disconnect();
       watched = new Set();
       window.removeEventListener("resize", schedule);

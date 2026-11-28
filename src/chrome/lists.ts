@@ -259,10 +259,35 @@ export function paddingBox(node: HTMLElement): { left: number; top: number; widt
   };
 }
 
-/** A computed length in pixels (`--cms-list-pad`, `border-left-width`). 0 is a value: only an unreadable one falls back. */
-export function cssPixels(node: Element, property: string, fallback: number): number {
-  const value = Number.parseFloat(getComputedStyle(node).getPropertyValue(property));
-  return Number.isNaN(value) ? fallback : value;
+/**
+ * A real property's computed length (`border-left-width`, `outline-offset`), which a browser gives in px. Never a custom
+ * property: that computes to its unresolved token (`1rem`, `calc()`). 0 is a value; anything not in px (an empty value
+ * from an engine without the style) falls back.
+ */
+export function computedPixels(style: CSSStyleDeclaration, property: string, fallback: number): number {
+  const value = style.getPropertyValue(property).trim();
+  const parsed = value.endsWith("px") ? Number(value.slice(0, -2)) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** What a frame reaches past its host's padding box when it has no box to measure: `--cms-list-pad`'s 12px. */
+export const FRAME_PAD = 12;
+/** A frame's border when its style can't be read: `--cms-outline`'s 2px. */
+export const FRAME_BORDER = 2;
+
+/**
+ * How far `frame` is drawn outside `origin`, its host's padding box: the chrome's CSS sets its left edge at
+ * `calc(-1 * var(--cms-list-pad))`, so this is the pad as the browser resolved it. A frame with no box (an engine
+ * without layout) gives the fallback.
+ */
+export function framePad(frame: Element, origin: { left: number }): number {
+  const rect = frame.getBoundingClientRect();
+  return rect.width > 0 || rect.height > 0 ? origin.left - rect.left : FRAME_PAD;
+}
+
+/** The frame's border width, from its computed style: the chrome's `--cms-outline` draws the same on every side. */
+export function frameBorder(frame: Element): number {
+  return computedPixels(getComputedStyle(frame), "border-left-width", FRAME_BORDER);
 }
 
 /**
@@ -393,7 +418,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       : format(strings.listTag, { label: info.label, count: total, max: info.max }),
   ]);
   const frame = element(childTag, { class: "cms-root cms-list__frame", "aria-hidden": "true" }, [tag]);
-  host.prepend(frame);
+  // Appended, after the items and before the Add row: host `:first-child` rules keep matching the first item.
+  host.append(frame);
   added.push(frame);
 
   const toolbars: (HTMLElement | undefined)[] = [];
@@ -727,12 +753,28 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     added.push(addRow);
   }
 
+  // The painter. Invariants:
+  // - Measurement policy (as in groups.ts): never parse a CSS length in JS; `--cms-list-pad` is never read. Boxes are
+  //   measured in the host's padding box (`paddingBox`), where the frame, bands and tools are positioned. The pad is the
+  //   frame's rect against that padding box (its `left` is -pad); the frame's border is its computed
+  //   `border-left-width` / `border-right-width` (real properties, so px). Only an unreadable value (a frame with no
+  //   box, an empty style: an engine without layout) takes the fallback.
+  // - Measure after styling: `cms-list` and the frame are on the host before the first paint, so host CSS keyed on
+  //   `.cms-list` is in every box a paint reads. The axis classes are set from the boxes a paint read; no chrome rule
+  //   keyed on them moves a box.
+  // - Nodes: the frame is appended to the host (after its items, before the Add row), so host `:first-child` rules
+  //   match the same item in edit mode. Each item's toolbar stays its first child: Tab reaches it before the item's
+  //   fields (#28).
+  // - `paint` is the only writer of separators, bands' and tools' positions and the axis classes; `schedule` coalesces
+  //   any number of requests into one paint per animation frame.
   const separators: HTMLElement[] = [];
   let axis: Axis = "column";
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
-    const origin = host.getBoundingClientRect();
-    const pad = cssPixels(frame, "--cms-list-pad", 12);
+    // Everything in the padding box, where the frame, bands and tools are positioned.
+    const origin = paddingBox(host);
+    const pad = framePad(frame, origin);
+    const border = frameBorder(frame);
     const cells: Cell[] = [
       ...items.map((item, index) => ({ row: item.element, band: bands[index], tools: toolbars[index], item: true })),
       ...(addRow ? [{ row: addRow, band: addBand, tools: undefined, item: false }] : []),
@@ -753,9 +795,9 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     const firstTop = (lines[0]?.top ?? 0) - lead;
     frame.style.setProperty("--cms-frame-top", px(firstTop));
     frame.style.setProperty("--cms-frame-height", px((lines.at(-1)?.bottom ?? 0) + pad - firstTop));
-    // Inside the outline's 2px border on each side.
-    const innerLeft = -pad + 2;
-    const innerRight = origin.width + pad - 2;
+    // Inside the outline's border on each side.
+    const innerLeft = -pad + border;
+    const innerRight = origin.width + pad - border;
     lines.forEach((line, lineIndex) => {
       const above = lineIndex === 0 ? lead : (halves[lineIndex - 1] ?? 0);
       const below = halves[lineIndex] ?? pad;
