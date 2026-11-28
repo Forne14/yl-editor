@@ -381,9 +381,64 @@ chrome creates (see docs/paths.md).
 - A list whose document the editor can't edit gets no list chrome; its fields show as locked.
 - The chrome adds `.cms-list` to the list and `.cms-item` to each item, and its own `.cms-root` children:
   `.cms-list__frame` (the outline and `.cms-list__tag`), `.cms-list__add`, and in each item `.cms-item__tools`,
-  `.cms-item__band` and `.cms-item__sep`. Leave room between items for the toolbar on the line between them, for
+  `.cms-item__band` and `.cms-item__sep`. A border on an item is allowed too: its band, toolbar and lines sit inside it. In a column,
+  the toolbar's right edge is the list's right edge, also for an item narrower than the list. Leave room between items for the toolbar on the line between them, for
   example `.my-list.cms-list { gap: 3.75rem; }`: the chrome never changes your layout, so with a smaller gap the
-  toolbar overlaps the items next to it. Done and `destroy()` take it all out again.
+  toolbar overlaps the items next to it. The outline is added at the end of the list and each item's toolbar at the
+  start of the item (it comes first in Tab order), so in edit mode an item's `:first-child` is the toolbar, and a `:last-child` rule on the list's children can match
+  the outline instead of the last item (the Add row comes after it when there is one). A border
+  on the list is allowed. Done and `destroy()` take it all out again.
+
+### Groups
+
+Fields that sit close together, such as a heading over its subtitle or a list of facts, would get one dashed outline
+each, and those outlines touch or cross. Wrap them in one element marked with `group()` and they share one outline:
+
+```ts
+const about = editable(editing ? "pages/about" : undefined);
+const footer = editable(editing ? "settings/site" : undefined);
+
+`<section ${attrs(about.group())}>
+  <h2 ${attrs(about("title", "text"))}>…</h2>
+  <p ${attrs(footer("line", "text"))}>…</p>
+</section>`;
+```
+
+`group()` returns `{ "data-edit-group": "" }` in edit mode and nothing otherwise, like every other helper. It hangs off
+one document's helper, but a group can hold fields of any document.
+
+- The group gets one dashed outline around the wrapper's box, padded by `--cms-list-pad`, and a thin dashed line
+  (`--cms-list-line`) halfway between neighbouring fields: horizontal between fields stacked, vertical between fields
+  side by side, both in a wrapping grid. Lines run the outline's full width, so markup of yours inside the wrapper,
+  such as a label, sits inside the outline. What inside it is editable is yours to decide.
+- Fields in a group lose their own outline. Hover, editing, focus, saving and failed look as they do in a list item:
+  solid, drawn inside the field. The badge is unchanged. There is no tint and no extra Tab stop.
+- A locked field stays in its group, with its muted badge and reason. The outline is muted only when every field in
+  the group is locked.
+- Which fields form a group is decided from your markup when the chrome scans the page, again after a list's markup
+  is replaced and on a refresh: the fields inside the wrapper, not those in a list, nor those of a document the editor
+  doesn't have (one the store didn't return, or one a Discard deleted). Those keep their own outline. Layout never changes it. A group of fewer than two such fields draws nothing: its field looks like any other.
+  A field hidden at some width keeps its group: the outline still goes round the wrapper, with no line beside it.
+- A group never holds a list or sits in one. A wrapper that contains a `data-edit-list` is ignored and its fields get
+  their own outlines. A `data-edit-group` inside a list, in an item or between the list and its items, is ignored, and so is one on a
+  field's own element. In a group inside a group, the outer one wins
+  and the inner one is ignored. An inline wrapper (`display: inline` or `contents`) is ignored too, because a box that
+  wraps over lines has no one rectangle to outline: use a block or `inline-block` element. It is checked when the page is scanned, so keep it that way at every width in
+  edit mode: a wrapper that turns inline at a breakpoint is not supported. Each case is named by a
+  `console.warn`, once per mount.
+- Any two dashed outlines that cross (a field's, a group's or a list's) are named by a `console.warn`, once per pair
+  per mount. The chrome checks again when the page resizes. Hidden fields are skipped.
+- The outline and lines are placed from the boxes on the page, through custom properties, and redrawn when the group
+  or a field resizes. Style them through `.cms-group`, `.cms-group__frame` and `.cms-group__sep`; while editing, each
+  field in the group carries `data-cms-member`. They are added at the
+  end of the wrapper, so in edit mode a `:last-child` rule of yours on the wrapper's children matches a chrome node
+  instead. A border on the wrapper is allowed. The outline's distance is `--cms-list-pad`, set where the tokens are, on
+  `.cms-root` or on the outline itself (`.cms-group__frame`, `.cms-list__frame`): `0` puts it on the wrapper's edge, and
+  any length works (`1rem`, `calc()`). Set on the wrapper it has no effect, because the outline declares its own.
+- The outline sits outside the wrapper's box, so a wrapper that clips (`overflow` other than `visible`) hides it. A
+  `console.warn` names such a wrapper.
+
+The design is `docs/specs/artefacts/2026-11-field-groups.html`.
 
 ### Scheduling
 

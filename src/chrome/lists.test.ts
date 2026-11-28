@@ -1,8 +1,12 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { editable, itemPath, type EditableListAttrs } from "../editable.ts";
 import { applyArrayOp, parsePath } from "../path.ts";
 import type { ArrayOp } from "../types.ts";
+import { addHostClass, element, removeHostClass } from "./dom.ts";
 import { mountEditor } from "./index.ts";
 import { attachList, scanLists, type ListHandlers } from "./lists.ts";
 import { defaultStrings } from "./strings.ts";
@@ -2457,13 +2461,34 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
   };
   type Place = [x: number, y: number, width: number, height: number];
   const box = (place: Place) => () => new DOMRect(...place);
-  /** Gives the host, each item and the Add row a box; the next paint reads them. */
-  const lay = (places: Place[], add: Place) => {
+  /**
+   * Gives the host, each item and the Add row a box; the next paint reads them. The host's padding box is at 0,0 and
+   * HOST_WIDTH wide; a `border` puts its border box that much outside it.
+   */
+  const lay = (places: Place[], add: Place, border = 0) => {
     const bottom = Math.max(...places.map(([, y, , height]) => y + height), add[1] + add[3]);
-    list().getBoundingClientRect = box([0, 0, HOST_WIDTH, bottom]);
+    list().getBoundingClientRect = box([-border, -border, HOST_WIDTH + 2 * border, bottom + 2 * border]);
+    for (const [name, value] of [
+      ["clientLeft", border],
+      ["clientTop", border],
+      ["clientWidth", HOST_WIDTH],
+      ["clientHeight", bottom],
+    ] as const) {
+      Object.defineProperty(list(), name, { configurable: true, get: () => value });
+    }
     items().forEach((item, index) => {
       const place = places[index];
-      if (place) item.getBoundingClientRect = box(place);
+      if (!place) return;
+      item.getBoundingClientRect = box(place);
+      // No item border: its padding box is its border box (`itemBorder` gives it one).
+      for (const [name, value] of [
+        ["clientLeft", 0],
+        ["clientTop", 0],
+        ["clientWidth", place[2]],
+        ["clientHeight", place[3]],
+      ] as const) {
+        Object.defineProperty(item, name, { configurable: true, get: () => value });
+      }
     });
     const addRow = list().querySelector<HTMLElement>(".cms-list__add");
     if (addRow) addRow.getBoundingClientRect = box(add);
@@ -2472,6 +2497,16 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     window.dispatchEvent(new Event("resize"));
     await settle();
   };
+  /** A stylesheet rule, as a page would carry it; gone after the test. */
+  const css = (rules: string) => {
+    const style = document.createElement("style");
+    style.dataset.test = "";
+    style.textContent = rules;
+    document.head.append(style);
+  };
+  afterEach(() => {
+    for (const style of document.head.querySelectorAll("style[data-test]")) style.remove();
+  });
   const band = (index: number) => items()[index]?.querySelector<HTMLElement>(".cms-item__band") as HTMLElement;
   const addBand = () => list().querySelector<HTMLElement>(".cms-list__add .cms-item__band") as HTMLElement;
   const tools = (index: number) => items()[index]?.querySelector<HTMLElement>(".cms-item__tools") as HTMLElement;
@@ -2554,7 +2589,8 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     lay(column, [0, 420, 300, 40]);
     await repaint();
     expect(prop(tools(1), "--cms-tools-left")).toBe("auto");
-    expect(prop(tools(1), "--cms-tools-right")).toBe(`${HOST_WIDTH - 300}px`);
+    // Its right edge on the host's: past the 300px item's right edge by the rest of the host's width.
+    expect(prop(tools(1), "--cms-tools-right")).toBe(`${300 - HOST_WIDTH}px`);
     lay(row, [0, 140, 580, 40]);
     await repaint();
     expect(prop(tools(1), "--cms-tools-right")).toBe("auto");
@@ -2621,6 +2657,119 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     expect(prop(horizontal, "--cms-sep-length")).toBe("419px");
   });
 
+  test("a host border doesn't move the cells: they are measured in the host's padding box", async () => {
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40], 5);
+    await repaint();
+    expect(prop(band(0), "--cms-band-left")).toBe("-10px");
+    expect(prop(band(2), "--cms-band-width")).toBe("220px");
+    lay(column, [0, 420, 300, 40], 5);
+    await repaint();
+    expect(prop(tools(1), "--cms-tools-right")).toBe(`${300 - HOST_WIDTH}px`);
+  });
+
+  /** Gives item `index` a border of `width` on every side: its padding box is that much inside its border box. */
+  const itemBorder = (index: number, width: number) => {
+    const item = items()[index] as HTMLElement;
+    const { width: w, height: h } = item.getBoundingClientRect();
+    for (const [name, value] of [
+      ["clientLeft", width],
+      ["clientTop", width],
+      ["clientWidth", w - 2 * width],
+      ["clientHeight", h - 2 * width],
+    ] as const) {
+      Object.defineProperty(item, name, { configurable: true, get: () => value });
+    }
+  };
+
+  test("an item's border doesn't move its band or toolbar: they are placed in the item's padding box", async () => {
+    three();
+    await mount();
+    lay(column, [0, 420, 300, 40]);
+    itemBorder(1, 4);
+    await repaint();
+    // Item 1's cell runs y = 125..275 and x = -10..610; its padding box starts at 4,154 and ends at 296,246.
+    expect(prop(band(1), "--cms-band-top")).toBe("-29px");
+    expect(prop(band(1), "--cms-band-bottom")).toBe("-29px");
+    expect(prop(band(1), "--cms-band-left")).toBe("-14px");
+    expect(prop(band(1), "--cms-band-width")).toBe("620px");
+    expect(prop(tools(1), "--cms-tools-above")).toBe("29px");
+    // The toolbar's right edge on the host's right edge, 304px past the item's padding box.
+    expect(prop(tools(1), "--cms-tools-right")).toBe("-304px");
+  });
+
+  test("an item's border doesn't move the lines between its fields: they are measured in its padding box", async () => {
+    const h3 = items()[1]?.querySelector<HTMLElement>("h3") as HTMLElement;
+    const second = h3.cloneNode(true) as HTMLElement;
+    second.setAttribute("data-edit-field", (h3.getAttribute("data-edit-field") ?? "").replace(/name$/, "role"));
+    items()[1]?.append(second);
+    await mount();
+    lay(
+      [
+        [0, 0, 180, 100],
+        [200, 0, 180, 100],
+      ],
+      [0, 140, 580, 40],
+    );
+    itemBorder(1, 4);
+    h3.getBoundingClientRect = box([204, 10, 172, 20]);
+    second.getBoundingClientRect = box([204, 50, 172, 20]);
+    await repaint();
+    const horizontal = items()[1]?.querySelector<HTMLElement>(".cms-item__sep--h") as HTMLElement;
+    // The padding box starts at 204,4: the cell's left line at 190 is -14 in it, and the line starts one past that;
+    // halfway between the fields (y = 30 and 50) is 36 in it.
+    expect(prop(horizontal, "--cms-sep-x")).toBe("-13px");
+    expect(prop(horizontal, "--cms-sep-top")).toBe("36px");
+    expect(prop(horizontal, "--cms-sep-length")).toBe("419px");
+  });
+
+  test("the pad is where the frame is drawn: a 1rem pad is 16px, not 1", async () => {
+    // An unregistered custom property computes to its token: `1rem`, which parses as 1.
+    css(".cms-list__frame { --cms-list-pad: 1rem; }");
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    const frame = list().querySelector<HTMLElement>(".cms-list__frame") as HTMLElement;
+    // The chrome's CSS puts the frame `--cms-list-pad` outside the padding box on the left and right.
+    frame.getBoundingClientRect = box([-16, -16, HOST_WIDTH + 32, 132]);
+    await repaint();
+    // Inside the frame's 2px border: -16 + 2 on the left, 600 + 16 - 2 on the right.
+    expect(prop(band(0), "--cms-band-left")).toBe("-14px");
+    expect(prop(band(2), "--cms-band-width")).toBe("224px");
+    // The Add row's line ends at 180, the pad below it; the frame starts 20 above the first line (half the gap).
+    expect(prop(frame, "--cms-frame-height")).toBe("216px");
+  });
+
+  test("the frame's border is its real width, not assumed to be 2px", async () => {
+    css(".cms-list__frame { border-left-width: 5px; border-right-width: 5px; }");
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    expect(prop(band(0), "--cms-band-left")).toBe("-7px");
+    expect(prop(band(2), "--cms-band-width")).toBe("217px");
+  });
+
+  test("the right edge reads the frame's right border, not its left one", async () => {
+    css(".cms-list__frame { border-right-width: 5px; }");
+    three();
+    await mount();
+    lay(row, [0, 140, 580, 40]);
+    await repaint();
+    // The left border is the 2px default; the right one ends the last band at 600 + 12 - 5.
+    expect(prop(band(0), "--cms-band-left")).toBe("-10px");
+    expect(prop(band(2), "--cms-band-width")).toBe("217px");
+  });
+
+  test("the frame is appended: the host's first child is still its first item, and the toolbar leads each item", async () => {
+    three();
+    await mount();
+    expect(list().firstElementChild).toBe(items()[0]);
+    expect(list().querySelector(":scope > .cms-list__frame")).not.toBeNull();
+    expect(items()[0]?.firstElementChild?.classList.contains("cms-item__tools")).toBe(true);
+  });
+
   test("dragging in a row follows the pointer along the line", async () => {
     three();
     await mount();
@@ -2653,5 +2802,109 @@ describe("row and grid lists draw lines on their own axis (#43, ruling D10 on #2
     list().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
     await settle();
     expect(arrayCalls.map((call) => call.op)).toEqual([{ kind: "move", from: 2, to: 1 }]);
+  });
+});
+
+describe("the chrome's stylesheet and a host list", () => {
+  const sheet = () => {
+    const style = document.createElement("style");
+    style.dataset.test = "";
+    style.textContent = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "chrome.css"), "utf8");
+    document.head.append(style);
+  };
+  afterEach(() => {
+    for (const style of document.head.querySelectorAll("style[data-test]")) style.remove();
+  });
+  const look = (node: Element) => {
+    const style = getComputedStyle(node);
+    return {
+      display: style.display,
+      padding: style.paddingLeft,
+      margin: style.marginTop,
+      bullets: style.listStyleType,
+    };
+  };
+
+  test("a host list dressed for editing keeps its own display, padding and bullets", async () => {
+    sheet();
+    const before = look(list());
+    await mount();
+    expect(list().classList.contains("cms-list")).toBe(true);
+    expect(look(list())).toEqual(before);
+  });
+
+  test("a list in the chrome's own surfaces is still laid out as the chrome's grid", () => {
+    sheet();
+    const own = element("ul", { class: "cms-list" });
+    const surface = element("div", { class: "cms-root" }, [own]);
+    document.body.append(surface);
+    expect(look(own)).toMatchObject({ display: "grid", padding: "0px", margin: "0px" });
+    surface.remove();
+  });
+});
+
+describe("a host element two chrome parts dress gives its class attribute back as it was", () => {
+  test.each([
+    ["no class attribute", null],
+    ["an empty one", ""],
+    ["its own classes", "card wide"],
+  ])("with %s, whichever part lets go first", (_name, original) => {
+    for (const order of [
+      ["cms-field", "cms-item"],
+      ["cms-item", "cms-field"],
+    ]) {
+      const node = document.createElement("li");
+      if (original !== null) node.setAttribute("class", original);
+      addHostClass(node, "cms-field");
+      addHostClass(node, "cms-item");
+      for (const name of order) removeHostClass(node, name);
+      expect(node.getAttribute("class")).toBe(original);
+    }
+  });
+
+  /** Each item is a field too: its name is edited on the `<li>` itself. */
+  const itemsAreFields = () => {
+    for (const item of items()) {
+      const h3 = item.querySelector("h3") as HTMLElement;
+      for (const name of ["data-edit-field", "data-edit-type"]) {
+        item.setAttribute(name, h3.getAttribute(name) ?? "");
+        h3.removeAttribute(name);
+      }
+    }
+  };
+
+  test("a list item that is also a field: Done gives back identical markup", async () => {
+    itemsAreFields();
+    const before = list().outerHTML;
+    await mount();
+    expect(items()[0]?.classList.contains("cms-item")).toBe(true);
+    expect(items()[0]?.classList.contains("cms-field")).toBe(true);
+    [...document.querySelectorAll<HTMLButtonElement>(".cms-bar button")]
+      .find((button) => button.textContent === "Done")
+      ?.click();
+    expect(list().outerHTML).toBe(before);
+  });
+
+  test("a list item that is also a field: destroy gives back identical markup", async () => {
+    itemsAreFields();
+    const before = list().outerHTML;
+    await mount();
+    handle?.destroy();
+    handle = undefined;
+    expect(list().outerHTML).toBe(before);
+  });
+});
+
+describe("a host's class attribute that the host empties while the chrome is on it", () => {
+  test('stays the host\'s: a later add and remove never deletes class=""', () => {
+    const node = document.createElement("p");
+    addHostClass(node, "cms-field");
+    node.className = "host";
+    removeHostClass(node, "cms-field");
+    node.className = "";
+    expect(node.getAttribute("class")).toBe("");
+    addHostClass(node, "cms-field");
+    removeHostClass(node, "cms-field");
+    expect(node.getAttribute("class")).toBe("");
   });
 });

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Groups and live layout</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --fg: #16181d;
+        --muted: #5b6170;
+        --card: #fff;
+        --line: #d5d8e0;
+        --accent: #2557d6;
+        --rec: #1f7a45;
+        --bad: #b42318;
+        --code: #eceef2;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      .doc {
+        max-width: 64rem;
+        margin: 0 auto;
+        padding: 2rem 1rem 5rem;
+      }
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.75rem;
+      }
+      h2 {
+        margin: 2.5rem 0 0.5rem;
+        font-size: 1.25rem;
+      }
+      p,
+      li {
+        max-width: 48rem;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      code {
+        padding: 0.1em 0.3em;
+        border-radius: 4px;
+        background: var(--code);
+        font-size: 0.875em;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        padding: 0.55rem 0.75rem;
+        border-top: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+      thead th {
+        border-top: 0;
+        background: var(--code);
+      }
+      .options {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+      .option {
+        display: flex;
+        flex-direction: column;
+        padding: 1.25rem;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+      }
+      .option.rec {
+        border: 2px solid var(--rec);
+      }
+      .option h3 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+      .tag {
+        display: inline-block;
+        margin-left: 0.4rem;
+        padding: 0 0.4rem;
+        border-radius: 4px;
+        background: var(--rec);
+        color: #fff;
+        font-size: 0.75rem;
+        font-weight: 700;
+      }
+      .option h4 {
+        margin: 0.9rem 0 0.25rem;
+        font-size: 0.8125rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .option ul {
+        margin: 0;
+        padding-left: 1.1rem;
+      }
+      .preview {
+        margin-top: auto;
+        padding-top: 1.75rem;
+      }
+      .site {
+        font-family: Georgia, serif;
+        padding: 0.9rem;
+      }
+      .site h5 {
+        margin: 0;
+        font-size: 1.3rem;
+      }
+      .site p {
+        margin: 0.4rem 0 0;
+      }
+      /* Drawn statically: the chrome's group frame, line and plain outline (chrome.css). */
+      .g {
+        position: relative;
+        outline: 2px dashed var(--accent);
+        outline-offset: 12px;
+        border-radius: 6px;
+      }
+      .g .sep {
+        position: absolute;
+        left: -10px;
+        right: -10px;
+        border-top: thin dashed var(--accent);
+      }
+      .f {
+        outline: 2px dashed var(--accent);
+        outline-offset: 4px;
+        border-radius: 6px;
+      }
+      .hidden {
+        display: none;
+      }
+      .cap {
+        margin-top: 1.6rem;
+        font-size: 0.8125rem;
+        color: var(--muted);
+      }
+      .bad {
+        color: var(--bad);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="doc">
+      <h1>Groups and live layout</h1>
+      <p class="muted">
+        #44 · Chrome: group close plain fields in one outline (no overlapping dashed outlines). PR #54. A decision for
+        Yassine, 2026-11-28, after review round 3.
+      </p>
+
+      <h2>Where it stands</h2>
+      <p>
+        The groups look and work as approved (G1–G11). Three review rounds found 9, 6 and 7 problems, all real. Round 3
+        still has three important ones, so by your rule the design is the question, not the code.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Round</th>
+            <th>Findings</th>
+            <th>What kind</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>9</td>
+            <td>Lifecycle (Discard left a frame), measuring (borders, pad 0), warnings scope</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>6</td>
+            <td>Measuring CSS values in JS (rem pads, inline wrappers), measured before the class applied</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>7</td>
+            <td>
+              A wrapper that turns <code>display: contents</code> at a breakpoint; host CSS on
+              <code>.cms-group</code> hiding a member makes the group draw and retire every frame (a loop); a group
+              wrapping list items; Discard-deleted fields rejoin after Done → Edit
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        <b>The pattern.</b> About half of the 22 findings share one cause: the chrome works out
+        <i>which fields are in a group</i> from the live page, on every repaint. It counts only fields that have a box
+        right now, re-reads the wrapper's display, and redraws when a field appears or vanishes. That makes groups
+        respond to the host's CSS, media queries and its own class, and every round finds a new way those interact. The
+        rule that drives it, "a group with fewer than two fields shown draws nothing", was mine (round 1), not one of
+        your rulings.
+      </p>
+
+      <h2>The options</h2>
+      <div class="options">
+        <div class="option">
+          <h3>A · Keep it live (today)</h3>
+          <p>Membership and the inline check are worked out from the rendered page on every paint.</p>
+          <h4>For the editor</h4>
+          <ul>
+            <li>A group whose second field is hidden at this width looks like a plain field.</li>
+          </ul>
+          <h4>For the site developer</h4>
+          <ul>
+            <li>Nothing to learn: any CSS works, in theory.</li>
+            <li>
+              In practice each combination (breakpoints, class-keyed rules, hidden fields) is a new edge, and the round
+              3 loop shows they can fight. Expect more rounds.
+            </li>
+          </ul>
+          <div class="preview">
+            <div class="site">
+              <h5 class="f">Our story</h5>
+              <p class="hidden">Subtitle hidden at this width</p>
+            </div>
+            <p class="cap">One field shown: drawn plain.</p>
+          </div>
+        </div>
+        <div class="option rec">
+          <h3>B · Decide once, from the markup<span class="tag">Recommended</span></h3>
+          <p>
+            Which fields form a group is decided when the chrome scans the page (and after a list swap or refresh): the
+            fields inside the wrapper, not inside a list, whose document the editor can still see. Layout never changes
+            membership. Repainting only places the frame and lines.
+          </p>
+          <h4>For the editor</h4>
+          <ul>
+            <li>
+              A group always looks like a group, even when one field is hidden at this width: the frame goes around the
+              wrapper, with no line next to a field that has no box.
+            </li>
+            <li>A field of a document Discard deleted leaves its group for good (it leaves the editor too).</li>
+          </ul>
+          <h4>For the site developer</h4>
+          <ul>
+            <li>
+              One documented rule: the wrapper is block-level (or inline-block) in edit mode. Checked at scan; a wrapper
+              that is inline or <code>contents</code> then is ignored with the warning (G11). Changing it later at a
+              breakpoint is unsupported, and the docs say so.
+            </li>
+            <li>
+              Fixes the round 3 loop and the breakpoint and Discard findings by construction; the list-items one is a
+              one-line scan check.
+            </li>
+          </ul>
+          <div class="preview">
+            <div class="site">
+              <div class="g">
+                <h5>Our story</h5>
+                <p class="hidden">Subtitle hidden at this width</p>
+              </div>
+            </div>
+            <p class="cap">Still a group: one frame, no line.</p>
+          </div>
+        </div>
+        <div class="option">
+          <h3>C · CSS outline only, no lines</h3>
+          <p>
+            The chrome only adds <code>cms-group</code> to the wrapper. CSS draws the frame as the wrapper's own
+            outline; there are no separators, so no geometry code at all.
+          </p>
+          <h4>For the editor</h4>
+          <ul>
+            <li>
+              <span class="bad">Changes the approved look</span>: no line between fields, so it's harder to tell where
+              one field ends. Hover still shows each field's box.
+            </li>
+          </ul>
+          <h4>For the site developer</h4>
+          <ul>
+            <li>Simplest and sturdiest. Still needs the block-level rule.</li>
+            <li>Lists keep their lines, so groups and lists would look different.</li>
+          </ul>
+          <div class="preview">
+            <div class="site">
+              <div class="g">
+                <h5>Our story</h5>
+                <p>Three bakers and one oven since 2009.</p>
+              </div>
+            </div>
+            <p class="cap">One outline, no line between.</p>
+          </div>
+        </div>
+      </div>
+
+      <h2>Recommendation</h2>
+      <p>
+        <b>B.</b> It keeps the approved look and every ruling, removes the cause of the recurring findings instead of
+        patching each one, and gives the site developer one rule to follow instead of an unknown set of CSS
+        interactions. The cost is one visible change: a group with a field hidden at some width keeps its frame.
+      </p>
+      <p class="muted">
+        Either way, the four round 3 nits (the list <code>:last-child</code> doc line, a right-border comment, the watch
+        releasing nodes after Done, and the Discard doc line) are plain fixes and go in the same push.
+      </p>
+    </div>
+  </body>
+</html>

@@ -3,7 +3,7 @@
 // crosses (docs/specs/artefacts/2026-11-list-editing.html). The host's elements are borrowed: the chrome adds
 // classes and its own `.cms-root` children, positions them only through custom properties (CSP-safe), and `detach`
 // takes every one of them back out.
-import { KEY_ID, element, isItemKey, uniqueId } from "./dom.ts";
+import { KEY_ID, addHostClass, element, isItemKey, removeHostClass, uniqueId } from "./dom.ts";
 import { splitAddress } from "./fields.ts";
 import { format, type Strings } from "./strings.ts";
 
@@ -223,9 +223,9 @@ function icon(name: ItemAction | "add"): SVGSVGElement {
   return svg;
 }
 
-const px = (value: number) => `${Math.round(value * 100) / 100}px`;
+export const px = (value: number) => `${Math.round(value * 100) / 100}px`;
 
-interface Box {
+export interface Box {
   l: number;
   r: number;
   t: number;
@@ -235,7 +235,7 @@ interface Box {
 /** The viewport as an origin: boxes in client coordinates, as a pointer event's are. */
 const VIEWPORT = { left: 0, top: 0 } as const;
 
-function boxOf(node: Element, origin: { left: number; top: number }): Box {
+export function boxOf(node: Element, origin: { left: number; top: number }): Box {
   const rect = node.getBoundingClientRect();
   return {
     l: rect.left - origin.left,
@@ -246,12 +246,59 @@ function boxOf(node: Element, origin: { left: number; top: number }): Box {
 }
 
 /**
+ * The box an absolutely positioned child is placed in: the padding box, in client coordinates. A host border moves it
+ * in from the border box `getBoundingClientRect` gives.
+ */
+export function paddingBox(node: HTMLElement): { left: number; top: number; width: number; height: number } {
+  const rect = node.getBoundingClientRect();
+  return {
+    left: rect.left + node.clientLeft,
+    top: rect.top + node.clientTop,
+    width: node.clientWidth,
+    height: node.clientHeight,
+  };
+}
+
+/**
+ * A real property's computed length (`border-left-width`, `outline-offset`), which a browser gives in px. Never a custom
+ * property: that computes to its unresolved token (`1rem`, `calc()`). 0 is a value; anything not in px (an empty value
+ * from an engine without the style) falls back.
+ */
+export function computedPixels(style: CSSStyleDeclaration, property: string, fallback: number): number {
+  const value = style.getPropertyValue(property).trim();
+  const parsed = value.endsWith("px") ? Number(value.slice(0, -2)) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** What a frame reaches past its host's padding box when it has no box to measure: `--cms-list-pad`'s 12px. */
+export const FRAME_PAD = 12;
+/** A frame's border when its style can't be read: `--cms-outline`'s 2px. */
+export const FRAME_BORDER = 2;
+
+/**
+ * How far `frame` is drawn outside `origin`, its host's padding box: the chrome's CSS sets its left edge at
+ * `calc(-1 * var(--cms-list-pad))`, so this is the pad as the browser resolved it. A frame with no box (an engine
+ * without layout) gives the fallback.
+ */
+export function framePad(frame: Element, origin: { left: number }): number {
+  const rect = frame.getBoundingClientRect();
+  return rect.width > 0 || rect.height > 0 ? origin.left - rect.left : FRAME_PAD;
+}
+
+/** The frame's border width on each side, from its computed style: a host may thicken one side only. */
+export function frameBorder(frame: Element): { left: number; right: number; top: number; bottom: number } {
+  const style = getComputedStyle(frame);
+  const side = (name: string) => computedPixels(style, `border-${name}-width`, FRAME_BORDER);
+  return { left: side("left"), right: side("right"), top: side("top"), bottom: side("bottom") };
+}
+
+/**
  * Lines between an item's fields, from the fields' boxes. A vertical line goes midway between two fields side by side
  * and runs the item's band, from the line above to the line below. A horizontal one goes midway between two stacked
  * fields and runs to the nearest vertical line, or the outline, on each side. Neighbours only: a pair with another
  * field between them gets no line.
  */
-function cellLines(fields: readonly Box[], edge: { left: number; right: number }) {
+export function cellLines(fields: readonly Box[], edge: { left: number; right: number }) {
   const overlapY = (a: Box, b: Box) => Math.min(a.b, b.b) - Math.max(a.t, b.t) > 1;
   const overlapX = (a: Box, b: Box) => Math.min(a.r, b.r) - Math.max(a.l, b.l) > 1;
   const xs: number[] = [];
@@ -282,7 +329,7 @@ function cellLines(fields: readonly Box[], edge: { left: number; right: number }
   return { vertical: xs, horizontal };
 }
 
-type Axis = "column" | "row" | "grid";
+export type Axis = "column" | "row" | "grid";
 
 interface Cell {
   row: HTMLElement;
@@ -293,11 +340,11 @@ interface Cell {
   box: Box;
 }
 
-interface Line {
+export interface Line<T = Cell> {
   top: number;
   bottom: number;
   /** Left to right. */
-  cells: Cell[];
+  cells: T[];
 }
 
 /**
@@ -321,7 +368,10 @@ function group<T extends { box: Box }>(all: readonly T[]): { top: number; bottom
   return lines;
 }
 
-function layOut(itemBoxes: readonly Box[], cells: readonly Cell[]): { lines: Line[]; axis: Axis } {
+export function layOut<T extends { box: Box }>(
+  itemBoxes: readonly Box[],
+  cells: readonly T[],
+): { lines: Line<T>[]; axis: Axis } {
   const across = group(itemBoxes.map((box) => ({ box })));
   const crowded = across.some((line) => line.cells.length > 1);
   const axis: Axis = !crowded ? "column" : across.length === 1 ? "row" : "grid";
@@ -354,23 +404,24 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
   const host = record.element;
   const { info, items } = record;
   const childTag = host.tagName === "UL" || host.tagName === "OL" ? "li" : "div";
-  const hadClass = host.hasAttribute("class");
   const added: Element[] = [];
-  const itemClasses: { node: HTMLElement; hadClass: boolean }[] = [];
+  /** The items this attach put `cms-item` on. */
+  const dressedItems: HTMLElement[] = [];
   const total = items.length;
   const full = info.max !== undefined && total >= info.max;
   const atMin = total <= info.min;
   const fullReason = format(strings.listFull, { max: info.max ?? 0, plural: info.plural });
   const minReason = format(strings.listAtMin, { min: info.min, noun: info.noun });
 
-  host.classList.add("cms-list");
+  addHostClass(host, "cms-list");
   const tag = element("span", { class: "cms-list__tag" }, [
     info.max === undefined
       ? format(strings.listTagNoMax, { label: info.label, count: total })
       : format(strings.listTag, { label: info.label, count: total, max: info.max }),
   ]);
   const frame = element(childTag, { class: "cms-root cms-list__frame", "aria-hidden": "true" }, [tag]);
-  host.prepend(frame);
+  // Appended, after the items and before the Add row: host `:first-child` rules keep matching the first item.
+  host.append(frame);
   added.push(frame);
 
   const toolbars: (HTMLElement | undefined)[] = [];
@@ -539,8 +590,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (!handlers.actions) {
       // Still a row of the grid: a band for its line and the tint, but nothing to act with.
       const band = element("span", { class: "cms-root cms-item__band", "aria-hidden": "true" });
-      itemClasses.push({ node: item.element, hadClass: item.element.hasAttribute("class") });
-      item.element.classList.add("cms-item");
+      dressedItems.push(item.element);
+      addHostClass(item.element, "cms-item");
       item.element.append(band);
       added.push(band);
       bands.push(band);
@@ -652,8 +703,8 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
       for (const node of buttons) node.tabIndex = node === event.target ? 0 : -1;
     });
     const band = element("span", { class: "cms-root cms-item__band", "aria-hidden": "true" });
-    itemClasses.push({ node: item.element, hadClass: item.element.hasAttribute("class") });
-    item.element.classList.add("cms-item");
+    dressedItems.push(item.element);
+    addHostClass(item.element, "cms-item");
     item.element.prepend(tools);
     item.element.append(band);
     added.push(tools, band);
@@ -704,12 +755,32 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     added.push(addRow);
   }
 
+  // The painter. Invariants:
+  // - Measurement policy (as in groups.ts): never parse a CSS length in JS; `--cms-list-pad` is never read. Boxes are
+  //   measured in the host's padding box (`paddingBox`), where the frame is positioned. Lines are laid out from the
+  //   items' border boxes; what is placed inside an item (its band, tools and field separators) is placed against that
+  //   item's own padding box, and its fields are measured from there, so an item border shifts nothing. The pad is the
+  //   frame's rect against that padding box (its `left` is -pad); the frame's border is its computed
+  //   `border-left-width` / `border-right-width` (real properties, so px). Only an unreadable value (a frame with no
+  //   box, an empty style: an engine without layout) takes the fallback.
+  // - Measure after styling: `cms-list` and the frame are on the host before the first paint, so host CSS keyed on
+  //   `.cms-list` is in every box a paint reads. The axis classes are set from the boxes a paint read; no chrome rule
+  //   keyed on them moves a box.
+  // - Nodes: the frame is appended to the host (after its items, before the Add row), so host `:first-child` rules
+  //   match the same item in edit mode. Each item's toolbar stays its first child: Tab reaches it before the item's
+  //   fields (#28).
+  // - Host classes on the list and its items go on and off through `addHostClass` / `removeHostClass` (dom.ts): an item
+  //   that is also a field gets its class attribute back as it was, whichever of the two lets go first.
+  // - `paint` is the only writer of separators, bands' and tools' positions and the axis classes; `schedule` coalesces
+  //   any number of requests into one paint per animation frame.
   const separators: HTMLElement[] = [];
   let axis: Axis = "column";
   const paint = () => {
     for (const node of separators.splice(0)) node.remove();
-    const origin = host.getBoundingClientRect();
-    const pad = Number.parseFloat(getComputedStyle(frame).getPropertyValue("--cms-list-pad")) || 12;
+    // Everything in the padding box, where the frame, bands and tools are positioned.
+    const origin = paddingBox(host);
+    const pad = framePad(frame, origin);
+    const border = frameBorder(frame);
     const cells: Cell[] = [
       ...items.map((item, index) => ({ row: item.element, band: bands[index], tools: toolbars[index], item: true })),
       ...(addRow ? [{ row: addRow, band: addBand, tools: undefined, item: false }] : []),
@@ -730,9 +801,9 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     const firstTop = (lines[0]?.top ?? 0) - lead;
     frame.style.setProperty("--cms-frame-top", px(firstTop));
     frame.style.setProperty("--cms-frame-height", px((lines.at(-1)?.bottom ?? 0) + pad - firstTop));
-    // Inside the outline's 2px border on each side.
-    const innerLeft = -pad + 2;
-    const innerRight = origin.width + pad - 2;
+    // Inside the outline's border on each side.
+    const innerLeft = -pad + border.left;
+    const innerRight = origin.width + pad - border.right;
     lines.forEach((line, lineIndex) => {
       const above = lineIndex === 0 ? lead : (halves[lineIndex - 1] ?? 0);
       const below = halves[lineIndex] ?? pad;
@@ -746,27 +817,36 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
         const right = next ? (box.r + next.box.l) / 2 : innerRight;
         const hasTop = lineIndex > 0;
         const hasLeft = at > 0;
+        // The band, tools and separators are the row's absolutely positioned children: placed in its padding box, which
+        // an item border moves in from the border box the lines were laid out from. Here in the host's padding box.
+        const own = paddingBox(row);
+        const inner = {
+          l: own.left - origin.left,
+          t: own.top - origin.top,
+          r: own.left - origin.left + own.width,
+          b: own.top - origin.top + own.height,
+        };
         band.classList.toggle("cms-item__band--top", hasTop);
         band.classList.toggle("cms-item__band--left", hasLeft);
-        band.style.setProperty("--cms-band-top", px(top - box.t));
-        band.style.setProperty("--cms-band-bottom", px(box.b - bottom));
-        band.style.setProperty("--cms-band-left", px(left - box.l));
+        band.style.setProperty("--cms-band-top", px(top - inner.t));
+        band.style.setProperty("--cms-band-bottom", px(inner.b - bottom));
+        band.style.setProperty("--cms-band-left", px(left - inner.l));
         band.style.setProperty("--cms-band-width", px(right - left));
         if (tools) {
-          // On the item's leading line: the top left in a row or grid, the top right of the outline in a column.
-          tools.style.setProperty("--cms-tools-above", px(box.t - top));
-          tools.style.setProperty("--cms-tools-right", axis === "column" ? px(origin.width - box.r) : "auto");
-          tools.style.setProperty("--cms-tools-left", axis === "column" ? "auto" : px(left + pad - box.l));
+          // On the item's leading line: the top left in a row or grid; in a column its right edge on the host's.
+          tools.style.setProperty("--cms-tools-above", px(inner.t - top));
+          tools.style.setProperty("--cms-tools-right", axis === "column" ? px(inner.r - origin.width) : "auto");
+          tools.style.setProperty("--cms-tools-left", axis === "column" ? "auto" : px(left + pad - inner.l));
         }
         if (!cell.item) return;
-        const itemOrigin = row.getBoundingClientRect();
+        const itemOrigin = { left: own.left, top: own.top };
         const fields = [...row.querySelectorAll("[data-edit-field]")]
           .filter((node) => node.closest(".cms-item") === row)
           .map((node) => boxOf(node, itemOrigin));
         // The cell's own top and left borders take a pixel; field lines start past them.
-        const lineTop = top - box.t + (hasTop ? 1 : 0);
-        const cellLeft = left - box.l + (hasLeft ? 1 : 0);
-        const cellRight = right - box.l;
+        const lineTop = top - inner.t + (hasTop ? 1 : 0);
+        const cellLeft = left - inner.l + (hasLeft ? 1 : 0);
+        const cellRight = right - inner.l;
         const inside = cellLines(fields, { left: cellLeft, right: cellRight });
         for (const x of inside.vertical) {
           const sep = element("span", { class: "cms-root cms-item__sep cms-item__sep--v", "aria-hidden": "true" });
@@ -817,13 +897,11 @@ export function attachList(record: ListRecord, strings: Strings, handlers: ListH
     if (frameRequest !== undefined) cancelAnimationFrame(frameRequest);
     for (const node of separators.splice(0)) node.remove();
     for (const node of added) node.remove();
-    for (const { node, hadClass: had } of itemClasses) {
-      node.classList.remove("cms-item", "cms-item--dragging");
+    for (const node of dressedItems) {
+      removeHostClass(node, "cms-item", "cms-item--dragging");
       node.removeAttribute("data-cms-open");
-      if (!had && node.classList.length === 0) node.removeAttribute("class");
     }
-    host.classList.remove("cms-list", "cms-list--row", "cms-list--grid");
-    if (!hadClass && host.classList.length === 0) host.removeAttribute("class");
+    removeHostClass(host, "cms-list", "cms-list--row", "cms-list--grid");
     record.detach = undefined;
     record.addButton = undefined;
     record.undoButton = undefined;

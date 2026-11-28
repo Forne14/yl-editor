@@ -51,6 +51,8 @@ export interface RenderOptions {
   lists?: boolean;
   /** Render the `pages/crew` keyed list, laid out as a row that wraps into a grid (`?rowlist=1`). */
   rowlist?: boolean;
+  /** Wrap the hero and the facts in field groups (`?groups=1`). */
+  groups?: boolean;
   /** Leave `richtext` to the default widget, the plain-text fallback, instead of `@yl/editor/richtext`. */
   richtextFallback?: boolean;
 }
@@ -58,6 +60,7 @@ export interface RenderOptions {
 export function renderPage(documents: PageDocuments, options: RenderOptions): string {
   const { editing } = options;
   const homeField = editable(editing ? "pages/home" : undefined);
+  const groupAttributes = options.groups ? attributes(homeField.group()) : "";
   const aboutField = editable(editing ? "pages/about" : undefined);
   const settingsField = editable(editing ? "settings/site" : undefined);
   const home = payloadOf(documents.home);
@@ -128,11 +131,11 @@ export function renderPage(documents: PageDocuments, options: RenderOptions): st
   </head>
   <body${bodyAttributes}>
     <main class="page">
-      <section class="hero" aria-labelledby="home-title">
+      <section class="hero" aria-labelledby="home-title"${groupAttributes}>
         <h1 id="home-title"${attributes(homeField("title", "text", { label: "Heading" }))}>${escapeHtml(text(home["title"]))}</h1>
         <div class="lede"${attributes(homeField("lede", "richtext", { label: "Lede", headings: [2, 3] }))}>${text(home["lede"])}</div>
       </section>
-      <dl class="facts">
+      <dl class="facts"${groupAttributes}>
         <dt>Open</dt>
         <dd id="home-live"${attributes(homeField("live", "toggle", { label: "Open" }))}>${home["live"] === true ? "Live" : "Off"}</dd>
         <dt>Status</dt>

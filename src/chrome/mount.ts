@@ -17,6 +17,7 @@ import {
   type ItemRecord,
   type ListRecord,
 } from "./lists.ts";
+import { attachGroup, createOutlineWatch, createWarnings, scanGroups, type GroupRecord } from "./groups.ts";
 import { ChangesUnavailableError, Session, type Review, type SaveSlot } from "./session.ts";
 import { defaultStrings, format, type Strings } from "./strings.ts";
 import type {
@@ -165,6 +166,14 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let fields: FieldRecord[] = [];
   let byElement = new Map<HTMLElement, FieldRecord>();
   let lists: ListRecord[] = [];
+  let groups: GroupRecord[] = [];
+  /** The groups' console warnings, once per element per mount. */
+  const groupWarnings = createWarnings();
+  /**
+   * Fields whose document the editor doesn't have (the server doesn't know it, or Discard deleted it): never a group's
+   * members. Set with their reason, by `dressRecord` and Discard; weak, so a record a rescan dropped isn't held.
+   */
+  const withoutDocument = new WeakSet<FieldRecord>();
   /** A field's emptied state, kept for an element that left the page, in case Undo puts it back. */
   const clearedOf = new WeakMap<HTMLElement, FieldRecord["cleared"]>();
   /** The reason fields are locked after the last load failed, until one succeeds. */
@@ -228,6 +237,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
    */
   let opening: { record: FieldRecord; ticket: number } | undefined;
   let editing = true;
+  /** Warns when two dashed outlines cross; quiet while not editing. */
+  const outlines = createOutlineWatch(scanRoot, () => editing);
   let destroyed = false;
   let openTicket = 0;
   /** The toast that reported the last failed load, hidden once a load succeeds. */
@@ -535,6 +546,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     if (next) {
       for (const record of fields) attachRecord(record);
       for (const list of lists) attachListRecord(list);
+      attachGroups();
       enterButton.blur();
     } else {
       openTicket += 1;
@@ -544,13 +556,34 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       badge.hide();
       for (const record of fields) record.detach?.();
       for (const list of lists) list.detach?.();
+      for (const group of groups) group.detach?.();
+      // Not editing: this check watches nothing, so the watch lets go of every outline it held.
+      outlines.check();
       enterButton.focus();
     }
   }
 
+  /**
+   * Decides every group's members from the fields the chrome dresses now and draws it, and queues the crossing check.
+   * The only place membership changes (G12): a field whose document the editor no longer has isn't a member.
+   */
+  function attachGroups(): void {
+    // A group that is drawn, goes or changes members moves outlines: one scheduled check per change.
+    const recheck = () => outlines.schedule();
+    const memberOf = (element: HTMLElement) => {
+      const record = byElement.get(element);
+      return record && withoutDocument.has(record) ? undefined : record;
+    };
+    for (const group of groups) attachGroup(group, memberOf, groupWarnings, recheck);
+    outlines.schedule();
+  }
+
+  /** Dresses a field and shows its slot's state, which may have changed while it was undressed (a save after Done). */
   function attachRecord(record: FieldRecord): void {
     descriptions.append(record.description);
     attach(record, strings.pressEnterToEdit);
+    const state = session.slot(record.info.key, record.info.path).state;
+    if (state !== "idle") showState(record, state);
   }
 
   /**
@@ -952,14 +985,16 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of added) {
       dressRecord(record);
-      // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state.
+      // The page renders what is stored. A value still on its way or failed is the editor's, and so is its state, which
+      // `dressRecord` showed if it dressed the field.
       const committed = session.committedValue(record.info.key, record.info.path);
       if (committed) render(record, committed.value);
-      const state = session.slot(record.info.key, record.info.path).state;
-      if (state !== "idle") showState(record, state);
     }
     // Swaps take outermost lists, and a rearranged list holds none with chrome, so only the new records need dressing.
     if (editing) for (const list of addedLists) attachListRecord(list);
+    // The swap moved what is around the groups: decide them again (which looks for crossings), or just look.
+    if (editing) attachGroups();
+    else outlines.schedule();
     updateBar();
   }
 
@@ -2431,8 +2466,12 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             record.detach?.();
             record.editable = false;
             record.reason = strings.unknownDocument;
+            withoutDocument.add(record);
           }
           session.documents.delete(key);
+          // Its fields left the editor: the groups are decided again (one left with fewer than two members goes), and
+          // the crossing check is queued.
+          if (!destroyed && editing) attachGroups();
         }
         updateBar();
         return written;
@@ -2487,17 +2526,22 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   function scan(): void {
     for (const record of fields) record.detach?.();
     for (const list of lists) list.detach?.();
+    for (const group of groups) group.detach?.();
     const previous = byElement;
     fields = scanFields(scanRoot);
     byElement = new Map(fields.map((record) => [record.element, record]));
     for (const record of fields) record.cleared = previous.get(record.element)?.cleared;
     lists = scanLists(scanRoot);
+    groups = scanGroups(scanRoot, groupWarnings);
   }
 
   /** Marks each field editable or locked from what the session knows, and dresses fields and lists while editing. */
   function dress(): void {
     for (const record of fields) dressRecord(record);
-    if (editing) for (const list of lists) attachListRecord(list);
+    if (editing) {
+      for (const list of lists) attachListRecord(list);
+      attachGroups();
+    }
     updateBar();
   }
 
@@ -2511,6 +2555,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         : state
           ? strings.notEditable
           : strings.unknownDocument;
+    if (!loadError && !state) withoutDocument.add(record);
+    else withoutDocument.delete(record);
     if (editing) attachRecord(record);
   }
 
@@ -2573,6 +2619,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
       toast.cancelAnnounce();
       for (const record of fields) record.detach?.();
       for (const list of lists) list.detach?.();
+      for (const group of groups) group.detach?.();
+      outlines.destroy();
       for (const removal of removals) clearTimeout(removal.timer);
       disposer.dispose();
       chrome.remove();

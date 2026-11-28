@@ -4,6 +4,32 @@
 type Attributes = Record<string, string | boolean | undefined>;
 type Child = Node | string | null | undefined | false;
 
+// Classes on host markup. Invariants:
+// - Every chrome class on a host element (a field, a list, an item, a group wrapper) goes on through `addHostClass` and
+//   comes off through `removeHostClass`. One element can be dressed by more than one part (an item that is also a
+//   field), each letting go in its own order, so whether the class attribute was the host's is decided once, by the
+//   first add, and kept here per element, not per part.
+// - The attribute is removed only when the chrome created it and no class is left on it; then the element is forgotten,
+//   so a later add decides afresh; an add that finds an empty `class=""` also decides afresh (the host emptied it). The host's own attribute (even `class=""`) is never removed.
+// - Weak: an element that left the page isn't held. Bounded by the host elements the chrome has dressed and not let go.
+const classAttributeIsOurs = new WeakSet<Element>();
+
+/** Adds chrome classes to a host element, remembering whether its class attribute was the host's. */
+export function addHostClass(node: Element, ...names: string[]): void {
+  if (!node.hasAttribute("class")) classAttributeIsOurs.add(node);
+  // An empty attribute with no chrome class on it is the host's now (it emptied what we left): a later remove keeps it.
+  else if (node.classList.length === 0) classAttributeIsOurs.delete(node);
+  node.classList.add(...names);
+}
+
+/** Takes chrome classes back off a host element; the class attribute goes too if the chrome made it and it is empty. */
+export function removeHostClass(node: Element, ...names: string[]): void {
+  node.classList.remove(...names);
+  if (node.classList.length > 0 || !classAttributeIsOurs.has(node)) return;
+  node.removeAttribute("class");
+  classAttributeIsOurs.delete(node);
+}
+
 export function element<Tag extends keyof HTMLElementTagNameMap>(
   tag: Tag,
   attributes: Attributes = {},

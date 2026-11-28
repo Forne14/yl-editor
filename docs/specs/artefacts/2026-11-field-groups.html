@@ -1,0 +1,1348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Field groups</title>
+    <style>
+      /* ==========================================================================================================
+         1. COPIED FROM src/chrome/chrome.css: tokens, the plain field outline and its states, the badge, the list
+            frame, tag, separators and inset field states. Unchanged except that tokens also sit on .cms-group so the
+            proposed group frame can use them. Self-contained so it still opens when the repo moves.
+         ========================================================================================================== */
+      :where(.cms-root, .cms-field, .cms-group) {
+        --cms-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        --cms-size-sm: 0.8125rem;
+        --cms-size-md: 0.9375rem;
+        --cms-line: 1.4;
+        --cms-bg: #ffffff;
+        --cms-fg: #16181d;
+        --cms-muted: #5b6170;
+        --cms-border: #d5d8e0;
+        --cms-accent: #2557d6;
+        --cms-accent-fg: #ffffff;
+        --cms-danger: #b42318;
+        --cms-success: #1f7a45;
+        --cms-warning: #a15c07;
+        --cms-outline: 2px dashed #2557d6;
+        --cms-radius: 6px;
+        --cms-space-1: 4px;
+        --cms-space-2: 8px;
+        --cms-space-3: 12px;
+        --cms-space-4: 16px;
+        --cms-space-5: 24px;
+        --cms-z: 1000;
+        --cms-list-pad: 12px;
+        --cms-list-line: thin dashed var(--cms-accent);
+        --cms-list-tint: color-mix(in srgb, var(--cms-accent) 7%, transparent);
+      }
+      :root[data-theme="dark"] :where(.cms-root, .cms-field, .cms-group) {
+        --cms-bg: #1b1d24;
+        --cms-fg: #f3f4f8;
+        --cms-muted: #aab0bf;
+        --cms-border: #3a3e4a;
+        --cms-accent: #6b9bff;
+        --cms-accent-fg: #0b1020;
+        --cms-danger: #ff8a7a;
+        --cms-success: #5fd394;
+        --cms-warning: #f0b429;
+        --cms-outline: 2px dashed #6b9bff;
+      }
+
+      :where(.cms-field) {
+        outline: var(--cms-outline);
+        outline-offset: var(--cms-space-1);
+        border-radius: var(--cms-radius);
+        cursor: text;
+      }
+      :where(.cms-field:hover, .cms-field:focus-visible) {
+        outline-color: var(--cms-fg);
+      }
+      :where(.cms-field--editing) {
+        outline-style: solid;
+        outline-color: var(--cms-accent);
+      }
+      :where(.cms-field--locked) {
+        outline-color: var(--cms-muted);
+        cursor: not-allowed;
+      }
+      :where(.cms-field--saving) {
+        outline-color: var(--cms-warning);
+      }
+      :where(.cms-field--failed) {
+        outline-style: solid;
+        outline-color: var(--cms-danger);
+      }
+
+      /* The badge: fixed in the chrome; absolute here so it sits inside each demo frame. */
+      :where(.cms-badge) {
+        position: absolute;
+        top: var(--cms-badge-top, 0);
+        left: var(--cms-badge-left, 0);
+        z-index: var(--cms-z);
+        transform: translateY(calc(-100% - var(--cms-space-1)));
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-sm);
+        line-height: var(--cms-line);
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      :where(.cms-badge--locked) {
+        background: var(--cms-muted);
+        color: var(--cms-bg);
+      }
+
+      /* ==========================================================================================================
+         2. PROPOSED: .cms-group. The list frame's rules, reused. One dashed outline (.cms-group__frame), padded by
+            --cms-list-pad like a list; thin dashed separators (.cms-group__sep) halfway between neighbouring fields;
+            fields inside lose their own outline and their states are solid and inset, exactly as in a list item.
+         ========================================================================================================== */
+      :where(.cms-group) {
+        position: relative;
+      }
+      :where(.cms-group__frame) {
+        position: absolute;
+        inset: calc(-1 * var(--cms-list-pad));
+        border: var(--cms-outline);
+        border-radius: var(--cms-radius);
+        pointer-events: none;
+      }
+      :where(.cms-group--locked) > .cms-group__frame {
+        border-color: var(--cms-muted);
+      }
+      :where(.cms-group__tag) {
+        position: absolute;
+        top: 0;
+        left: var(--cms-list-pad);
+        z-index: 2;
+        transform: translateY(-50%);
+        padding: var(--cms-space-1) var(--cms-space-2);
+        border-radius: var(--cms-radius);
+        background: var(--cms-accent);
+        color: var(--cms-accent-fg);
+        font-family: var(--cms-font);
+        font-size: var(--cms-size-sm);
+        line-height: var(--cms-line);
+        white-space: nowrap;
+      }
+      :where(.cms-group__sep) {
+        position: absolute;
+        top: var(--cms-sep-top);
+        left: var(--cms-sep-x);
+        pointer-events: none;
+      }
+      :where(.cms-group__sep--h) {
+        width: var(--cms-sep-length);
+        border-top: var(--cms-list-line);
+      }
+      :where(.cms-group__sep--v) {
+        height: var(--cms-sep-length);
+        border-left: var(--cms-list-line);
+      }
+      :where(.cms-group .cms-field) {
+        outline: none;
+      }
+      :where(.cms-group .cms-field:hover) {
+        outline: thin solid var(--cms-fg);
+        outline-offset: calc(-1 * var(--cms-space-1) / 4);
+      }
+      :where(.cms-group .cms-field--editing, .cms-group .cms-field--saving, .cms-group .cms-field--failed) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: calc(-1 * var(--cms-space-1) / 2);
+      }
+      :where(.cms-group .cms-field--saving) {
+        outline-color: var(--cms-warning);
+      }
+      :where(.cms-group .cms-field--failed) {
+        outline-color: var(--cms-danger);
+      }
+      :where(.cms-group .cms-field--locked) {
+        cursor: not-allowed;
+      }
+      :where(.cms-group .cms-field--locked:hover) {
+        outline: thin dashed var(--cms-muted);
+      }
+      :where(.cms-group .cms-field:focus-visible) {
+        outline: medium solid var(--cms-accent);
+        outline-offset: calc(-3 * var(--cms-space-1) / 4);
+      }
+
+      /* ==========================================================================================================
+         3. THE DEMO SITE (examples/demo/public/site.css) and this page's own layout. Not the editor's.
+         ========================================================================================================== */
+      :root {
+        color-scheme: light;
+        --page-bg: #f4f5f7;
+        --page-fg: #16181d;
+        --page-muted: #5b6170;
+        --card: #ffffff;
+        --card-border: #d5d8e0;
+        --rec: #1f7a45;
+        --code-bg: #eceef2;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --page-bg: #111217;
+        --page-fg: #f3f4f8;
+        --page-muted: #aab0bf;
+        --card: #1b1d24;
+        --card-border: #3a3e4a;
+        --rec: #5fd394;
+        --code-bg: #262934;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--page-bg);
+        color: var(--page-fg);
+        font:
+          15px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      .doc {
+        max-width: 64rem;
+        margin: 0 auto;
+        padding: 2rem 1rem 6rem;
+      }
+      .doc > header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      h1.doc-title {
+        margin: 0 0 0.25rem;
+        font-size: 1.75rem;
+      }
+      .doc-sub {
+        margin: 0;
+        color: var(--page-muted);
+      }
+      h2.doc-h {
+        margin: 3rem 0 0.5rem;
+        font-size: 1.25rem;
+      }
+      .doc p,
+      .doc li {
+        max-width: 46rem;
+      }
+      .muted {
+        color: var(--page-muted);
+      }
+      code {
+        padding: 0.1em 0.3em;
+        border-radius: 4px;
+        background: var(--code-bg);
+        font-size: 0.875em;
+      }
+      pre {
+        overflow-x: auto;
+        margin: 0.75rem 0;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        background: var(--code-bg);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+      }
+      .theme-btn {
+        min-height: 44px;
+        padding: 0 1rem;
+        border: 1px solid var(--card-border);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--page-fg);
+        font: inherit;
+        cursor: pointer;
+      }
+      .theme-btn:focus-visible {
+        outline: 2px solid #2557d6;
+        outline-offset: 2px;
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+      .frame {
+        position: relative;
+        padding: 1.5rem 1.75rem 2rem;
+        border: 1px solid var(--card-border);
+        border-radius: 10px;
+        background: var(--card);
+      }
+      .frame-label {
+        display: block;
+        margin: 0 0 1.75rem;
+        color: var(--page-muted);
+        font-size: 0.8125rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .frame-label b {
+        color: var(--page-fg);
+      }
+      .bad {
+        color: #b42318;
+      }
+      :root[data-theme="dark"] .bad {
+        color: #ff8a7a;
+      }
+
+      /* The demo site, copied from examples/demo/public/site.css. */
+      .site {
+        font-family: Georgia, "Times New Roman", serif;
+        line-height: 1.5;
+      }
+      .site h1 {
+        margin: 0 0 0.25rem;
+        font-size: 2rem;
+        line-height: 1.2;
+      }
+      .site h2 {
+        margin: 0 0 0.25rem;
+        font-size: 1.4rem;
+      }
+      .site p {
+        margin: 0;
+      }
+      .lede {
+        font-size: 1.25rem;
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.5rem 1.5rem;
+        margin: 2rem 0 0;
+      }
+      .facts dt {
+        font-weight: bold;
+      }
+      .facts dd {
+        margin: 0;
+      }
+      .byline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+        margin-top: 0.5rem;
+        font-size: 0.875rem;
+      }
+      .mock-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem 1.5rem;
+      }
+      .mock-gap {
+        margin: 3rem 0 2.5rem;
+      }
+      /* G8 B: the honoured group's frame drawn just inside the item's cell. */
+      .mock-row > .cms-group__frame {
+        inset: -3px -6px;
+      }
+      .mock-row {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 1.5rem;
+      }
+      .byline--nested {
+        margin-top: 1.5rem;
+      }
+      .site p.near {
+        margin-top: 0.75rem;
+      }
+      .prox-byline {
+        margin-top: 1.25rem;
+      }
+      .site .stack + .stack {
+        margin-top: 2.75rem;
+      }
+
+      .states {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+      .state {
+        padding: 2.25rem 1.5rem 1.5rem;
+        border: 1px solid var(--card-border);
+        border-radius: 10px;
+        background: var(--card);
+      }
+      .state figcaption {
+        margin-top: 1.5rem;
+        color: var(--page-muted);
+        font-size: 0.8125rem;
+      }
+      .state figcaption b {
+        display: block;
+        color: var(--page-fg);
+      }
+
+      .options {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+      .option {
+        display: flex;
+        flex-direction: column;
+        padding: 1.25rem;
+        border: 1px solid var(--card-border);
+        border-radius: 10px;
+        background: var(--card);
+      }
+      .option h3 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+      .option.rec {
+        border: 2px solid var(--rec);
+      }
+      .rec-tag {
+        display: inline-block;
+        margin-left: 0.4rem;
+        padding: 0 0.4rem;
+        border-radius: 4px;
+        background: var(--rec);
+        color: var(--card);
+        font-size: 0.75rem;
+        font-weight: 700;
+        vertical-align: 0.1em;
+      }
+      .option ul {
+        margin: 0.5rem 0 0;
+        padding-left: 1.1rem;
+      }
+      .option .preview {
+        margin-top: auto;
+        padding-top: 2.25rem;
+      }
+      .rulings {
+        margin-top: 1rem;
+        border-collapse: collapse;
+        width: 100%;
+      }
+      .rulings th,
+      .rulings td {
+        padding: 0.6rem 0.75rem;
+        border-top: 1px solid var(--card-border);
+        text-align: left;
+        vertical-align: top;
+      }
+      .rulings th {
+        width: 3rem;
+      }
+      .resize-demo {
+        overflow: hidden;
+        resize: horizontal;
+        min-width: 14rem;
+        max-width: 100%;
+        width: 34rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="doc">
+      <header>
+        <div>
+          <h1 class="doc-title">Field groups</h1>
+          <p class="doc-sub">
+            #44 · Chrome: group close plain fields in one outline (no overlapping dashed outlines). Prototype; all
+            rulings made 2026-11-28.
+          </p>
+        </div>
+        <button type="button" class="theme-btn" id="theme" aria-pressed="false">Dark theme</button>
+      </header>
+
+      <p>
+        Your rule from 2026-11-11: <b>no overlapping dashed outlines</b>. Lists already follow it (#28): one outline,
+        thin dashed lines between items and fields. Plain fields outside lists still get one outline each, and on the
+        demo page those cross. This page proposes the same treatment for plain fields. G1–G4 are ruled; G5–G10 come from
+        walking through the build and are asked, each with what it looks like. Everything below is live: hover, click
+        and Tab through the fields.
+      </p>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">1 · Today and proposed</h2>
+      <p class="muted">
+        The demo's hero (heading over a rich text lede) and its facts list. Each outline sits 4px outside its field, so
+        two fields closer than about 12px have outlines that touch or cross.
+      </p>
+      <div class="pair">
+        <div class="frame">
+          <span class="frame-label"><b>Today</b> · <span class="bad">outlines cross</span></span>
+          <div class="site">
+            <div class="stack">
+              <h1 class="cms-field" tabindex="0" data-label="Heading">Fresh bread daily</h1>
+              <p class="lede cms-field" tabindex="0" data-label="Lede">Sourdough, rye and seeded loaves from 7am.</p>
+            </div>
+            <div class="stack">
+              <dl class="facts">
+                <dt>Open</dt>
+                <dd class="cms-field" tabindex="0" data-label="Open">Live</dd>
+                <dt>Status</dt>
+                <dd class="cms-field" tabindex="0" data-label="Status">Taking orders</dd>
+                <dt>Price</dt>
+                <dd class="cms-field" tabindex="0" data-label="Price">4.50</dd>
+                <dt>Next bake</dt>
+                <dd class="cms-field" tabindex="0" data-label="Next bake">14 Nov</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+        <div class="frame">
+          <span class="frame-label"><b>Proposed</b> · one outline per group</span>
+          <div class="site">
+            <div class="stack cms-group" data-group>
+              <h1 class="cms-field" tabindex="0" data-label="Heading">Fresh bread daily</h1>
+              <p class="lede cms-field" tabindex="0" data-label="Lede">Sourdough, rye and seeded loaves from 7am.</p>
+            </div>
+            <div class="stack cms-group" data-group>
+              <dl class="facts">
+                <dt>Open</dt>
+                <dd class="cms-field" tabindex="0" data-label="Open">Live</dd>
+                <dt>Status</dt>
+                <dd class="cms-field" tabindex="0" data-label="Status">Taking orders</dd>
+                <dt>Price</dt>
+                <dd class="cms-field" tabindex="0" data-label="Price">4.50</dd>
+                <dt>Next bake</dt>
+                <dd class="cms-field" tabindex="0" data-label="Next bake">14 Nov</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
+      <ul>
+        <li>
+          The group's outline is the list frame: the same dashed border and the same 12px padding
+          (<code>--cms-list-pad</code>). Lines run halfway between neighbouring fields, across the whole outline, so a
+          facts row's line also passes under its label.
+        </li>
+        <li>
+          The axis is read from the boxes, as for lists: fields stacked get horizontal lines, fields side by side get
+          vertical ones (the byline in section 2), a wrapping row gets both.
+        </li>
+        <li>
+          Inside a group, hover, editing and focus look exactly like a field in a list item: thin solid on hover, medium
+          solid accent when editing or focused, drawn inside the field. The badge is today's badge.
+        </li>
+        <li>Fields not in a group keep today's look. A group of one field is drawn as a plain field.</li>
+      </ul>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">2 · States inside a group</h2>
+      <p class="muted">
+        Static copies, each with the second field in the named state. The badge shows on hover and focus.
+      </p>
+      <div class="states" id="states"></div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">3 · Ruling G1: how a group is declared</h2>
+      <div class="options">
+        <div class="option">
+          <h3>A · A wrapper attribute</h3>
+          <p>
+            The host marks the element that holds the fields. Every field inside it (not inside a list) is one group.
+          </p>
+          <pre>&lt;section data-edit-group&gt;
+  &lt;h2 ${attrs(about("title"))}&gt;…&lt;/h2&gt;
+  &lt;p ${attrs(about("body"))}&gt;…&lt;/p&gt;
+&lt;/section&gt;
+<span class="muted">// or ${attrs(editable.group())}</span></pre>
+          <ul>
+            <li>Predictable: the outline is where the host put it, at every width.</li>
+            <li>New public surface: <code>data-edit-group</code> and a helper on <code>editable()</code>.</li>
+            <li>A host that forgets it gets today's crossing outlines, so A comes with the warning below.</li>
+          </ul>
+        </div>
+        <div class="option">
+          <h3>B · Found from proximity</h3>
+          <p>
+            The chrome groups any fields whose outlines would touch or cross, and draws one frame around their union.
+          </p>
+          <ul>
+            <li>No host work.</li>
+            <li>
+              Groups change with the layout: drag the corner of the box below. Wide, the author and date have an outline
+              each; narrow enough to wrap, they join and a frame appears around them.
+            </li>
+            <li>
+              The union of two far-apart fields can cover markup of the host that isn't editable (an image, a button)
+              and the frame can cross a list's frame.
+            </li>
+          </ul>
+          <div class="preview">
+            <div class="frame resize-demo" id="proximity">
+              <span class="frame-label">Drag the corner →</span>
+              <div class="site" id="proximity-site">
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="byline prox-byline">
+                  <span class="cms-field" tabindex="0" data-label="Author">Maya Okafor</span>
+                  <span class="cms-field" tabindex="0" data-label="Date">14 Nov 2026</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option rec">
+          <h3>C · Attribute, plus a warning<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            A, and on mount the chrome checks the outlines of fields left ungrouped. When two would cross,
+            <code>console.warn</code> names both fields and suggests <code>data-edit-group</code>. Nothing on screen
+            changes.
+          </p>
+          <pre>
+[yl-editor] Outlines of
+"pages/home/title" and
+"pages/home/lede" cross.
+Wrap them in an element
+with data-edit-group.</pre>
+          <ul>
+            <li>The host finds the problem in development, as with an unkeyed list item today.</li>
+            <li>Checked once per mount and on resize; no layout cost while editing.</li>
+          </ul>
+          <p class="muted">What the warning checks is G10.</p>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">4 · Ruling G2: does a group carry a tag?</h2>
+      <p class="muted">Lists have a tag on their top edge ("Artists · 3 of 6"). A group has no count.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · No tag; each field keeps its badge<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            Hovering or focusing a field shows its badge, as today. The frame says "these belong together"; the badge
+            says which one you're on. No new text. The badge sits just above its field, so it covers the line above it,
+            as it does in a list item today.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <p class="cms-field" tabindex="0" data-label="About text">Three bakers and one oven since 2009.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · A tag when the host names the group</h3>
+          <p>
+            <code>editable.group({ label: "About" })</code> puts a tag on the top edge, like a list. Unnamed groups have
+            none. Field badges still show on hover. Two labels can be on screen at once.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group data-tag="About">
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <p class="cms-field" tabindex="0" data-label="About text">Three bakers and one oven since 2009.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">5 · Ruling G3: a locked field inside a group</h2>
+      <p class="muted">
+        A group can hold fields of several documents (a heading from <code>pages/home</code>, a footer line from
+        <code>settings/site</code>), so one field can be locked while the others aren't. Today a locked field's outline
+        is muted.
+      </p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · Frame stays accent; the locked field is marked<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            The frame is muted only when every field in it is locked. A locked field shows a thin muted dashed outline
+            on hover and its muted badge with the reason, as today. Clicking it shows the reason as a toast.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <p
+                  class="cms-field cms-field--locked"
+                  tabindex="0"
+                  data-label="Footer · read only for your role"
+                  data-locked
+                >
+                  © 2026 The Bakehouse
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Locked fields are never grouped</h3>
+          <p>
+            The chrome leaves a locked field out of its group and gives it its own muted outline. Simpler to read, but
+            the muted outline is back next to the group's and they can cross, which is what the ticket removes.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+              </div>
+              <p
+                class="cms-field cms-field--locked"
+                tabindex="0"
+                data-label="Footer · read only for your role"
+                data-locked
+              >
+                © 2026 The Bakehouse
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">6 · Ruling G4: groups and lists</h2>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · A list is never inside a group<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            Fields inside a <code>data-edit-list</code> belong to the list, never to a group around it. What happens to
+            a group whose wrapper holds a list is G5; a group inside a group is G7. (The first draft said "innermost
+            wins" and "lines stop at the list's frame"; both still drew a dashed outline around another, so they are
+            replaced by G5 and G7.)
+          </p>
+        </div>
+        <div class="option">
+          <h3>B · A group may wrap a list</h3>
+          <p>
+            The list's frame is drawn inside the group's frame. That is a dashed outline inside a dashed outline: the
+            nesting #28 ruled out (D1).
+          </p>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">7 · Ruling G5: a group wrapper that holds a list</h2>
+      <p class="muted">
+        The host wraps a heading, a list and a closing line in one <code>data-edit-group</code>. By G4 the list's fields
+        stay the list's. What is left of the group?
+      </p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · The group is dropped<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            Its fields get plain outlines, as if the attribute weren't there, and <code>console.warn</code> names the
+            wrapper. No dashed outline goes around another.
+          </p>
+          <pre>
+[yl-editor] data-edit-group on
+&lt;section.about&gt; holds a list
+(pages/team/list:members).
+The group is ignored.</pre>
+          <div class="preview">
+            <div class="site">
+              <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+              <div class="mock-gap">
+                <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                  <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                  <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                  <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                  <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+                </div>
+              </div>
+              <p class="cms-field" tabindex="0" data-label="Closing line">Come and say hello.</p>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · The frame shrinks to the group's own fields</h3>
+          <p>
+            The frame goes around just the heading and the closing line. When they sit above and below the list, that
+            box contains the list, so its frame is drawn around the list's frame: the nesting the rule forbids. It only
+            works when the group's fields are all on one side of the list.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group data-frame="fields">
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="mock-gap">
+                  <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                    <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                    <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                    <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                    <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+                  </div>
+                </div>
+                <p class="cms-field" tabindex="0" data-label="Closing line">Come and say hello.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">8 · Ruling G6: what the frame goes around</h2>
+      <p class="muted">The wrapper can hold markup that isn't editable, like the facts list's labels.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · The wrapper's box<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            The frame is the wrapper element's box plus the 12px padding, as a list's frame is its host's. Labels, icons
+            or an image inside the wrapper sit inside the frame, and lines run its full width. The host decides the
+            frame by choosing the wrapper.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <dl class="facts">
+                  <dt>Open</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Open">Live</dd>
+                  <dt>Status</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Status">Taking orders</dd>
+                  <dt>Price</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Price">4.50</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Only the fields' boxes</h3>
+          <p>
+            The frame is the smallest box around the fields. Here the labels fall outside and the lines no longer pass
+            under them, so a row's label and value look split. The frame moves whenever a value's length changes.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group data-frame="fields">
+                <dl class="facts">
+                  <dt>Open</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Open">Live</dd>
+                  <dt>Status</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Status">Taking orders</dd>
+                  <dt>Price</dt>
+                  <dd class="cms-field" tabindex="0" data-label="Price">4.50</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">9 · Ruling G7: a group inside another group</h2>
+      <p class="muted">A section is a group, and its byline is wrapped in a group of its own.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · The outermost group wins<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            The inner wrapper's fields join the outer group: one frame, a line under the heading, a line between author
+            and date. <code>console.warn</code> names the inner wrapper as ignored.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="byline">
+                  <span class="cms-field" tabindex="0" data-label="Author">Maya Okafor</span>
+                  <span class="cms-field" tabindex="0" data-label="Date">14 Nov 2026</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · The innermost group wins</h3>
+          <p>
+            Each group draws its own frame, so the byline's frame sits inside the section's: a dashed outline inside a
+            dashed outline.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <div class="byline byline--nested cms-group" data-group>
+                  <span class="cms-field" tabindex="0" data-label="Author">Maya Okafor</span>
+                  <span class="cms-field" tabindex="0" data-label="Date">14 Nov 2026</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">10 · Ruling G8: <code>data-edit-group</code> inside a list item</h2>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · Ignored, with a warning<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            The item already draws a line between each of its fields, so the list looks exactly as it does today.
+            <code>console.warn</code> names the wrapper.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Honoured</h3>
+          <p>
+            A frame is drawn inside the item's cell, around two of its fields: an outline inside the list's outline.
+          </p>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group mock-list" data-group data-tag="Team · 2 of 2">
+                <div class="cms-group mock-row" data-group>
+                  <p class="cms-field" tabindex="0" data-label="Name">Ama</p>
+                  <p class="cms-field" tabindex="0" data-label="Role">Head baker</p>
+                </div>
+                <p class="cms-field" tabindex="0" data-label="Name">Jon</p>
+                <p class="cms-field" tabindex="0" data-label="Role">Pastry</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">11 · Ruling G9: the helper (public surface)</h2>
+      <p class="muted">Nothing changes on screen; this is what a site developer writes.</p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · On the document's helper, like <code>.list()</code><span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <pre>
+const about = editable(
+  editing ? "pages/about" : undefined,
+);
+
+&lt;section ${attrs(about.group())}&gt;
+  &lt;h2 ${attrs(about("title", "text"))}&gt;…
+  &lt;p ${attrs(footer("line", "text"))}&gt;…
+&lt;/section&gt;</pre>
+          <ul>
+            <li>
+              Renders <code>data-edit-group</code> only in edit mode, like every other helper, so visitors never get the
+              attribute.
+            </li>
+            <li>
+              It hangs off one document's helper, but the group can hold fields of any document (the footer line above).
+              The docs say so.
+            </li>
+          </ul>
+        </div>
+        <div class="option">
+          <h3>B · A static <code>editable.group()</code></h3>
+          <pre>&lt;section ${attrs(editing ? editable.group() : {})}&gt;</pre>
+          <ul>
+            <li>Not tied to a document.</li>
+            <li>
+              It can't know whether the page is in edit mode, so the host writes the condition or ships the attribute to
+              every visitor.
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">12 · Ruling G10: what the warning (G1 C) checks</h2>
+      <p class="muted">
+        A group frame sits 12px outside its wrapper, so a plain field just below it can have an outline that crosses the
+        frame.
+      </p>
+      <div class="options">
+        <div class="option rec">
+          <h3>A · Any two dashed outlines that cross<span class="rec-tag">Ruled 2026-11-28</span></h3>
+          <p>
+            Field and field, field and group frame, field and list frame, group and list, group and group. Each crossing
+            pair is warned once per mount; it is checked again on resize but never repeated. Fields with no size
+            (hidden) are skipped. The case below warns.
+          </p>
+          <pre>
+[yl-editor] The outline of
+"settings/site/footer" crosses
+the group on &lt;section.about&gt;.
+Move it into the group, or
+add space between them.</pre>
+          <div class="preview">
+            <div class="site">
+              <div class="cms-group" data-group>
+                <h2 class="cms-field" tabindex="0" data-label="About heading">Our story</h2>
+                <p class="cms-field" tabindex="0" data-label="About text">Three bakers and one oven since 2009.</p>
+              </div>
+              <p class="cms-field near" tabindex="0" data-label="Footer">© 2026 The Bakehouse</p>
+            </div>
+          </div>
+        </div>
+        <div class="option">
+          <h3>B · Only two ungrouped fields</h3>
+          <p>
+            The literal G1 C wording. Cheaper to check, but the case on the left passes in silence: the footer's outline
+            crosses the group's frame and nothing tells the host.
+          </p>
+        </div>
+      </div>
+
+      <!-- ===================================================================================================== -->
+      <h2 class="doc-h">Rulings</h2>
+      <table class="rulings">
+        <tbody>
+          <tr>
+            <th>G1</th>
+            <td>
+              <b>Ruled C</b>: a <code>data-edit-group</code> wrapper, plus a <code>console.warn</code> when outlines
+              cross.
+            </td>
+          </tr>
+          <tr>
+            <th>G2</th>
+            <td><b>Ruled A</b>: no tag; field badges as today. No new chrome text.</td>
+          </tr>
+          <tr>
+            <th>G3</th>
+            <td>
+              <b>Ruled A</b>: a locked field stays in its group; the frame is muted only when every field is locked.
+            </td>
+          </tr>
+          <tr>
+            <th>G4</th>
+            <td><b>Ruled A</b>: list fields never join a group.</td>
+          </tr>
+          <tr>
+            <th>G5</th>
+            <td>Wrapper holding a list. <b>Ruled A</b>, the group is dropped, fields plain, a warning.</td>
+          </tr>
+          <tr>
+            <th>G6</th>
+            <td>
+              What the frame goes around. <b>Ruled A</b>, the wrapper's box plus 12px. What inside it is editable is the
+              host's choice; the chrome has no opinion and no warning about it.
+            </td>
+          </tr>
+          <tr>
+            <th>G7</th>
+            <td>Group in a group. <b>Ruled A</b>, the outermost wins, a warning names the inner one.</td>
+          </tr>
+          <tr>
+            <th>G8</th>
+            <td>Group in a list item. <b>Ruled A</b>, ignored, a warning.</td>
+          </tr>
+          <tr>
+            <th>G9</th>
+            <td>Helper. <b>Ruled A</b>, <code>editable(doc).group()</code>, attribute only in edit mode.</td>
+          </tr>
+          <tr>
+            <th>G10</th>
+            <td>Warning scope. <b>Ruled A</b>, any two dashed outlines that cross, once per pair per mount.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="muted">
+        Settled by this page, so a bug if review finds otherwise: no tint on hover, no Tab stop for a group, a group
+        left with one field drawn as a plain field, the list tokens (<code>--cms-list-pad</code>,
+        <code>--cms-list-line</code>) reused, and <code>cms-group</code>, <code>cms-group__frame</code>,
+        <code>cms-group__sep</code> documented as styling hooks. Not changing: fields outside a group, list frames, the
+        badge, keyboard order (Tab still visits each field in page order; the group adds no stop), and the CSP rule
+        (positions only through custom properties).
+      </p>
+    </div>
+
+    <script>
+      // Prototype only. The real painter is the list one in src/chrome/lists.ts.
+      const theme = document.getElementById("theme");
+      theme.addEventListener("click", () => {
+        const dark = document.documentElement.dataset.theme !== "dark";
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        theme.setAttribute("aria-pressed", String(dark));
+        theme.textContent = dark ? "Light theme" : "Dark theme";
+      });
+
+      // The state gallery.
+      const STATES = [
+        ["Rest", "", "Dashed frame, thin dashed line between fields."],
+        ["Hover", "is-hover", "Thin solid outline inside the field, and its badge."],
+        ["Editing", "cms-field--editing", "Medium solid accent, inside the field."],
+        ["Focus (keyboard)", "is-focus", "Medium solid accent; the badge shows."],
+        ["Saving", "cms-field--saving", "Medium solid warning."],
+        ["Failed", "cms-field--failed", "Medium solid danger."],
+        ["Locked", "cms-field--locked is-hover", "Thin muted dashed, muted badge with the reason."],
+      ];
+      const gallery = document.getElementById("states");
+      for (const [name, cls, note] of STATES) {
+        const fig = document.createElement("figure");
+        fig.className = "state";
+        fig.innerHTML = `<div class="site"><div class="cms-group" data-group>
+          <h2 class="cms-field">Our story</h2>
+          <p class="cms-field ${cls}" data-label="${cls.includes("locked") ? "About text · read only" : "About text"}"
+            ${cls.includes("locked") ? "data-locked" : ""}>Three bakers and one oven since 2009.</p>
+        </div></div><figcaption><b>${name}</b>${note}</figcaption>`;
+        fig.style.margin = "0";
+        gallery.append(fig);
+      }
+      // Static hover and focus looks: copy the live rules onto marker classes.
+      const sheet = document.createElement("style");
+      sheet.textContent = `
+        .cms-group .cms-field.is-hover { outline: thin solid var(--cms-fg); outline-offset: calc(-1 * var(--cms-space-1) / 4); }
+        .cms-group .cms-field--locked.is-hover { outline: thin dashed var(--cms-muted); }
+        .cms-group .cms-field.is-focus { outline: medium solid var(--cms-accent); outline-offset: calc(-3 * var(--cms-space-1) / 4); }`;
+      document.head.append(sheet);
+
+      const px = (n) => `${Math.round(n * 100) / 100}px`;
+      const box = (node, origin) => {
+        const r = node.getBoundingClientRect();
+        return { t: r.top - origin.top, b: r.bottom - origin.top, l: r.left - origin.left, r: r.right - origin.left };
+      };
+
+      // One group: a frame, an optional tag, and lines halfway between neighbouring fields. Fields are split into
+      // lines by vertical overlap (a row), then each row gets vertical lines between its fields.
+      function paintGroup(group) {
+        group.querySelectorAll(":scope > .cms-group__frame, :scope > .cms-group__sep").forEach((n) => n.remove());
+        const frame = document.createElement("span");
+        frame.className = "cms-group__frame";
+        frame.setAttribute("aria-hidden", "true");
+        group.prepend(frame);
+        if (group.dataset.tag) {
+          const tag = document.createElement("span");
+          tag.className = "cms-group__tag";
+          tag.textContent = group.dataset.tag;
+          frame.append(tag);
+        }
+        // A group's own fields: not those of a group (or mock list) inside it.
+        const fields = [...group.querySelectorAll(".cms-field")].filter((f) => f.closest("[data-group]") === group);
+        group.classList.toggle(
+          "cms-group--locked",
+          fields.every((f) => f.hasAttribute("data-locked")),
+        );
+        const origin = group.getBoundingClientRect();
+        const pad = 12;
+        const boxes = fields.map((f) => box(f, origin)).sort((a, b) => a.t - b.t || a.l - b.l);
+        const rows = [];
+        for (const b of boxes) {
+          const row = rows.find((r) => b.t < r.b && b.b > r.t);
+          if (row) {
+            row.cells.push(b);
+            row.t = Math.min(row.t, b.t);
+            row.b = Math.max(row.b, b.b);
+          } else rows.push({ t: b.t, b: b.b, cells: [b] });
+        }
+        rows.sort((a, b) => a.t - b.t);
+        // The frame: the wrapper's box (default), or only the fields' boxes (data-frame="fields", G5 B and G6 B).
+        let u = { t: 0, b: origin.height, l: 0, r: origin.width };
+        if (group.dataset.frame === "fields" && boxes.length) {
+          u = boxes.reduce(
+            (a, b) => ({ t: Math.min(a.t, b.t), b: Math.max(a.b, b.b), l: Math.min(a.l, b.l), r: Math.max(a.r, b.r) }),
+            { t: Infinity, b: -Infinity, l: Infinity, r: -Infinity },
+          );
+          frame.style.setProperty("inset", "auto");
+          frame.style.setProperty("top", px(u.t - pad));
+          frame.style.setProperty("left", px(u.l - pad));
+          frame.style.setProperty("width", px(u.r - u.l + 2 * pad));
+          frame.style.setProperty("height", px(u.b - u.t + 2 * pad));
+        }
+        const innerLeft = u.l - pad + 2;
+        const width = u.r - u.l + 2 * pad - 4;
+        rows.forEach((row, i) => {
+          const prev = rows[i - 1];
+          const next = rows[i + 1];
+          const top = prev ? (prev.b + row.t) / 2 : u.t - pad + 2;
+          const bottom = next ? (row.b + next.t) / 2 : u.b + pad - 2;
+          if (prev) add(group, "h", innerLeft, top, width);
+          row.cells.sort((a, b) => a.l - b.l);
+          row.cells.forEach((c, j) => {
+            const n = row.cells[j + 1];
+            if (n) add(group, "v", (c.r + n.l) / 2, top + (prev ? 1 : 0), bottom - top - (prev ? 1 : 0));
+          });
+        });
+      }
+      function add(group, dir, x, y, length) {
+        const sep = document.createElement("span");
+        sep.className = `cms-group__sep cms-group__sep--${dir}`;
+        sep.setAttribute("aria-hidden", "true");
+        sep.style.setProperty("--cms-sep-x", px(x));
+        sep.style.setProperty("--cms-sep-top", px(y));
+        sep.style.setProperty("--cms-sep-length", px(length));
+        group.append(sep);
+      }
+
+      // Option B: proximity. Fields whose outlines (4px offset + 2px) come within 4px of each other join; the frame is
+      // the union of their boxes. Re-run on every resize, which is what makes it jump.
+      function paintProximity() {
+        const site = document.getElementById("proximity-site");
+        site.querySelectorAll(".cms-prox-frame").forEach((n) => n.remove());
+        site.querySelectorAll(".cms-field").forEach((f) => f.classList.remove("in-prox"));
+        site.style.position = "relative";
+        const origin = site.getBoundingClientRect();
+        const fields = [...site.querySelectorAll(".cms-field")];
+        const reach = 4 + 2 + 2;
+        const parent = fields.map((_, i) => i);
+        const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+        const boxes = fields.map((f) => box(f, origin));
+        for (let i = 0; i < boxes.length; i++)
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i];
+            const b = boxes[j];
+            const gapX = Math.max(b.l - a.r, a.l - b.r, 0);
+            const gapY = Math.max(b.t - a.b, a.t - b.b, 0);
+            if (gapX < 2 * reach && gapY < 2 * reach) parent[find(i)] = find(j);
+          }
+        const sets = new Map();
+        boxes.forEach((b, i) => sets.set(find(i), [...(sets.get(find(i)) ?? []), i]));
+        for (const members of sets.values()) {
+          if (members.length < 2) continue;
+          const u = members.reduce(
+            (acc, i) => ({
+              t: Math.min(acc.t, boxes[i].t),
+              b: Math.max(acc.b, boxes[i].b),
+              l: Math.min(acc.l, boxes[i].l),
+              r: Math.max(acc.r, boxes[i].r),
+            }),
+            { t: Infinity, b: -Infinity, l: Infinity, r: -Infinity },
+          );
+          const f = document.createElement("span");
+          f.className = "cms-prox-frame cms-group__frame";
+          f.style.setProperty("inset", "auto");
+          f.style.setProperty("top", px(u.t - 12));
+          f.style.setProperty("left", px(u.l - 12));
+          f.style.setProperty("width", px(u.r - u.l + 24));
+          f.style.setProperty("height", px(u.b - u.t + 24));
+          site.append(f);
+          members.forEach((i) => fields[i].classList.add("in-prox"));
+        }
+      }
+      const proxSheet = document.createElement("style");
+      proxSheet.textContent = `.in-prox.cms-field { outline: none; } .in-prox.cms-field:hover { outline: thin solid var(--cms-fg); outline-offset: -1px; }`;
+      document.head.append(proxSheet);
+
+      // Badges: one per frame, on hover and keyboard focus, as the chrome does.
+      function badgeFor(field) {
+        const host = field.closest(".frame, .state, .option") ?? document.body;
+        let badge = host.querySelector(":scope > .cms-badge");
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "cms-root cms-badge";
+          host.style.position = "relative";
+          host.append(badge);
+        }
+        return { host, badge };
+      }
+      function showBadge(field) {
+        if (!field.dataset.label) return;
+        const { host, badge } = badgeFor(field);
+        const o = host.getBoundingClientRect();
+        const r = field.getBoundingClientRect();
+        badge.textContent = field.dataset.label;
+        badge.classList.toggle("cms-badge--locked", field.hasAttribute("data-locked"));
+        badge.style.setProperty("--cms-badge-top", px(r.top - o.top));
+        badge.style.setProperty("--cms-badge-left", px(r.left - o.left));
+        badge.hidden = false;
+      }
+      function hideBadges() {
+        document.querySelectorAll(".frame > .cms-badge, .option > .cms-badge").forEach((b) => (b.hidden = true));
+      }
+      document.addEventListener("mouseover", (e) => {
+        const f = e.target.closest?.(".cms-field");
+        if (f && f.closest(".frame, .option")) showBadge(f);
+      });
+      document.addEventListener("mouseout", hideBadges);
+      document.addEventListener("focusin", (e) => {
+        const f = e.target.closest?.(".cms-field");
+        if (f && f.closest(".frame, .option")) showBadge(f);
+      });
+      document.addEventListener("focusout", hideBadges);
+
+      // Click or Enter: edit in place, as the default text widget does. Blur or Enter ends it.
+      function startEdit(field) {
+        if (field.hasAttribute("data-locked") || field.classList.contains("cms-field--editing")) return;
+        if (!field.closest(".frame, .option")) return;
+        field.classList.add("cms-field--editing");
+        field.contentEditable = "true";
+        field.focus();
+        const end = () => {
+          field.classList.remove("cms-field--editing");
+          field.removeAttribute("contenteditable");
+          field.removeEventListener("blur", end);
+          repaint();
+        };
+        field.addEventListener("blur", end);
+      }
+      document.addEventListener("click", (e) => {
+        const f = e.target.closest?.(".cms-field");
+        if (f) startEdit(f);
+      });
+      document.addEventListener("keydown", (e) => {
+        const f = e.target.closest?.(".cms-field");
+        if (!f || e.key !== "Enter") return;
+        e.preventDefault();
+        if (f.classList.contains("cms-field--editing")) f.blur();
+        else startEdit(f);
+      });
+      document.addEventListener("input", () => repaint());
+
+      // The static gallery's fields aren't interactive.
+      document.querySelectorAll(".state .cms-field").forEach((f) => f.removeAttribute("tabindex"));
+      // The locked badge in the gallery is always shown.
+      document.querySelectorAll(".state .cms-field--locked").forEach((f) => {
+        const fig = f.closest(".state");
+        requestAnimationFrame(() => {
+          const badge = document.createElement("span");
+          badge.className = "cms-root cms-badge cms-badge--locked";
+          badge.textContent = f.dataset.label;
+          fig.style.position = "relative";
+          const o = fig.getBoundingClientRect();
+          const r = f.getBoundingClientRect();
+          badge.style.setProperty("--cms-badge-top", px(r.top - o.top));
+          badge.style.setProperty("--cms-badge-left", px(r.left - o.left));
+          fig.append(badge);
+        });
+      });
+      document.querySelectorAll(".state .is-hover:not(.cms-field--locked), .state .is-focus").forEach((f) => {
+        const fig = f.closest(".state");
+        requestAnimationFrame(() => {
+          const badge = document.createElement("span");
+          badge.className = "cms-root cms-badge";
+          badge.textContent = f.dataset.label;
+          fig.style.position = "relative";
+          const o = fig.getBoundingClientRect();
+          const r = f.getBoundingClientRect();
+          badge.style.setProperty("--cms-badge-top", px(r.top - o.top));
+          badge.style.setProperty("--cms-badge-left", px(r.left - o.left));
+          fig.append(badge);
+        });
+      });
+
+      function repaint() {
+        document.querySelectorAll("[data-group]").forEach(paintGroup);
+        paintProximity();
+      }
+      let raf;
+      const schedule = () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => {
+          raf = undefined;
+          repaint();
+        });
+      };
+      new ResizeObserver(schedule).observe(document.body);
+      new ResizeObserver(schedule).observe(document.getElementById("proximity"));
+      document.fonts?.ready.then(schedule);
+      repaint();
+    </script>
+  </body>
+</html>

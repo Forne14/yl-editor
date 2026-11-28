@@ -82,6 +82,7 @@ async function renderHome(request: Request, tenant: Tenant): Promise<Response> {
   const read = (key: string) => tenant.store.get(key, { draft: editing, unvalidated: true, includeRetired: editing });
   const lists = url.searchParams.get("lists") === "1";
   const rowlist = url.searchParams.get("rowlist") === "1";
+  const groups = url.searchParams.get("groups") === "1";
   const [home, about, settings, team, crew] = await Promise.all([
     read("pages/home"),
     read("pages/about"),
@@ -94,7 +95,7 @@ async function renderHome(request: Request, tenant: Tenant): Promise<Response> {
   return html(
     renderPage(
       { home, about, settings, team, crew },
-      { session, editing, scheduling, richtextFallback, lists, rowlist },
+      { session, editing, scheduling, richtextFallback, lists, rowlist, groups },
     ),
   );
 }
