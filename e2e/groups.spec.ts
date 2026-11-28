@@ -83,7 +83,12 @@ test.describe("field groups", () => {
     await openGroups(page);
     for (const width of [1280, 700, 400]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.waitForTimeout(100);
+      // The resize schedules a check for the next frame, and the resize observer's report in that frame one for the
+      // frame after: three frames past this one, both have run.
+      await page.evaluate(async () => {
+        for (let frame = 0; frame < 3; frame += 1) await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+      expect(await page.evaluate(() => window.innerWidth)).toBe(width);
     }
     expect(warnings.filter((text) => text.includes("cross"))).toEqual([]);
   });

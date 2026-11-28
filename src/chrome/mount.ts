@@ -169,6 +169,11 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
   let groups: GroupRecord[] = [];
   /** The groups' console warnings, once per element per mount. */
   const groupWarnings = createWarnings();
+  /**
+   * Fields whose document the editor doesn't have (the server doesn't know it, or Discard deleted it): never a group's
+   * members. Set with their reason, by `dressRecord` and Discard; weak, so a record a rescan dropped isn't held.
+   */
+  const withoutDocument = new WeakSet<FieldRecord>();
   /** A field's emptied state, kept for an element that left the page, in case Undo puts it back. */
   const clearedOf = new WeakMap<HTMLElement, FieldRecord["cleared"]>();
   /** The reason fields are locked after the last load failed, until one succeeds. */
@@ -567,7 +572,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
     const recheck = () => outlines.schedule();
     const memberOf = (element: HTMLElement) => {
       const record = byElement.get(element);
-      return record?.reason === strings.unknownDocument ? undefined : record;
+      return record && withoutDocument.has(record) ? undefined : record;
     };
     for (const group of groups) attachGroup(group, memberOf, groupWarnings, recheck);
     outlines.schedule();
@@ -2459,6 +2464,7 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
             record.detach?.();
             record.editable = false;
             record.reason = strings.unknownDocument;
+            withoutDocument.add(record);
           }
           session.documents.delete(key);
           // Its fields left the editor: the groups are decided again (one left with fewer than two members goes), and
@@ -2547,6 +2553,8 @@ export function mountEditor(options: EditorOptions = {}): EditorHandle {
         : state
           ? strings.notEditable
           : strings.unknownDocument;
+    if (!loadError && !state) withoutDocument.add(record);
+    else withoutDocument.delete(record);
     if (editing) attachRecord(record);
   }
 
