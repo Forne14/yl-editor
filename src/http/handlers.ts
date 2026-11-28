@@ -257,18 +257,36 @@ function countBytes(
   return (body ?? new ReadableStream<Uint8Array>({ start: (controller) => controller.close() })).pipeThrough(counter);
 }
 
-/** Only the render's own keys, so nothing else a store puts there (variants, storage keys) reaches the wire. */
-function wireRender(render: MediaRender): WireMediaRender {
-  const wire: WireMediaRender = { kind: render.kind, src: render.src, width: render.width, height: render.height };
-  if (render.srcset !== undefined) wire.srcset = render.srcset;
-  if (render.sources !== undefined)
-    wire.sources = render.sources.map((source) => ({ type: source.type, srcset: source.srcset }));
-  if (render.poster !== undefined) wire.poster = render.poster;
-  if (render.filename !== undefined) wire.filename = render.filename;
+const isPositiveInteger = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value > 0;
+const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
+
+/**
+ * Only the render's own keys, so nothing else a store puts there (variants, storage keys) reaches the wire. Undefined
+ * when the store's render breaks its shape (a store in plain JS, or a cast): a kind other than image or video, a
+ * `src` that is not a string, a width or height that is not a positive integer, or a wrong optional key. The client
+ * checks the same rules, so such a render is never sent.
+ */
+function wireRender(render: MediaRender): WireMediaRender | undefined {
+  const { kind, src, width, height, srcset, sources, poster, filename } = render as unknown as Record<string, unknown>;
+  if (kind !== "image" && kind !== "video") return undefined;
+  if (typeof src !== "string" || !isPositiveInteger(width) || !isPositiveInteger(height)) return undefined;
+  if (!isOptionalString(srcset) || !isOptionalString(poster) || !isOptionalString(filename)) return undefined;
+  const wire: WireMediaRender = { kind, src, width: width as number, height: height as number };
+  if (typeof srcset === "string") wire.srcset = srcset;
+  if (sources !== undefined) {
+    if (!Array.isArray(sources)) return undefined;
+    const wireSources: { type: string; srcset: string }[] = [];
+    for (const source of sources as unknown[]) {
+      const entry = (typeof source === "object" && source !== null ? source : {}) as Record<string, unknown>;
+      if (typeof entry.type !== "string" || typeof entry.srcset !== "string") return undefined;
+      wireSources.push({ type: entry.type, srcset: entry.srcset });
+    }
+    wire.sources = wireSources;
+  }
+  if (typeof poster === "string") wire.poster = poster;
+  if (typeof filename === "string") wire.filename = filename;
   return wire;
 }
-
-const wireMedia = (media: ResolvedMedia): WireMedia => ({ id: media.id, render: wireRender(media.render) });
 
 /** The media type without parameters, lower-cased: `Image/PNG; charset=x` is `image/png`. */
 const bareType = (header: string | null) => (header ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
@@ -289,6 +307,26 @@ function mediaRoutes(
   gate: Gate,
   parseQuery: ParseQuery,
 ): Record<string, Route> {
+  // One warning per handlers instance, however many bad renders the store answers: it is the host developer's bug.
+  let warnedRender = false;
+  const badRender = (id: string) => {
+    if (warnedRender) return;
+    warnedRender = true;
+    console.warn(
+      `[@yl/editor/http] the media store answered an unusable render for ${id} (it needs kind "image" or "video", ` +
+        "a string src and positive integer width and height); it was not sent. Further ones are not reported.",
+    );
+  };
+  /** A ready answer's media for the wire. A bad render is a server error: the editor can't show it. */
+  const wireMedia = (media: ResolvedMedia): WireMedia => {
+    const render = wireRender(media.render);
+    if (!render) {
+      badRender(media.id);
+      throw new HttpError("internal", "Internal error");
+    }
+    return { id: media.id, render };
+  };
+
   return {
     media: {
       GET: async (context) => {
@@ -299,11 +337,18 @@ function mediaRoutes(
         await gate(context, key, "canEdit");
         if (ids.length === 0) return { body: { media: {} } satisfies MediaResolveResponse };
         const found = await store.resolve(ids);
-        // fromEntries defines own properties, so an id such as `__proto__` stays an ordinary key.
+        // fromEntries defines own properties, so an id such as `__proto__` stays an ordinary key. A bad render is left
+        // out like an unknown id, so one broken item never hides the others.
         const media = Object.fromEntries(
           ids.flatMap((id) => {
             const entry = found.get(id);
-            return entry ? [[id, wireRender(entry.render)] as const] : [];
+            if (!entry) return [];
+            const render = wireRender(entry.render);
+            if (!render) {
+              badRender(id);
+              return [];
+            }
+            return [[id, render] as const];
           }),
         );
         return { body: { media } satisfies MediaResolveResponse };

@@ -1129,13 +1129,14 @@ export function runMediaStoreContract<V>(
         if (answer.retryAfterMs !== undefined) expect(answer.retryAfterMs).toBeGreaterThan(0);
       });
 
-      test("the render has a kind, a src and a positive intrinsic size", async () => {
+      // The handlers refuse to send a render that breaks these rules, so a store that fails here shows no image.
+      test("the render has a kind, a src and a positive integer intrinsic size", async () => {
         const { render } = await uploadSample();
         expect(["image", "video"]).toContain(render.kind);
         expect(render.src).toEqual(expect.any(String));
         expect(render.src.length).toBeGreaterThan(0);
-        expect(render.width).toBeGreaterThan(0);
-        expect(render.height).toBeGreaterThan(0);
+        expect(Number.isInteger(render.width) && render.width > 0).toBe(true);
+        expect(Number.isInteger(render.height) && render.height > 0).toBe(true);
       });
 
       test("an undeclared size (null) still uploads", async () => {
