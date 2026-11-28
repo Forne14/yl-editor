@@ -206,6 +206,8 @@ interface DescribedError {
   headers?: Record<string, string>;
 }
 
+const MAX_RETRY_AFTER_S = 86_400;
+
 /** The code and message a thrown error has on the wire. Unexpected errors are logged and never leak their message. */
 function describeError(error: unknown): DescribedError {
   if (error instanceof HttpError) return { code: error.code, message: error.message, extra: error.extra };
@@ -215,7 +217,8 @@ function describeError(error: unknown): DescribedError {
     if (code === "too_large" && isUsableNumber(error.detail.limit)) described.extra = { limit: error.detail.limit };
     if (code === "busy") {
       const wait = isUsableNumber(error.detail.retryAfterMs) ? error.detail.retryAfterMs : DEFAULT_BUSY_RETRY_MS;
-      const seconds = Math.max(1, Math.ceil(wait / 1000));
+      // Capped at a day: a larger number would print in exponent form, which no Retry-After reader takes.
+      const seconds = Math.min(MAX_RETRY_AFTER_S, Math.max(1, Math.ceil(wait / 1000)));
       described.headers = { "Retry-After": String(seconds) };
     }
     return described;

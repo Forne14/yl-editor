@@ -123,7 +123,7 @@ const STATUS_CODES: Readonly<Record<number, ErrorCode>> = { 413: "too_large", 41
 
 /** A non-2xx answer as a `ContentRequestError`, from its envelope when it has one, else from its status. */
 function errorFrom(status: number, body: unknown, retryAfter: string | null): ContentRequestError {
-  const retryAfterMs = parseRetryAfter(retryAfter, Date.now());
+  const retryAfterMs = headerWait(retryAfter);
   const details = retryAfterMs !== undefined ? { retryAfterMs } : {};
   if (!isErrorEnvelope(body))
     return new ContentRequestError(
@@ -137,7 +137,7 @@ function errorFrom(status: number, body: unknown, retryAfter: string | null): Co
   const { code, message, issues, current, limit } = body.error;
   return new ContentRequestError(status, code, message, issues, current, {
     ...details,
-    ...(limit !== undefined ? { limit } : {}),
+    ...(isPositive(limit) ? { limit } : {}),
   });
 }
 
@@ -185,9 +185,15 @@ function readMedia(value: unknown): WireMedia | undefined {
   return render ? { id: value.id, render } : undefined;
 }
 
+/** A header's Retry-After in milliseconds; 0 (or a date already past) counts as absent, as a body's 0 does. */
+function headerWait(header: string | null): number | undefined {
+  const wait = parseRetryAfter(header, Date.now());
+  return wait !== undefined && wait > 0 ? wait : undefined;
+}
+
 /** A Retry-After header wins over a body's `retryAfterMs`; either must be a positive number of milliseconds. */
 function retryAfterOf(header: string | null, body: unknown): number | undefined {
-  const fromHeader = parseRetryAfter(header, Date.now());
+  const fromHeader = headerWait(header);
   if (fromHeader !== undefined) return fromHeader;
   return isPositive(body) ? body : undefined;
 }
@@ -219,7 +225,7 @@ function readJob(body: unknown, retryAfter: string | null): MediaJobResponse | u
   }
   if (body.status !== "processing") return undefined;
   const answer: MediaJobResponse = { status: "processing" };
-  if (typeof body.progress === "number" && !Number.isNaN(body.progress))
+  if (typeof body.progress === "number" && Number.isFinite(body.progress))
     answer.progress = Math.min(1, Math.max(0, body.progress));
   const retryAfterMs = retryAfterOf(retryAfter, body.retryAfterMs);
   if (retryAfterMs !== undefined) answer.retryAfterMs = retryAfterMs;

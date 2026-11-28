@@ -58,7 +58,8 @@
 //   (failed polls in a row) resets on a readable processing answer and on keepWaiting(). `pollIndex` (backoff step)
 //   resets when polling starts and on keepWaiting().
 // - Bounds: a visible job costs about 4 + 40 polls over its 10 minutes (plus one per visible/online event), then gives
-//   up. A hidden tab polls on past the deadline, at most once a minute, until it becomes visible or is aborted. Offline
+//   up. A hidden tab polls on past the deadline, at most once a minute (a poll's 503 Retry-After
+//   wait is not floored, so a server answering busy sets the pace), until it becomes visible or is aborted. Offline
 //   costs no request, only one re-check timer every 15 s. A send costs at most 1 + 3 requests per retry(). cancelJob is
 //   fire-and-forget, sent once, only on abort() while a job is known.
 // - done settles once: resolves on ready, rejects with an AbortError on abort(). Failed and gave-up are not terminal:
