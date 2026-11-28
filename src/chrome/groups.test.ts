@@ -15,6 +15,12 @@ let warn: MockInstance<typeof console.warn>;
 const realRect = Element.prototype.getBoundingClientRect;
 const realObserver = globalThis.ResizeObserver;
 let observed: (() => void)[];
+/** What each ResizeObserver watches now, in creation order. */
+let watching: Set<Element>[];
+/** `id -> [clientLeft, clientTop]`: a host border. Without one, the padding box is the border box. */
+let borders: Record<string, [number, number]>;
+const clientProperties = ["clientLeft", "clientTop", "clientWidth", "clientHeight"] as const;
+const realClient = clientProperties.map((name) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
@@ -46,6 +52,7 @@ function installFetch(): void {
           },
         });
       }
+      if (url.pathname === "/api/content/discard") return json({ document: null });
       if (url.pathname === "/api/content/document") {
         return json({
           document: {
@@ -97,6 +104,9 @@ beforeEach(() => {
   boxes = {};
   boxCalls = {};
   observed = [];
+  watching = [];
+  borders = {};
+  document.head.innerHTML = "";
   sessionStorage.clear();
   Element.prototype.getBoundingClientRect = function (this: Element) {
     boxCalls[this.id] = (boxCalls[this.id] ?? 0) + 1;
@@ -106,14 +116,39 @@ beforeEach(() => {
   vi.stubGlobal(
     "ResizeObserver",
     class {
+      targets = new Set<Element>();
       constructor(callback: () => void) {
         observed.push(callback);
+        watching.push(this.targets);
       }
-      observe() {}
-      disconnect() {}
-      unobserve() {}
+      observe(target: Element) {
+        this.targets.add(target);
+      }
+      disconnect() {
+        this.targets.clear();
+      }
+      unobserve(target: Element) {
+        this.targets.delete(target);
+      }
     },
   );
+  // The padding box: the border box less the host border (stubbed by id).
+  const sides = (node: Element) => borders[node.id] ?? [0, 0];
+  const size = (node: Element) => boxes[node.id] ?? [0, 0, 0, 0];
+  const values = {
+    clientLeft: (node: Element) => sides(node)[0],
+    clientTop: (node: Element) => sides(node)[1],
+    clientWidth: (node: Element) => size(node)[2] - 2 * sides(node)[0],
+    clientHeight: (node: Element) => size(node)[3] - 2 * sides(node)[1],
+  };
+  for (const name of clientProperties) {
+    Object.defineProperty(HTMLElement.prototype, name, {
+      configurable: true,
+      get(this: Element) {
+        return values[name](this);
+      },
+    });
+  }
   warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   installFetch();
 });
@@ -122,6 +157,12 @@ afterEach(() => {
   handle?.destroy();
   handle = undefined;
   Element.prototype.getBoundingClientRect = realRect;
+  clientProperties.forEach((name, index) => {
+    const real = realClient[index];
+    if (real) Object.defineProperty(HTMLElement.prototype, name, real);
+    else Reflect.deleteProperty(HTMLElement.prototype, name);
+  });
+  document.head.innerHTML = "";
   globalThis.ResizeObserver = realObserver;
   warn.mockRestore();
   vi.unstubAllGlobals();
@@ -329,5 +370,165 @@ describe("repainting", () => {
     for (const report of observed) report();
     await settle();
     expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-top"))).toEqual(["55px", "115px"]);
+  });
+});
+
+/** A host or chrome stylesheet rule, as a page would carry it. */
+function css(rules: string): void {
+  const style = document.createElement("style");
+  style.textContent = rules;
+  document.head.append(style);
+}
+
+const reportAll = async () => {
+  for (const report of observed) report();
+  await settle();
+};
+
+describe("membership: the fields the chrome dresses now", () => {
+  test("discarding a never-published document retires the group holding its fields", async () => {
+    column();
+    await mount();
+    expect(frames()).toHaveLength(1);
+    await handle?.api.discard(KEY);
+    await settle();
+    const group = document.getElementById("g") as HTMLElement;
+    expect(frames()).toHaveLength(0);
+    expect(seps()).toHaveLength(0);
+    expect(group.classList.contains("cms-group")).toBe(false);
+    expect(group.hasAttribute("class")).toBe(false);
+  });
+
+  test("a group left with one field that has a box draws nothing, and comes back when the other shows again", async () => {
+    column();
+    boxes = { g: [100, 100, 400, 200], a: [100, 100, 400, 40] };
+    await mount();
+    const group = document.getElementById("g") as HTMLElement;
+    expect(frames()).toHaveLength(0);
+    expect(group.classList.contains("cms-group")).toBe(false);
+    // The fields are still dressed: they look plain, with their own outline.
+    expect(document.getElementById("b")?.classList.contains("cms-field")).toBe(true);
+    boxes.b = [100, 160, 400, 40];
+    await reportAll();
+    expect(frames()).toHaveLength(1);
+    expect(group.classList.contains("cms-group")).toBe(true);
+    expect(seps("h")).toHaveLength(1);
+    delete boxes.b;
+    await reportAll();
+    expect(frames()).toHaveLength(0);
+    expect(seps()).toHaveLength(0);
+    expect(group.classList.contains("cms-group")).toBe(false);
+  });
+});
+
+describe("geometry: measured in the wrapper's padding box", () => {
+  test("a host border does not shift the lines", async () => {
+    column();
+    // A 5px border: the border box is 410 by 210 at 95,95; the padding box is the 400 by 200 at 100,100 of `column`.
+    boxes.g = [95, 95, 410, 210];
+    borders = { g: [5, 5] };
+    await mount();
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-top"))).toEqual(["50px", "110px"]);
+    // Edge to edge inside the frame's border: 400 + 2 * (12 - 2).
+    expect(seps("h").map((sep) => sep.style.getPropertyValue("--cms-sep-length"))).toEqual(["420px", "420px"]);
+  });
+
+  test("a pad of 0 is a pad of 0, not the 12px fallback", async () => {
+    css(".cms-group__frame { --cms-list-pad: 0px; }");
+    page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>`);
+    boxes = { g: [0, 0, 400, 40], a: [0, 0, 180, 40], b: [220, 0, 180, 40] };
+    await mount();
+    // From just inside the 2px border at the top to just inside it at the bottom.
+    expect(seps("v").map((sep) => sep.style.getPropertyValue("--cms-sep-top"))).toEqual(["2px"]);
+    expect(seps("v").map((sep) => sep.style.getPropertyValue("--cms-sep-length"))).toEqual(["36px"]);
+  });
+
+  test("the frame's border width is read from its style, not assumed to be 2px", async () => {
+    css(".cms-group__frame { border-left-width: 5px; }");
+    page(`<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}</section>`);
+    boxes = { g: [0, 0, 400, 40], a: [0, 0, 180, 40], b: [220, 0, 180, 40] };
+    await mount();
+    expect(seps("v").map((sep) => sep.style.getPropertyValue("--cms-sep-top"))).toEqual(["-7px"]);
+    expect(seps("v").map((sep) => sep.style.getPropertyValue("--cms-sep-length"))).toEqual(["54px"]);
+  });
+
+  test("a list's pad of 0 is a pad of 0 too", async () => {
+    css(".cms-list__frame { --cms-list-pad: 0px; }");
+    page(
+      `<ul id="l" data-edit-list="${KEY}:items"><li id="i1" data-edit-item="${KEY}:items[_key=i1]">${field("x", "items[_key=i1].a")}</li></ul>`,
+    );
+    boxes = { l: [0, 0, 400, 40], i1: [0, 0, 400, 40], x: [0, 0, 400, 40] };
+    await mount();
+    const listFrame = document.querySelector<HTMLElement>(".cms-list__frame");
+    expect(listFrame?.style.getPropertyValue("--cms-frame-top")).toBe("0px");
+  });
+});
+
+describe("nodes: appended, so the host's own child rules hold", () => {
+  test("the frame and separators come after the host's children", async () => {
+    column();
+    await mount();
+    const group = document.getElementById("g") as HTMLElement;
+    expect(group.firstElementChild?.id).toBe("a");
+    const children = [...group.children];
+    const firstChrome = children.findIndex((node) => node.classList.contains("cms-root"));
+    expect(children.slice(firstChrome).every((node) => node.classList.contains("cms-root"))).toBe(true);
+    expect(children.slice(0, firstChrome).map((node) => node.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("warnings: once per element per mount", () => {
+  test("a dropped group warns again in a new mount", async () => {
+    page(
+      `<section id="g" data-edit-group>${field("a", "a")}${field("b", "b")}<ul id="l" data-edit-list="${KEY}:items"></ul></section>`,
+    );
+    await mount();
+    await handle?.api.refresh();
+    await settle();
+    expect(warn).toHaveBeenCalledTimes(1);
+    handle?.destroy();
+    await mount();
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  test("a wrapper that clips its overflow is named once: its outline is clipped", async () => {
+    css("#g { overflow: hidden; }");
+    column();
+    await mount();
+    const clipped = () => warn.mock.calls.filter((call) => String(call[0]).includes("clip"));
+    expect(clipped()).toHaveLength(1);
+    expect(String(clipped()[0]?.[0])).toContain('id="g"');
+    await handle?.api.refresh();
+    await settle();
+    expect(clipped()).toHaveLength(1);
+  });
+
+  test("a wrapper that lets its overflow show is not named", async () => {
+    column();
+    await mount();
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes("clip"))).toHaveLength(0);
+  });
+});
+
+describe("crossing watch", () => {
+  test("the field outline offset is read from --cms-space-1: at 0, touching fields don't cross", async () => {
+    css(".cms-field { --cms-space-1: 0px; }");
+    page(`${field("a", "a")}${field("b", "b")}`);
+    boxes = { a: [0, 0, 100, 40], b: [100, 10, 100, 40] };
+    await mount();
+    expect(warn.mock.calls.filter((call) => String(call[0]).includes("cross"))).toHaveLength(0);
+  });
+
+  test("watches exactly the outlines of the last check: a removed field is let go", async () => {
+    page(`${field("a", "a")}${field("b", "b")}`);
+    boxes = { a: [0, 0, 100, 40], b: [0, 100, 100, 40] };
+    await mount();
+    const b = document.getElementById("b") as HTMLElement;
+    expect(watching.some((targets) => targets.has(b))).toBe(true);
+    b.remove();
+    window.dispatchEvent(new Event("resize"));
+    await settle();
+    expect(watching.some((targets) => targets.has(b))).toBe(false);
+    expect(watching.some((targets) => targets.has(document.getElementById("a") as HTMLElement))).toBe(true);
   });
 });
