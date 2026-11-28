@@ -191,9 +191,12 @@ export interface ErrorEnvelope {
  * Undefined when absent or unreadable. Not clamped: callers apply their own bounds.
  */
 export function parseRetryAfter(value: string | null | undefined, now: number): number | undefined {
-  void value;
-  void now;
-  throw new Error("not implemented");
+  const text = value?.trim() ?? "";
+  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  // Every HTTP-date form starts with a day name; anything else Date.parse might take is not one.
+  if (!/^[A-Za-z]{3}/.test(text)) return undefined;
+  const date = Date.parse(text);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
@@ -201,11 +204,12 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /** True when `value` is an error envelope with a known code. */
 export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   if (!isObject(value) || !isObject(value.error)) return false;
-  const { code, message, current } = value.error;
+  const { code, message, current, limit } = value.error;
   return (
     typeof code === "string" &&
     Object.hasOwn(ERROR_STATUS, code) &&
     typeof message === "string" &&
-    (current === undefined || isObject(current))
+    (current === undefined || isObject(current)) &&
+    (limit === undefined || typeof limit === "number")
   );
 }
