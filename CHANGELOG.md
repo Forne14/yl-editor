@@ -37,14 +37,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `DELETE media-job` (#3), gated by `canEdit` on the field's document, with the usual guard and envelope. Uploads
   stream through a byte counter; a declared length past `maxBytes` and a refusal from `accept` answer before the body
   is read. `201 { media: { id, render } }` or `202 { job, retryAfterMs? }`; `busy` carries `Retry-After`; variants
-  never leave the server. Without the option the routes are `404` with one `console.warn`. See `docs/http.md` → Media.
+  never leave the server, and neither does a render that breaks its shape (positive integer `width` and `height`, a
+  string `src`): `GET media` leaves it out, a ready answer becomes `500`, with one `console.warn`. Without the option
+  the routes are `404` with one `console.warn`. See `docs/http.md` → Media.
 - Client: `uploadMedia(field, file, { onProgress, onSent, signal })` over `XMLHttpRequest` (injectable with the new
   `xhr` option), `mediaJob(field, job)`, `cancelMediaJob(field, job)` and `media(key, ids)` (#3). Bodies are
-  hand-checked without zod. `parseRetryAfter` and the media wire types (`WireMedia`, `WireMediaRender`,
-  `MediaUploadResult`, `MediaJobResponse`, …) are exported from `@yl/editor/http`.
+  hand-checked without zod; `media` leaves an unreadable render out instead of failing the batch. `parseRetryAfter`
+  and the media wire types (`WireMedia`, `WireMediaRender`, `MediaUploadResult`, `MediaJobResponse`, …) are exported
+  from `@yl/editor/http`.
 - Chrome (internal, for the default media widget to come): `src/chrome/media-task.ts`, the upload and poll task with
   the failure policy (poll backoff 1, 2, 4, 8 then 15 s; `Retry-After` clamped to 1–60 s; give-up after 10 minutes or
-  6 failed polls in a row, never while the tab is hidden; a 60 s stall timer; at most 3 automatic resends on `503`).
+  6 failed polls in a row, never while the tab is hidden, and at most one poll a minute while hidden past the
+  deadline; offline sends nothing and re-checks every 15 s; a 60 s stall timer; at most 3 automatic resends on `503`).
   Not exported yet.
 
 - Chrome: plain fields can be grouped in one outline (#44, group close plain fields in one outline). Wrap them in an

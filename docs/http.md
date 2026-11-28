@@ -216,6 +216,10 @@ both in `Allow`.
   nobody asked for. An id such as `__proto__` is an ordinary key.
 - Only `id` and the render's own keys (`kind`, `src`, `srcset`, `sources`, `width`, `height`, `poster`, `filename`)
   leave the server. `variants`, and anything else a store puts in `render`, never do.
+- A render that breaks its shape (a `kind` other than `"image"` or `"video"`, a `src` that is not a string, a `width`
+  or `height` that is not a positive integer, or a wrong `srcset`, `sources`, `poster` or `filename`) is never sent.
+  `GET media` leaves that id out, like an unknown one; `POST media` and `GET media-job` answer `500 internal` instead
+  of a ready answer. The first one logs a `console.warn` per handlers instance.
 - `onChange` is not fired: an upload changes no content. The field write that follows fires `field` as usual.
 
 A `MediaRefusal` from the store maps to `too_large` 413 (with `limit` in the envelope when the refusal has one),
@@ -387,8 +391,9 @@ The media methods take `field` as `{ key, path }`.
 - `media` dedupes `ids`, sends them as repeated `id` params, at most 100 per request (more are split over several),
   and answers a `Map`. `media(key, [])` makes no request.
 - Bodies are hand-checked, not parsed with zod: a render needs `kind` `"image"` or `"video"`, a string `src` and a
-  positive `width` and `height`, and is rebuilt with only its own keys. Anything else is a `ContentRequestError` with
-  code `internal`.
+  positive integer `width` and `height`, and is rebuilt with only its own keys. In `media`, an unreadable render is
+  left out of the map and the rest of the batch is kept; in `uploadMedia` and `mediaJob`, a ready answer with one, or
+  any other unreadable body, is a `ContentRequestError` with code `internal`.
 - A `Retry-After` header (delay-seconds or an HTTP date) is read into `retryAfterMs`, on the error for a `503` and on a
   `202` or a poll answer, where it wins over the body's `retryAfterMs`. `parseRetryAfter(value, now)` is exported.
 - A `413`, `415` or `503` without our envelope (a proxy's or the platform's own page) maps to `too_large`,

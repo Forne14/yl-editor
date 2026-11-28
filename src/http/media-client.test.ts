@@ -306,6 +306,10 @@ describe("uploadMedia", () => {
     ["a render without src", JSON.stringify({ media: { id: "m", render: { kind: "image", width: 1, height: 1 } } })],
     ["a zero width", JSON.stringify({ media: { id: "m", render: { kind: "image", src: "/m", width: 0, height: 1 } } })],
     [
+      "a fractional height",
+      JSON.stringify({ media: { id: "m", render: { kind: "image", src: "/m", width: 2, height: 1.5 } } }),
+    ],
+    [
       "an unknown kind",
       JSON.stringify({ media: { id: "m", render: { kind: "audio", src: "/m", width: 1, height: 1 } } }),
     ],
@@ -465,10 +469,23 @@ describe("media", () => {
     expect(renders.get("__proto__")).toEqual({ kind: "image", src: "/p", width: 1, height: 1 });
   });
 
-  test("an unreadable render is a ContentRequestError internal", async () => {
+  test("an unreadable render is left out; the readable ones in the same batch are kept", async () => {
+    const good = { kind: "image", src: "/b", width: 1, height: 1 };
     const scripted = createContentClient({
       base: "http://host/api/content",
-      fetch: async () => new Response(JSON.stringify({ media: { a: { kind: "image", src: 4 } } }), { status: 200 }),
+      fetch: async () =>
+        new Response(JSON.stringify({ media: { a: { kind: "image", src: 4 }, b: good, c: { ...good, width: 0.5 } } }), {
+          status: 200,
+        }),
+    });
+    const renders = await scripted.media("notes/first", ["a", "b", "c"]);
+    expect([...renders.entries()]).toEqual([["b", good]]);
+  });
+
+  test("a body that is not a media map is still a ContentRequestError internal", async () => {
+    const scripted = createContentClient({
+      base: "http://host/api/content",
+      fetch: async () => new Response(JSON.stringify({ media: "nope" }), { status: 200 }),
     });
     await expect(scripted.media("notes/first", ["a"])).rejects.toMatchObject({ code: "internal" });
   });

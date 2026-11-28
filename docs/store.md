@@ -263,7 +263,7 @@ type MediaJobState<V> =
     src: string; // shown at once: the preview and <img src>
     srcset?: string; // <img srcset>
     sources?: { type: string; srcset: string }[]; // <picture><source type>, best first
-    width: number; // intrinsic size, positive
+    width: number; // intrinsic size, a positive integer
     height: number;
     poster?: string; // video
     filename?: string; // for the publish diff and the popover
@@ -307,7 +307,7 @@ runMediaStoreContract("s3 media", () => createS3MediaStore(testBucket()), {
 ```
 
 It checks: the sample uploads (ready, or processing then ready through `job`) with a `render` that has a kind, a `src`
-and a positive size; a size of `null` still uploads; an erroring body stream, an aborted signal and a signal aborted
+and a positive integer size; a size of `null` still uploads; an erroring body stream, an aborted signal and a signal aborted
 mid-body all reject and store nothing; bytes that aren't a file it takes are refused with a `MediaRefusal`; a filename
 with path separators is stored safely or refused; a body past `maxBytes` is `too_large`, and so is a declared size
 past it in `accept`; `resolve` answers what was uploaded, leaves unknown ids out and answers no ids with an empty map;

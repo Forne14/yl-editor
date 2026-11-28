@@ -152,6 +152,8 @@ const unreadable = (status: number, what: string) =>
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isPositive = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value > 0;
+const isPositiveInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value > 0;
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
 
 /** A render as the wire should carry it, rebuilt with only its own keys; undefined when it is not one. */
@@ -159,7 +161,7 @@ function readRender(value: unknown): WireMediaRender | undefined {
   if (!isRecord(value)) return undefined;
   const { kind, src, srcset, sources, width, height, poster, filename } = value;
   if (kind !== "image" && kind !== "video") return undefined;
-  if (typeof src !== "string" || !isPositive(width) || !isPositive(height)) return undefined;
+  if (typeof src !== "string" || !isPositiveInteger(width) || !isPositiveInteger(height)) return undefined;
   if (!optionalString(srcset) || !optionalString(poster) || !optionalString(filename)) return undefined;
   const render: WireMediaRender = { kind, src, width, height };
   if (typeof srcset === "string") render.srcset = srcset;
@@ -335,11 +337,11 @@ export function createContentClient(options: ContentClientOptions = {}): Content
     for (const id of ids) query.append("id", id);
     return checked(`media?${query}`, "media", signal, (body) => {
       if (!isRecord(body) || !isRecord(body.media)) return undefined;
+      // An unreadable render is left out like an unknown id: one bad item must not hide the rest of the batch.
       const renders = new Map<string, WireMediaRender>();
       for (const [id, value] of Object.entries(body.media)) {
         const render = readRender(value);
-        if (!render) return undefined;
-        renders.set(id, render);
+        if (render) renders.set(id, render);
       }
       return renders;
     });
