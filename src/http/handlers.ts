@@ -192,6 +192,13 @@ const REFUSAL_CODES: Readonly<Record<MediaRefusal["code"], ErrorCode>> = {
   busy: "busy",
 };
 
+/**
+ * A number a store provides (a wait, a limit) that may go on the wire: finite and positive. Anything else (NaN,
+ * Infinity, zero, negative, a non-number from a JS store) is treated as absent.
+ */
+const isUsableNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0;
+
 interface DescribedError {
   code: ErrorCode;
   message: string;
@@ -205,9 +212,10 @@ function describeError(error: unknown): DescribedError {
   if (error instanceof MediaRefusal) {
     const code = REFUSAL_CODES[error.code];
     const described: DescribedError = { code, message: error.message };
-    if (code === "too_large" && error.detail.limit !== undefined) described.extra = { limit: error.detail.limit };
+    if (code === "too_large" && isUsableNumber(error.detail.limit)) described.extra = { limit: error.detail.limit };
     if (code === "busy") {
-      const seconds = Math.max(1, Math.ceil((error.detail.retryAfterMs ?? DEFAULT_BUSY_RETRY_MS) / 1000));
+      const wait = isUsableNumber(error.detail.retryAfterMs) ? error.detail.retryAfterMs : DEFAULT_BUSY_RETRY_MS;
+      const seconds = Math.max(1, Math.ceil(wait / 1000));
       described.headers = { "Retry-After": String(seconds) };
     }
     return described;
@@ -374,6 +382,8 @@ function mediaRoutes(
         const abort = new AbortController();
         const onRequestAbort = () => abort.abort(request.signal.reason);
         request.signal.addEventListener("abort", onRequestAbort);
+        // A listener added after the abort never fires: pass an abort that already happened on now.
+        if (request.signal.aborted) abort.abort(request.signal.reason);
         let refusal: MediaRefusal | undefined;
         const body = countBytes(request.body, maxBytes, size, (refused) => {
           refusal = refused;
@@ -386,7 +396,7 @@ function mediaRoutes(
           if (answer.status === "ready")
             return { status: 201, body: { media: wireMedia(answer.media) } satisfies MediaUploadReadyResponse };
           const processing: MediaUploadProcessingResponse = { job: answer.job };
-          if (answer.retryAfterMs !== undefined) processing.retryAfterMs = answer.retryAfterMs;
+          if (isUsableNumber(answer.retryAfterMs)) processing.retryAfterMs = answer.retryAfterMs;
           return { status: 202, body: processing };
         } catch (error) {
           throw refusal ?? error;
@@ -408,8 +418,10 @@ function mediaRoutes(
           if (state.message !== undefined) body.message = state.message;
         } else {
           body = { status: "processing" };
-          if (state.progress !== undefined) body.progress = state.progress;
-          if (state.retryAfterMs !== undefined) body.retryAfterMs = state.retryAfterMs;
+          // Progress is 0..1: a finite value is clamped into it, anything else is left out.
+          if (typeof state.progress === "number" && Number.isFinite(state.progress))
+            body.progress = Math.min(1, Math.max(0, state.progress));
+          if (isUsableNumber(state.retryAfterMs)) body.retryAfterMs = state.retryAfterMs;
         }
         return { body };
       },

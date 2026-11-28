@@ -615,3 +615,71 @@ describe("GET media", () => {
     expect((await call(getMedia(["a"], "notes/none"))).status).toBe(404);
   });
 });
+
+describe("numbers the store provides", () => {
+  const unusable = [Number.NaN, Number.POSITIVE_INFINITY, -1, 0];
+
+  test.each(unusable)("a busy refusal with retryAfterMs %s sends the default Retry-After", async (retryAfterMs) => {
+    const { store } = spyStore({
+      upload: async () => {
+        throw new MediaRefusal("busy", "Busy", { retryAfterMs });
+      },
+    });
+    const { response } = await call(upload(), handlersWith(store));
+    expect(response.headers.get("Retry-After")).toBe("5");
+  });
+
+  test.each(unusable)("a too_large refusal with limit %s sends no limit", async (limit) => {
+    const { store } = spyStore({
+      upload: async () => {
+        throw new MediaRefusal("too_large", "Big", { limit });
+      },
+    });
+    const { body } = await call(upload(), handlersWith(store));
+    expect(body.error).toEqual({ code: "too_large", message: "Big" });
+  });
+
+  test.each(unusable)("a 202 with retryAfterMs %s sends none", async (retryAfterMs) => {
+    const { store } = spyStore({
+      upload: async (body) => {
+        await body.cancel();
+        return { status: "processing", job: "j", retryAfterMs };
+      },
+    });
+    expect((await call(upload(), handlersWith(store))).body).toEqual({ job: "j" });
+  });
+
+  test.each([
+    [{ progress: Number.NaN, retryAfterMs: Number.NaN }, { status: "processing" }],
+    [{ progress: Number.POSITIVE_INFINITY, retryAfterMs: -5 }, { status: "processing" }],
+    [
+      { progress: 1.5, retryAfterMs: 0 },
+      { status: "processing", progress: 1 },
+    ],
+    [
+      { progress: -0.5, retryAfterMs: 2000 },
+      { status: "processing", progress: 0, retryAfterMs: 2000 },
+    ],
+  ])("a processing job state %o is sent as %o", async (state, expected) => {
+    const { store } = spyStore({ job: async () => ({ status: "processing", ...state }) });
+    expect((await call(getJob("j"), handlersWith(store))).body).toEqual(expected);
+  });
+});
+
+describe("a request already aborted", () => {
+  test("passes its abort on to the store's signal", async () => {
+    const { store, seen } = spyStore({
+      upload: async (body, _file, _field, context) => {
+        seen.signal = context.signal;
+        await body.cancel().catch(() => {});
+        throw new Error("aborted");
+      },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const controller = new AbortController();
+    controller.abort(new Error("client went away"));
+    const request = upload();
+    await handlersWith(store).handle(new Request(request, { signal: controller.signal }));
+    expect(seen.signal?.aborted).toBe(true);
+  });
+});
