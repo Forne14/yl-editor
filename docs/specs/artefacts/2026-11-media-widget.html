@@ -1001,7 +1001,7 @@
         listed at the end. All on-screen text is proposed copy, keyed for <code>src/chrome/strings.ts</code> (§4).
       </p>
       <div class="topbar">
-        <span class="pill">Proposal · not built</span>
+        <span class="pill">Approved 2026-11-28 · not built</span>
         <fieldset id="theme">
           <legend>Theme</legend>
           <label><input type="radio" name="theme" value="auto" checked /> Auto</label>
@@ -2501,6 +2501,367 @@ export interface MediaFileInfo { filename: string; type: string; size: number | 
         </li>
         <li><strong>Media library:</strong> out of scope for #3, a host panel later. Agreed?</li>
       </ol>
+
+      <h2 id="build-rules">8 · Build rules from the plan review (ruled 2026-11-28)</h2>
+      <p class="note">
+        A review against the code found these. Every question in §7 and every item tagged <em>question</em> here is
+        ruled as recommended. Where this section differs from §2–6, this section wins.
+      </p>
+
+      <h3>8.1 · New states</h3>
+      <div class="grid">
+        <div class="cell">
+          <h3>Saved image no longer found</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">The image saved here can’t be found. Choose a new one.</p>
+            </div>
+            <div class="cms-media__drop">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Choose file</button>
+              <p class="cms-media__drop-hint cms-muted">or drop an image here, or paste one</p>
+              <p class="cms-muted">JPEG, PNG, WebP, AVIF or HEIC · up to 40 MB</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">
+            <code>mediaMissing</code>. The field's id is not in <code>GET media</code>'s answer. Leaving it untouched
+            writes nothing; the stored value stays as it is.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Server refused the file</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__drop">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Choose file</button>
+              <p class="cms-media__drop-hint cms-muted">or drop an image here, or paste one</p>
+            </div>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">The server refused scan.png: the image is empty.</p>
+            </div>
+            <div class="cms-popover__actions"><button type="button" class="cms-btn cms-btn--ghost">Cancel</button></div>
+          </div>
+          <p class="caption">
+            <code>mediaRefused</code>, for an <code>invalid</code> refusal with the store's message.
+          </p>
+        </div>
+        <div class="cell">
+          <h3>Server error on upload</h3>
+          <div class="cms-root cms-popover cms-media still" role="dialog" aria-label="Hero image">
+            <p class="cms-popover__title">Hero image</p>
+            <div class="cms-media__file">
+              <img class="cms-media__thumb" alt="" data-ph="buns" />
+              <div>
+                <p class="cms-media__name">cardamom-buns.jpg</p>
+                <p class="cms-media__meta">12.4 MB</p>
+              </div>
+            </div>
+            <div class="cms-diff" role="alert">
+              <p class="cms-error">The upload failed on the server. Try again.</p>
+            </div>
+            <div class="cms-popover__actions">
+              <button type="button" class="cms-btn cms-btn--primary sim-focus">Retry</button>
+              <button type="button" class="cms-btn">Choose another file</button>
+              <button type="button" class="cms-btn cms-btn--ghost">Cancel</button>
+            </div>
+          </div>
+          <p class="caption"><code>mediaServerError</code>, for a 5xx (other than 503) or an unreadable answer.</p>
+        </div>
+      </div>
+
+      <h3>8.2 · Rulings on the review's questions</h3>
+      <ol>
+        <li>If the last upload finishes while the Finish editing sheet is open, Done completes by itself.</li>
+        <li>
+          Removing a list item stops its upload or job, and the Remove toast counts it as a dropped change
+          (<code>removedDroppedToast</code>).
+        </li>
+        <li>
+          <code>cms:change</code> is cancelable for media fields only: it is dispatched before the write, and the write
+          happens only if no listener called <code>preventDefault()</code>. Text and rich text keep today's order.
+        </li>
+        <li>
+          A field that is the <code>&lt;img&gt;</code> or <code>&lt;picture&gt;</code> itself has no Remove button. A
+          wrapper is documented for optional images.
+        </li>
+        <li>
+          The preview of the current value is the target's <code>currentSrc</code>, with no request. An id the store no
+          longer resolves shows <code>mediaMissing</code> (§8.1).
+        </li>
+        <li>
+          The "No alt text" chip shows only for values this session has loaded. The Publish sheet note covers the rest.
+        </li>
+        <li>
+          Paste onto a focused field or button is checked in e2e on WebKit. If WebKit doesn't fire it, it becomes a
+          documented known limit.
+        </li>
+        <li>New copy: <code>mediaRefused</code>, <code>mediaServerError</code>, <code>mediaMissing</code> (§8.1).</li>
+        <li>The stall timer starts at the first upload progress event. There is no cap on concurrent uploads.</li>
+        <li>
+          Drop, paste, the veil and <code>data-cms-empty</code> belong to the default widget in v1.
+          <code>ctx.continueInBackground</code> is public on <code>WidgetContext</code>, so host widgets can use it.
+        </li>
+      </ol>
+
+      <h3>8.3 · Widget contract and background tasks</h3>
+      <ul>
+        <li>
+          <strong><code>ctx.continueInBackground(task)</code></strong
+          >: <code>task</code> is <code>{ done: Promise&lt;value&gt;; abort(): void }</code>. Calling it settles the
+          context like <code>commit</code>/<code>cancel</code>. The chrome keeps tasks in a registry keyed by slot id
+          (<code>key:path</code>), never by field record, because a scan makes new records. When
+          <code>done</code> resolves, it runs the same path as <code>commit</code>: the changed check against the
+          initial value, then a held conflict if the slot is marked <code>theirs</code>, else <code>session.save</code>.
+          The take step marks every task of the key with no queued or sent save, as it marks the active widget. A
+          reopened widget gets the running task (<code>ctx.background</code>) and shows its state. One task per slot; a
+          new pick aborts the old.
+        </li>
+        <li>
+          A task commits on ready only if no popover is open or opening on its slot. Otherwise the popover takes the
+          ready state (the §3 focus rule) and commits on Done or leave. A popover always mounts from the slot's task
+          when there is one.
+        </li>
+        <li>
+          <strong><code>handle.commit()</code> means leave</strong>, on every path that calls it (opening another field,
+          opening a sheet, Done, a list write, a rescan, refresh, Restore, <code>destroy()</code>): ready → commit;
+          uploading or processing → continue in the background; failed or given up → keep the task; untouched → nothing.
+          The Finish sheet opens before Done tears down the open widget. <code>destroy()</code> aborts after the commit.
+        </li>
+        <li>
+          <strong>Upload state never touches <code>SaveSlot</code>.</strong> One function derives what a field shows
+          from the slot state and the task state, with this precedence: save failed or conflict → upload failed or given
+          up → uploading or processing → saving → saved → idle. Every place that writes field state goes through it.
+          <code>ctx.unsaved</code> stays about the save queue only.
+        </li>
+        <li>
+          <strong>Finish sheet:</strong> Esc or Close means Keep uploading. <code>onExit</code> waits for Stop and
+          finish. Done drops failed and given-up tasks and hides their toasts, so nothing starts uploading while not
+          editing.
+        </li>
+        <li>
+          <strong>One invariant for stale answers:</strong> each task has an epoch. Every abort cause bumps it (Esc,
+          Cancel upload, a new pick, Discard or Restore success, Stop and finish, <code>destroy()</code>, access lost,
+          document gone, item removed). Every continuation checks it before touching state, DOM or the queue: XHR load,
+          a poll answer, <code>.json()</code>, the Retry-After wait, <code>GET media</code>. <code>cancelJob</code> is
+          fire-and-forget.
+        </li>
+      </ul>
+
+      <h3>8.4 · Save queue, Discard, Restore, Publish</h3>
+      <ul>
+        <li>
+          When Discard or Restore starts on a document, its tasks freeze: a ready answer is held, not committed. On
+          success they are dropped (abort and <code>cancelJob</code>). On failure or conflict they unfreeze, and a held
+          ready goes through the <code>theirs</code> rule. This lives inside <code>discard()</code> and
+          <code>restoreRevision()</code>, so a host panel calling <code>api.discard</code> gets it too.
+        </li>
+        <li>
+          While the Publish sheet is open, a background commit re-runs that document's review, and Confirm waits for it
+          as it waits for <code>writesSettled</code>. The sheet never publishes a diff it didn't show. A document whose
+          only change is an upload in progress still gets its <code>mediaPublishPending</code> note, including in the
+          "Nothing to publish" state.
+        </li>
+        <li>
+          At ready, the address is resolved against the session's payload. Gone → <code>mediaItemGone</code>. Present
+          and marked <code>theirs</code> → held. A <code>path</code> error on a media save maps to
+          <code>mediaItemGone</code>, never to a generic failure toast whose Retry can't succeed.
+        </li>
+        <li>
+          <strong>Toasts:</strong> background info and saved messages follow <code>provideStatus</code>'s rule (while an
+          error toast shows, only announce). <code>mediaSavedLater</code> replaces the generic Saved toast for that
+          slot. <code>mediaStoppedBy</code> is folded into the Discard or Restore toast. A background error never
+          replaces an error toast with actions; the outline and the popover keep it recoverable.
+        </li>
+      </ul>
+
+      <h3>8.5 · Lists, swaps, refresh, groups</h3>
+      <ul>
+        <li>
+          Target detection and "empty" ignore <code>.cms-root</code> descendants (the list toolbar and band). A render
+          into an empty wrapper inserts before the first non-chrome child and never removes siblings. The
+          <code>&gt; img:first-child</code> claim in §6.2 doesn't hold under a list toolbar; the docs say so.
+        </li>
+        <li>
+          Recommended markup:
+          <code
+            >&lt;figure data-edit-group&gt;&lt;div data-edit-field="hero"
+            data-edit-type="media"&gt;…&lt;/div&gt;&lt;figcaption data-edit-field="caption"&gt;</code
+          >. A group element that is itself a field is ignored, as today. Warn when an <code>&lt;img&gt;</code> or
+          <code>&lt;picture&gt;</code> is a <code>data-edit-item</code>.
+        </li>
+        <li>
+          §6.4 correction: Add and Duplicate swap in the page's markup. Nothing is cloned, so an Add renders whatever
+          the host renders for the new item.
+        </li>
+        <li>
+          The veil and the task follow the slot id, not the element. Both are re-bound in attach and rescan. Every
+          connected copy of the field gets a veil; a disconnected or boxless element gets none. A host re-render on
+          <code>cms:change</code> that replaces the element is picked up at the next rescan or refresh.
+        </li>
+      </ul>
+
+      <h3>8.6 · Content render</h3>
+      <ul>
+        <li>
+          A session cache of <code>MediaRender</code> by id, filled from ready answers and <code>GET media</code>.
+          Uncached ids are batched per microtask into one <code>GET media</code> per document, at most 100 per request.
+          Each record has a render ticket, so a late answer never overwrites a newer render. No render after
+          <code>destroy()</code>.
+        </li>
+        <li>
+          <code>GET media</code> failing or missing an id writes nothing and fires <code>cms:change</code> with
+          <code>render: null</code> (<code>undefined</code> stays the value-is-null case).
+        </li>
+        <li>
+          An alt-only change (same id) writes only <code>alt</code>, because the host's own <code>src</code> may differ
+          from <code>render.src</code>. Media bypasses the generic text write: an empty wrapper or an
+          <code>&lt;img&gt;</code> never gets <code>textContent = ""</code>. Blob preview URLs are revoked and never
+          reach host markup.
+        </li>
+        <li>
+          The chrome reads values with a hand-checked reader (no zod). It accepts a bare id string (legacy) and
+          <code>{ id }</code> without alt. It never writes <code>decorative: false</code> and writes keys in the order
+          <code>{ id, alt, decorative }</code>. An unreadable value is treated like <code>formWidget</code>'s
+          <code>unreadable</code>: leaving untouched writes nothing.
+        </li>
+        <li>
+          A host that renders asynchronously after <code>preventDefault()</code> leaves the target and
+          <code>data-cms-empty</code> as they were until the next attach. This is documented.
+        </li>
+      </ul>
+
+      <h3>8.7 · Veil, empty state, drop, paste</h3>
+      <ul>
+        <li>
+          The veil has <code>pointer-events: none</code> and <code>aria-hidden</code>. Its position is
+          <code>position: fixed</code> in viewport coordinates, measured from the target's rendered box (not an inline
+          field element's line box). It is re-measured by a ResizeObserver plus capture-phase scroll and resize, batched
+          in rAF.
+        </li>
+        <li>
+          <code>data-cms-empty</code> is set in attach and restored in the same detach closure. It toggles after every
+          render that empties or fills the wrapper, and after a cancelled <code>cms:change</code>. Groups, lists and
+          outlines re-measure after it toggles. <code>cms-field--drop</code> joins the host-class restore list. The aria
+          description says empty, uploading, failed or missing alt.
+        </li>
+        <li>
+          <strong>Drop guard:</strong> installed only while editing, and only when at least one media field is dressed.
+          It acts on file drags only, in the window's bubble phase, and only when the event isn't already
+          <code>defaultPrevented</code>, so host drop zones and file inputs keep working. Outside media fields it sets
+          <code>dropEffect = "none"</code>. A drop on a locked field shows <code>notEditable</code>; inside a busy list,
+          <code>listBusy</code>. Drag enter and leave are counted, so child elements don't flicker the class. The badge
+          is driven by drag events. <code>dragstart</code> is cancelled inside dressed media fields, so dragging image A
+          onto field B never uploads a copy. A drop on a field with a running task replaces it.
+        </li>
+        <li>
+          <strong>Paste:</strong> a mixed clipboard (text and image) pasted into Alt text pastes the text. A paste on a
+          locked field or into a busy list follows the drop rules.
+        </li>
+      </ul>
+
+      <h3>8.8 · Wire and HTTP</h3>
+      <ul>
+        <li>
+          The router takes several methods per route name (<code>media</code>: GET and POST; <code>media-job</code>: GET
+          and DELETE), with the right <code>Allow</code> header. A store without <code>cancelJob</code> answers
+          <code>204</code> to DELETE (nothing to cancel), not 405.
+        </li>
+        <li>
+          An unknown job gets its own error code, <code>job_not_found</code>, distinct from a missing document's
+          <code>not_found</code>. A missing document marks the field's document as unknown. An unknown route (the media
+          option is off) logs one <code>console.warn</code> for the developer.
+        </li>
+        <li>
+          <code>errorResponse</code> can set headers: <code>busy</code> carries <code>Retry-After</code>. The client
+          maps a 413, 415 or 503 without our envelope (a proxy's HTML) by status.
+        </li>
+        <li>
+          An early 413 or refusal is verified on three engines against the demo server. If the browser loses the status,
+          the handler drains and discards the body up to a cap before answering.
+        </li>
+        <li>
+          The option is <code>media: { store, maxBytes }</code>. The handler checks the declared length and counts the
+          bytes; with no length, <code>size: null</code> and the counter enforces.
+        </li>
+        <li>
+          <code>variants</code> never leave the server (a handler test proves it). <code>MediaRender</code> gets a
+          compile-time <code>Same&lt;&gt;</code> guard between core and wire types. The client hand-checks bodies:
+          <code>src</code> is a string, width and height are positive, progress is clamped to 0..1.
+          <code>GET media</code> takes repeated <code>id=</code> params, not a comma list.
+          <code>X-Upload-Filename</code> decoding can't throw (a bad one becomes <code>bad_request</code>). Filename and
+          type are untrusted, and the docs and the contract say so (path separators, SVG).
+          <code>ContentClientOptions</code> takes an injectable XHR for tests.
+        </li>
+        <li>
+          Contract suite: upload rejects when the body stream errors; a job stays readable for a while after ready;
+          options are a factory, sample bytes, whether the store processes asynchronously, and its limit.
+        </li>
+      </ul>
+
+      <h3>8.9 · Upload and poll policy additions</h3>
+      <ul>
+        <li>
+          The stall timer runs only between the first upload progress event and the upload's <code>load</code>. A store
+          that processes synchronously and answers late is never killed by it.
+        </li>
+        <li>
+          Give-up happens only after a poll answer: when the deadline passes, poll once more. Never give up while the
+          tab is hidden. The poll on becoming visible doesn't add a second request while one is in flight, and doesn't
+          fire during a 503 wait or after give-up.
+        </li>
+        <li>
+          While <code>navigator.onLine</code> is false, no poll is sent, so nothing counts as a failure; on
+          <code>online</code>, poll at once.
+        </li>
+        <li>
+          <code>Retry-After</code> (seconds or an HTTP date) wins over <code>retryAfterMs</code>, clamped 1–60 s. A 503
+          on a poll counts as a failure, and its Retry-After sets the next wait. The 3 automatic resends count per task;
+          Retry resets them. Esc cancels the countdown; leaving keeps it going in the background.
+        </li>
+        <li>
+          When <code>refresh()</code> finds a document no longer editable or no longer returned, its tasks are aborted
+          at once. A failed load that locks every field aborts nothing. On <code>pageshow</code> from the back/forward
+          cache, a task that was sending fails with Retry.
+        </li>
+      </ul>
+
+      <h3>8.10 · Accessibility</h3>
+      <ul>
+        <li>
+          Before a state change removes the focused control, focus moves to the new state's control: Retry, Keep waiting
+          or Choose file. This keeps focus from falling to <code>body</code>, which the popover would read as leaving.
+          Done before ready is <code>aria-disabled</code>, not <code>disabled</code>.
+        </li>
+        <li>
+          Progress steps are announced only for the task whose popover is open, once per step per task, not per resend.
+          Background tasks announce only terminal events. Two announcements in one tick are joined, not overwritten. The
+          Finish sheet's percentages are not live. Space opens a media field (Enter already does), with
+          <code>preventDefault</code>.
+        </li>
+      </ul>
+
+      <h3>8.11 · Diff and formatting</h3>
+      <ul>
+        <li>
+          A media value diffs as one entry under the field's path (keyed list paths are mapped to the diff's index
+          paths): "new.jpg (was old.jpg)" from a batched <code>GET media</code>, falling back to ids when the publisher
+          gets a 403. An alt-only change shows as alt. Missing-alt notes cover media fields on this page only.
+        </li>
+        <li>
+          Sizes are formatted as kB, MB or GB, in 1000s, matching the server's <code>maxBytes</code>. A file at the
+          limit is not refused. <code>accept</code> matching takes <code>image/*</code>, extensions such as
+          <code>.heic</code>, and is case-insensitive. An empty file type is never refused in the browser: the server
+          decides.
+        </li>
+      </ul>
+
+      <h3>8.12 · Real-browser checks (e2e, three engines)</h3>
+      <p>
+        The drop guard and the dragstart cancel; WebKit paste on a focused field (§8.2 item 7); an early 413 with a
+        large body; the stall timer; hidden-tab polling; focus when the popover changes state; file-dialog focus return
+        on WebKit and Firefox; the veil following scroll; axe on every popover state.
+      </p>
     </main>
 
     <script>
@@ -2586,6 +2947,9 @@ export interface MediaFileInfo { filename: string; type: string; size: number | 
         mediaPublishNoAlt: "{label} has no alt text.",
         mediaItemGone: "{label}: the item this image was for was removed, so it wasn’t saved.",
         mediaDiffValue: "{name} (was {previous})",
+        mediaMissing: "The image saved here can’t be found. Choose a new one.",
+        mediaRefused: "The server refused {name}: {reason}",
+        mediaServerError: "The upload failed on the server. Try again.",
       };
       const tbody = document.getElementById("strings-table");
       for (const [key, text] of Object.entries(STRINGS)) {
