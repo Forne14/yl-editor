@@ -124,8 +124,6 @@ const start = (overrides: Partial<MediaTaskOptions> = {}) => {
     onState: (state) => states.push(state),
     ...overrides,
   });
-  // A test that never awaits done must not leave an unhandled rejection behind.
-  task.done.catch(() => {});
   return task;
 };
 
@@ -787,5 +785,80 @@ describe("back/forward cache", () => {
     await startProcessing();
     env.restoreFromCache();
     expect(phase()).toBe("processing");
+  });
+});
+
+describe("review round 1", () => {
+  test("abort() with nobody listening to done leaves no unhandled rejection; an awaiting caller still sees it", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      start();
+      task.abort();
+      await flush();
+      // Node reports unhandled rejections after the tick queue drains; let it, twice (setImmediate is faked).
+      for (let tick = 0; tick < 2; tick++) await new Promise((resolve) => process.nextTick(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+      await expect(task.done).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
+  test("starting offline emits uploading first, then failed", () => {
+    env.flags.online = false;
+    start();
+    expect(states.map((state) => state.phase)).toEqual(["uploading", "failed"]);
+  });
+
+  test("offline backstop: a due poll re-checks every 15 s, sending nothing while offline, one timer at a time", async () => {
+    scripted.respond(() => processing());
+    await startProcessing();
+    env.flags.online = false;
+    await advance(1000);
+    expect(scripted.polls).toHaveLength(0);
+    for (let check = 0; check < 20; check++) {
+      await advance(15_000);
+      expect(vi.getTimerCount()).toBe(1);
+    }
+    expect(scripted.polls).toHaveLength(0);
+    // navigator.onLine was a false negative, or the online event never came: the next re-check polls.
+    env.flags.online = true;
+    await advance(15_000);
+    expect(scripted.polls).toHaveLength(1);
+  });
+
+  test("the offline backstop never gives up by itself: only a poll answer does", async () => {
+    scripted.respond(() => processing());
+    await startProcessing(undefined, { jobTimeoutMs: 10_000 });
+    env.flags.online = false;
+    await advance(30 * 60_000);
+    expect(phase()).toBe("processing");
+    env.flags.online = true;
+    await advance(15_000);
+    expect(phase()).toBe("gave-up");
+  });
+
+  test("hidden past the deadline: polls at most every 60 s", async () => {
+    scripted.respond(() => processing());
+    await startProcessing(undefined, { jobTimeoutMs: 10_000 });
+    env.flags.hidden = true;
+    await advance(15_000);
+    // The 15 s poll was sent past the deadline; hidden, it can't give up, so the waits stretch to 60 s.
+    const sent = scripted.polls.length;
+    await advance(10 * 60_000);
+    const times = pollTimes(0).slice(sent - 1);
+    const gaps = times.slice(1).map((time, index) => time - (times[index] ?? 0));
+    expect(gaps.length).toBe(10);
+    expect(gaps.every((gap) => gap === 60_000)).toBe(true);
+    expect(phase()).toBe("processing");
+  });
+
+  test("hidden before the deadline keeps the normal backoff", async () => {
+    scripted.respond(() => processing());
+    await startProcessing();
+    env.flags.hidden = true;
+    await advance(60_000);
+    expect(pollTimes(0)).toEqual([1000, 3000, 7000, 15_000, 30_000, 45_000, 60_000]);
   });
 });

@@ -427,6 +427,50 @@ describe("variants never leave the server", () => {
   });
 });
 
+describe("a render the store gets wrong", () => {
+  const good = { kind: "image", src: "/m/good", width: 3, height: 2 };
+  const bad = [
+    { ...good, src: 7 },
+    { ...good, width: 0 },
+    { ...good, height: 1.5 },
+    { ...good, kind: "audio" },
+    { ...good, sources: [{ type: "image/avif" }] },
+    { ...good, srcset: 3 },
+  ];
+  const byId = Object.fromEntries([["good", good], ...bad.map((render, index) => [`bad${index}`, render])]);
+  const sloppy: MediaStore = {
+    upload: async (body) => {
+      await body.cancel();
+      return { status: "ready", media: { id: "m_bad", render: bad[0] as never, variants: null } };
+    },
+    job: async () => ({ status: "ready", media: { id: "m_bad", render: bad[1] as never, variants: null } }),
+    resolve: async (ids) => new Map(ids.map((id) => [id, { id, render: byId[id] as never, variants: null }] as const)),
+  };
+
+  test("GET media leaves it out, keeps the rest, and warns once per handlers", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const on = handlersWith(sloppy);
+    const ids = Object.keys(byId);
+    const { status, body } = await call(getMedia(ids), on);
+    expect(status).toBe(200);
+    expect(body).toEqual({ media: { good } });
+    await call(getMedia(ids), on);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/render/);
+  });
+
+  test("POST media and GET media-job answer 500 internal instead of sending it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const on = handlersWith(sloppy);
+    const posted = await call(upload(), on);
+    expect(posted.status).toBe(500);
+    expect(posted.body.error.code).toBe("internal");
+    const polled = await call(getJob("j1"), on);
+    expect(polled.status).toBe(500);
+    expect(polled.body.error.code).toBe("internal");
+  });
+});
+
 describe("GET media-job", () => {
   const startJob = async (readyAfterPolls = 2) => {
     media.mode.process = "async";
