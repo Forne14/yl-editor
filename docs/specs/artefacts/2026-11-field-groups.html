@@ -462,8 +462,8 @@
         <div>
           <h1 class="doc-title">Field groups</h1>
           <p class="doc-sub">
-            #44 · Chrome: group close plain fields in one outline (no overlapping dashed outlines). Prototype; G1–G4
-            approved 2026-11-28, G5–G10 asked.
+            #44 · Chrome: group close plain fields in one outline (no overlapping dashed outlines). Prototype; all
+            rulings made 2026-11-28.
           </p>
         </div>
         <button type="button" class="theme-btn" id="theme" aria-pressed="false">Dark theme</button>
@@ -740,7 +740,7 @@ with data-edit-group.</pre>
       </p>
       <div class="options">
         <div class="option rec">
-          <h3>A · The group is dropped<span class="rec-tag">Recommended</span></h3>
+          <h3>A · The group is dropped<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             Its fields get plain outlines, as if the attribute weren't there, and <code>console.warn</code> names the
             wrapper. No dashed outline goes around another.
@@ -796,7 +796,7 @@ The group is ignored.</pre>
       <p class="muted">The wrapper can hold markup that isn't editable, like the facts list's labels.</p>
       <div class="options">
         <div class="option rec">
-          <h3>A · The wrapper's box<span class="rec-tag">Recommended</span></h3>
+          <h3>A · The wrapper's box<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             The frame is the wrapper element's box plus the 12px padding, as a list's frame is its host's. Labels, icons
             or an image inside the wrapper sit inside the frame, and lines run its full width. The host decides the
@@ -845,7 +845,7 @@ The group is ignored.</pre>
       <p class="muted">A section is a group, and its byline is wrapped in a group of its own.</p>
       <div class="options">
         <div class="option rec">
-          <h3>A · The outermost group wins<span class="rec-tag">Recommended</span></h3>
+          <h3>A · The outermost group wins<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             The inner wrapper's fields join the outer group: one frame, a line under the heading, a line between author
             and date. <code>console.warn</code> names the inner wrapper as ignored.
@@ -886,7 +886,7 @@ The group is ignored.</pre>
       <h2 class="doc-h">10 · Ruling G8: <code>data-edit-group</code> inside a list item</h2>
       <div class="options">
         <div class="option rec">
-          <h3>A · Ignored, with a warning<span class="rec-tag">Recommended</span></h3>
+          <h3>A · Ignored, with a warning<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             The item already draws a line between each of its fields, so the list looks exactly as it does today.
             <code>console.warn</code> names the wrapper.
@@ -927,7 +927,7 @@ The group is ignored.</pre>
       <p class="muted">Nothing changes on screen; this is what a site developer writes.</p>
       <div class="options">
         <div class="option rec">
-          <h3>A · On the document's helper, like <code>.list()</code><span class="rec-tag">Recommended</span></h3>
+          <h3>A · On the document's helper, like <code>.list()</code><span class="rec-tag">Ruled 2026-11-28</span></h3>
           <pre>
 const about = editable(
   editing ? "pages/about" : undefined,
@@ -969,7 +969,7 @@ const about = editable(
       </p>
       <div class="options">
         <div class="option rec">
-          <h3>A · Any two dashed outlines that cross<span class="rec-tag">Recommended</span></h3>
+          <h3>A · Any two dashed outlines that cross<span class="rec-tag">Ruled 2026-11-28</span></h3>
           <p>
             Field and field, field and group frame, field and list frame, group and list, group and group. Each crossing
             pair is warned once per mount; it is checked again on resize but never repeated. Fields with no size
@@ -1027,27 +1027,30 @@ add space between them.</pre>
           </tr>
           <tr>
             <th>G5</th>
-            <td>Wrapper holding a list. <b>Recommended: A</b>, the group is dropped, fields plain, a warning.</td>
+            <td>Wrapper holding a list. <b>Ruled A</b>, the group is dropped, fields plain, a warning.</td>
           </tr>
           <tr>
             <th>G6</th>
-            <td>What the frame goes around. <b>Recommended: A</b>, the wrapper's box plus 12px.</td>
+            <td>
+              What the frame goes around. <b>Ruled A</b>, the wrapper's box plus 12px. What inside it is editable is the
+              host's choice; the chrome has no opinion and no warning about it.
+            </td>
           </tr>
           <tr>
             <th>G7</th>
-            <td>Group in a group. <b>Recommended: A</b>, the outermost wins, a warning names the inner one.</td>
+            <td>Group in a group. <b>Ruled A</b>, the outermost wins, a warning names the inner one.</td>
           </tr>
           <tr>
             <th>G8</th>
-            <td>Group in a list item. <b>Recommended: A</b>, ignored, a warning.</td>
+            <td>Group in a list item. <b>Ruled A</b>, ignored, a warning.</td>
           </tr>
           <tr>
             <th>G9</th>
-            <td>Helper. <b>Recommended: A</b>, <code>editable(doc).group()</code>, attribute only in edit mode.</td>
+            <td>Helper. <b>Ruled A</b>, <code>editable(doc).group()</code>, attribute only in edit mode.</td>
           </tr>
           <tr>
             <th>G10</th>
-            <td>Warning scope. <b>Recommended: A</b>, any two dashed outlines that cross, once per pair per mount.</td>
+            <td>Warning scope. <b>Ruled A</b>, any two dashed outlines that cross, once per pair per mount.</td>
           </tr>
         </tbody>
       </table>
