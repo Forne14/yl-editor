@@ -17,6 +17,7 @@
     "migrations",
     "!src/**/*.test.ts",
     "!src/test-support.ts",
+    "!src/media-test-store.ts",
     "!src/access/test-fixture.ts"
   ],
   "sideEffects": [

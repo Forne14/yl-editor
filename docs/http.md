@@ -28,6 +28,7 @@ const handlers = createContentHandlers({
 | `sameOrigin` | `true`         | Refuse requests whose `Origin` or `Sec-Fetch-Site` shows another site.          |
 | `onChange`   | none           | Called after every successful write, after the response (errors are logged).    |
 | `publishDue` | none           | `{ authorize(locals) }` enables `POST publish-due`; see below.                  |
+| `media`      | none           | `{ store, maxBytes }` enables the [media routes](#media).                       |
 
 `handlers.handle(request)` always resolves. `handlers.routes` lists every route as `"METHOD name"`.
 
@@ -95,15 +96,19 @@ All bodies are JSON. `{base}` is the configured base.
 The zod schemas for every body and query (`FieldRequestSchema`, `ArrayRequestSchema`, `KeyRequestSchema`,
 `PublishRequestSchema`, `UnpublishRequestSchema`, `DiscardRequestSchema`, `RestoreRevisionRequestSchema`,
 `PublishDueRequestSchema`, `RenameRequestSchema`, `CreateRequestSchema`, `DocumentsQuerySchema`, `DocumentQuerySchema`,
-`RevisionsQuerySchema`) and the `WireDocument`, `DocumentSummary`, `DocumentResponse` (`{ document }`, the POST routes),
-`DocumentForPublishResponse` (`{ document, publishedPayload }`, `GET document`), `WireRevision`, `WireArrayOp`,
-`PublishDueResponse`, `PublishDueFailure` and `ErrorEnvelope` types are exported, so a client of your own can share them.
+`RevisionsQuerySchema`, and for media `MediaFieldQuerySchema`, `MediaJobQuerySchema`, `MediaQuerySchema`) and the
+`WireDocument`, `DocumentSummary`, `DocumentResponse` (`{ document }`, the POST routes), `DocumentForPublishResponse`
+(`{ document, publishedPayload }`, `GET document`), `WireRevision`, `WireArrayOp`, `PublishDueResponse`,
+`PublishDueFailure`, `ErrorEnvelope`, `WireMediaField`, `WireMedia`, `WireMediaRender`, `MediaUploadReadyResponse`,
+`MediaUploadProcessingResponse`, `MediaUploadResult`, `MediaJobResponse` and `MediaResolveResponse` types are exported,
+with the `UPLOAD_FILENAME_HEADER` and `MAX_MEDIA_IDS` constants, so a client of your own can share them.
 
 Inside the package the contract is split in two. `wire-types.ts` holds the types, the header constants, the
 code-to-status map and the `isErrorEnvelope` guard, and imports nothing. `wire.ts` holds the zod schemas and re-exports
 everything from `wire-types.ts`. The client imports only `wire-types.ts`, so a browser bundle that uses it carries
-neither zod nor the core; a test checks this. `WireDocument` and `WireArrayOp` mirror `StoredDocument` and `ArrayOp`,
-and a compile-time check in `wire.ts` fails the build if they drift apart.
+neither zod nor the core; a test checks this. `WireDocument`, `WireArrayOp`, `WireMediaRender` and `WireMediaField`
+mirror `StoredDocument`, `ArrayOp`, `MediaRender` and `MediaFieldRef`, and a compile-time check in `wire.ts` fails the
+build if they drift apart.
 
 ## Gating
 
@@ -115,6 +120,7 @@ and a compile-time check in `wire.ts` fails the build if they drift apart.
 | `publish`, `unpublish`, `retire`, `restore`, `rename` | `canPublish`           | The stored row                                                  |
 | `create`                                              | `canEdit`              | `{ type, key: "<collection>/<slug>" }` from the body            |
 | `publish-due`                                         | `publishDue.authorize` | None: it acts on whatever is due                                |
+| `media`, `media-job` (every method)                   | `canEdit`              | The stored row of the query's `key`                             |
 
 The stored row is read with `{ draft: true, includeRetired: true, unvalidated: true }`, so its `type` comes from the
 database rather than from the request, and neither the verdict nor the `403` depends on whether its payload is valid. A
@@ -171,6 +177,64 @@ Without the option every call is `403 forbidden` ("publish-due is not enabled"),
 `authorize` gets whatever `locals` returned; a denying verdict is `403` with its reason. A scheduler that already has a
 store at hand can call `store.publishDue()` directly instead and skip HTTP.
 
+## Media
+
+With `media: { store, maxBytes }` (a [`MediaStore`](store.md#media) and a byte limit), four routes join the others,
+behind the same base, guard, `locals`, access and error envelope. Without the option they are `404`, and the first
+request to one logs a `console.warn` naming the option.
+
+```ts
+createContentHandlers({ store, registry, access, locals, media: { store: mediaStore, maxBytes: 40_000_000 } });
+```
+
+| Method | Path                                  | Body                                                                                       | Success                                                                                                                            |
+| ------ | ------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `{base}/media?key=k&path=p`           | The raw file; `Content-Type` its type, `Content-Length`, `X-Upload-Filename` (URI-encoded) | `201 { media: { id, render } }` or `202 { job, retryAfterMs? }`                                                                    |
+| GET    | `{base}/media-job?key=k&path=p&job=j` | none                                                                                       | `200 { status: "processing", progress?, retryAfterMs? }`, `{ status: "ready", media }` or `{ status: "failed", reason, message? }` |
+| DELETE | `{base}/media-job?key=k&path=p&job=j` | none                                                                                       | `204`                                                                                                                              |
+| GET    | `{base}/media?key=k&id=a&id=b`        | none                                                                                       | `200 { media: { [id]: render } }`                                                                                                  |
+
+Every one is gated by `canEdit` on the stored row of `key`, the document the field is in: whoever may edit the page
+may put an image in it. A key that does not exist is `404 not_found`, as elsewhere. `path` is passed to the store, not
+checked against the schema; the field write that follows is. A media id is not a secret, but `GET media` still asks
+for a key so the same verdict applies. `media` and `media-job` each take two methods; any other method is `405` with
+both in `Allow`.
+
+- `POST media` checks, in order: the query, the verdict, `X-Upload-Filename` (missing, or URI-decoding that fails, is
+  `400 bad_request`), a declared `Content-Length` past `maxBytes` (`413 too_large`), then `store.accept`. All of that
+  answers before a byte of the body is read. The body then reaches `store.upload` through a byte counter that errors
+  the stream past `maxBytes`, past the declared length, or short of it, and aborts the store's `signal`; the
+  counter's verdict is the answer even when the store swallows the stream error. With no `Content-Length`, `size` is
+  `null` and the counter alone enforces. A file of exactly `maxBytes` goes through. The type passed on is
+  `Content-Type` without parameters, lower-cased (`""` when absent).
+- `GET media-job` asks `store.job`. An unknown job, another field's job, or a store without `job` is
+  `404 job_not_found`, which is not the `not_found` of a missing document.
+- `DELETE media-job` calls `store.cancelJob` when the store has it and answers `204` either way: nothing to cancel is
+  not an error.
+- `GET media` takes repeated `id` params, not a comma list. They are deduped; more than 100 is `400 bad_request`; none
+  answers `{ media: {} }` without asking the store. Ids the store doesn't know are left out, as are ids it answers that
+  nobody asked for. An id such as `__proto__` is an ordinary key.
+- Only `id` and the render's own keys (`kind`, `src`, `srcset`, `sources`, `width`, `height`, `poster`, `filename`)
+  leave the server. `variants`, and anything else a store puts in `render`, never do.
+- A render that breaks its shape (a `kind` other than `"image"` or `"video"`, a `src` that is not a string, a `width`
+  or `height` that is not a positive integer, or a wrong `srcset`, `sources`, `poster` or `filename`) is never sent.
+  `GET media` leaves that id out, like an unknown one; `POST media` and `GET media-job` answer `500 internal` instead
+  of a ready answer. The first one logs a `console.warn` per handlers instance.
+- `onChange` is not fired: an upload changes no content. The field write that follows fires `field` as usual.
+
+A `MediaRefusal` from the store maps to `too_large` 413 (with `limit` in the envelope when the refusal has one),
+`unsupported` 415, `invalid` → `bad_request` 400 with the store's message, or `busy` 503 with a `Retry-After` header in
+whole seconds (rounded up; 5 seconds when the refusal names no wait).
+
+Numbers a store provides are checked before they go out: a `retryAfterMs` (on a refusal, a `202` or a job state) or a
+`limit` that is not finite and positive is treated as absent, and a job's `progress` is clamped to 0..1, or left out
+when it is not a finite number. A request whose signal has already aborted when the upload starts hands the store an
+aborted `signal`.
+
+Mounting is unchanged, except that an upload's body must reach the handlers as a stream: a server that buffers request
+bodies with a cap of its own (the demo's 1 MB for JSON, a serverless platform's 4.5 MB) refuses large files before
+the handlers see them. The demo site streams `POST media` and buffers everything else.
+
 ## The CSRF and same-origin guard
 
 Hosts usually authenticate these routes with a session cookie, and a browser attaches cookies to any request to your
@@ -197,17 +261,21 @@ Every failure has the same shape:
 { "error": { "code": "conflict", "message": "…", "issues": [], "current": {} } }
 ```
 
-| Code          | Status | When                                                                         |
-| ------------- | ------ | ---------------------------------------------------------------------------- |
-| `forbidden`   | 403    | Missing header, cross-site request, or a denying verdict (reason in message) |
-| `not_found`   | 404    | Unknown key, or unknown route                                                |
-| `conflict`    | 409    | Stale `expectedVersion`; `current` holds the document as it is now           |
-| `validation`  | 422    | The payload fails its schema, or `create` names an unknown type; `issues`    |
-| `path`        | 400    | A path the store cannot follow                                               |
-| `state`       | 409    | A lifecycle step that does not apply, such as retiring a retired document    |
-| `slug`        | 400    | A slug that is not lower-case words joined by hyphens                        |
-| `bad_request` | 400    | Body that is not JSON, or fails the request schema (`issues`); 405 on method |
-| `internal`    | 500    | Anything else. The message is always "Internal error"                        |
+| Code            | Status | When                                                                         |
+| --------------- | ------ | ---------------------------------------------------------------------------- |
+| `forbidden`     | 403    | Missing header, cross-site request, or a denying verdict (reason in message) |
+| `not_found`     | 404    | Unknown key, or unknown route                                                |
+| `job_not_found` | 404    | `media-job` for a job the store doesn't know, or another field's             |
+| `too_large`     | 413    | An upload past `maxBytes` or the store's limit; `limit` when known           |
+| `unsupported`   | 415    | A file type the store doesn't take                                           |
+| `busy`          | 503    | The media store is busy; `Retry-After` header                                |
+| `conflict`      | 409    | Stale `expectedVersion`; `current` holds the document as it is now           |
+| `validation`    | 422    | The payload fails its schema, or `create` names an unknown type; `issues`    |
+| `path`          | 400    | A path the store cannot follow                                               |
+| `state`         | 409    | A lifecycle step that does not apply, such as retiring a retired document    |
+| `slug`          | 400    | A slug that is not lower-case words joined by hyphens                        |
+| `bad_request`   | 400    | Body that is not JSON, or fails the request schema (`issues`); 405 on method |
+| `internal`      | 500    | Anything else. The message is always "Internal error"                        |
 
 A wrong method answers `405` with an `Allow` header and code `bad_request`. An unexpected error is logged with
 `console.error` and never reaches the response, so a database message cannot leak a path or a query.
@@ -285,22 +353,26 @@ try {
 }
 ```
 
-| Method                                                    | Returns                        |
-| --------------------------------------------------------- | ------------------------------ |
-| `documents(keys)`                                         | `Record<key, DocumentSummary>` |
-| `document(key)`                                           | `WireDocument`                 |
-| `documentForPublish(key)`                                 | `DocumentForPublishResponse`   |
-| `field(key, path, value, expectedVersion?)`               | `WireDocument`                 |
-| `array(key, path, op, expectedVersion?)`                  | `WireDocument`                 |
-| `publish(key, { at?, expectedVersion? }?)`                | `WireDocument`                 |
-| `unpublish(key, { expectedVersion? }?)`                   | `WireDocument`                 |
-| `restoreRevision(key, revisionId, { expectedVersion? }?)` | `WireDocument`                 |
-| `publishDue(now?)`                                        | `{ documents, failed }`        |
-| `discard(key, { expectedVersion? }?)`                     | `WireDocument \| null`         |
-| `retire(key)`, `restore(key)`                             | `WireDocument`                 |
-| `rename(key, slug)`                                       | `WireDocument`                 |
-| `revisions(key)`                                          | `WireRevision[]`               |
-| `create(type, slug, payload)`                             | `WireDocument`                 |
+| Method                                                         | Returns                        |
+| -------------------------------------------------------------- | ------------------------------ |
+| `documents(keys)`                                              | `Record<key, DocumentSummary>` |
+| `document(key)`                                                | `WireDocument`                 |
+| `documentForPublish(key)`                                      | `DocumentForPublishResponse`   |
+| `field(key, path, value, expectedVersion?)`                    | `WireDocument`                 |
+| `array(key, path, op, expectedVersion?)`                       | `WireDocument`                 |
+| `publish(key, { at?, expectedVersion? }?)`                     | `WireDocument`                 |
+| `unpublish(key, { expectedVersion? }?)`                        | `WireDocument`                 |
+| `restoreRevision(key, revisionId, { expectedVersion? }?)`      | `WireDocument`                 |
+| `publishDue(now?)`                                             | `{ documents, failed }`        |
+| `discard(key, { expectedVersion? }?)`                          | `WireDocument \| null`         |
+| `retire(key)`, `restore(key)`                                  | `WireDocument`                 |
+| `rename(key, slug)`                                            | `WireDocument`                 |
+| `revisions(key)`                                               | `WireRevision[]`               |
+| `create(type, slug, payload)`                                  | `WireDocument`                 |
+| `uploadMedia(field, file, { onProgress?, onSent?, signal? }?)` | `MediaUploadResult`            |
+| `mediaJob(field, job, { signal? }?)`                           | `MediaJobResponse`             |
+| `cancelMediaJob(field, job, { signal? }?)`                     | `void`                         |
+| `media(key, ids, { signal? }?)`                                | `Map<id, WireMediaRender>`     |
 
 The client sends `X-Requested-With: yl-editor` and `credentials: "same-origin"` on every request. Any non-2xx response
 throws a `ContentRequestError` with `status`, `code`, `message`, and `issues` or `current` when the server sent them; a
@@ -308,8 +380,35 @@ response that is not an error envelope (a proxy's 502 page, say) throws with cod
 `{}` without a request. `documentForPublish(key)` makes the same request as `document(key)` and also returns
 `publishedPayload`, for showing what a publish would change.
 
-Options are `base` (an absolute URL works, for use outside a browser) and `fetch`, which lets you add headers, run it
-in tests, or point it straight at the handlers:
+The media methods take `field` as `{ key, path }`.
+
+- `uploadMedia` sends the `File` itself as the body of an `XMLHttpRequest`, which streams it from disk and is the only
+  API with upload progress in every engine (fetch upload streaming is Chromium-only and reports none). It sets
+  `Content-Type` to the file's type (none when the type is empty: the server decides) and `X-Upload-Filename` to its
+  URI-encoded name. `onProgress({ loaded, total })` reports bytes sent (`total` is `null` when the browser can't tell),
+  `onSent()` fires once every byte is sent and the answer is still to come. It resolves `{ status: "ready", media }` on
+  `201` and `{ status: "processing", job, retryAfterMs? }` on `202`. It rejects with a `ContentRequestError` for a
+  non-2xx or unreadable answer, a `TypeError` when the network fails (as `fetch` does, including an abort the client
+  didn't ask for), and the signal's reason (an `AbortError`) when `signal` aborts, after which no callback fires.
+  There is no overall timeout and no automatic retry here: the chrome's upload task (`src/chrome/media-task.ts`, whose
+  header states the poll and retry policy) owns that.
+- `mediaJob` is one poll. `progress` is clamped to 0..1 (a non-number is dropped).
+- `media` dedupes `ids`, sends them as repeated `id` params, at most 100 per request (more are split over several),
+  and answers a `Map`. `media(key, [])` makes no request.
+- Bodies are hand-checked, not parsed with zod: a render needs `kind` `"image"` or `"video"`, a string `src` and a
+  positive integer `width` and `height`, and is rebuilt with only its own keys. In `media`, an unreadable render is
+  left out of the map and the rest of the batch is kept; in `uploadMedia` and `mediaJob`, a ready answer with one, or
+  any other unreadable body, is a `ContentRequestError` with code `internal`.
+- A `Retry-After` header (delay-seconds or an HTTP date) is read into `retryAfterMs`, on the error for a `503` and on a
+  `202` or a poll answer, where it wins over the body's `retryAfterMs`. `parseRetryAfter(value, now)` is exported.
+- A `413`, `415` or `503` without our envelope (a proxy's or the platform's own page) maps to `too_large`,
+  `unsupported` or `busy` by its status; any other envelope-less failure is `internal` as before. A `too_large`
+  envelope's `limit` is on the error as `limit`.
+
+Options are `base` (an absolute URL works, for use outside a browser), `xhr` (a factory for the request
+`uploadMedia` sends, for tests: anything with `XMLHttpRequest`'s `open`, `setRequestHeader`, `send`, `abort`,
+`status`, `responseText`, `getResponseHeader`, `addEventListener` and `upload.addEventListener`) and `fetch`, which
+lets you add headers, run it in tests, or point it straight at the handlers:
 
 ```ts
 const client = createContentClient({
